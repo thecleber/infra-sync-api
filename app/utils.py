@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+import ipaddress
+import re
+import unicodedata
+from typing import Any
+
+
+_slug_re = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
+    lowered = ascii_value.lower().strip()
+    slug = _slug_re.sub("-", lowered).strip("-")
+    return slug or "unnamed"
+
+
+def is_ipv4_only_hostname(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(value.strip()).version == 4
+    except ValueError:
+        return False
+
+
+def normalize_ip_input(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("IP is required")
+
+    candidate = cleaned if "/" in cleaned else f"{cleaned}/32"
+    interface = ipaddress.ip_interface(candidate)
+    if interface.version != 4:
+        raise ValueError("Only IPv4 addresses are supported")
+    return str(interface)
+
+
+def merge_custom_fields(existing: dict[str, Any] | None, hostid: str) -> dict[str, Any]:
+    merged = dict(existing or {})
+    merged["zabbix_hostid"] = hostid
+    return merged
+
+
+def truthy_string(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
