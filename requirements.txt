@@ -3,5 +3,5 @@ uvicorn[standard]==0.34.3
 httpx==0.28.1
 pydantic==2.11.7
 pydantic-settings==2.10.1
+pysnmp==7.1.27
 pytest==8.4.1
-

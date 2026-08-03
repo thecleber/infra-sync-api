@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from . import __version__
 from .config import Settings, get_settings
+from .discovery import classify_discovered_device, load_last_scan, save_group_selections, scan_network
 from .models import SyncDeviceRequest, ZabbixHostSyncRequest
 from .netbox_client import NetBoxClient, NetBoxClientError
 from .services import SyncError, sync_device, sync_zabbix_host
@@ -292,6 +293,10 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         + f". Redes permitidas: {len(settings.allowed_client_networks())}."
     )
 
+    discovery_state = load_last_scan()
+    discovered_devices = discovery_state.get("devices") if isinstance(discovery_state.get("devices"), list) else []
+    discovery_count = len(discovered_devices)
+
     inventory_cards = [
         {"label": "Devices", "value": counts["devices"], "note": "Dispositivos no inventário"},
         {"label": "IPs", "value": counts["ips"], "note": "Endereços e consumo"},
@@ -301,6 +306,7 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         {"label": "Sites", "value": counts["sites"], "note": "Locais e unidades"},
         {"label": "Racks", "value": counts["racks"], "note": "Racks físicos"},
         {"label": "Zabbix hosts", "value": counts["zabbix_hosts"], "note": "Hosts monitorados"},
+        {"label": "Descobertos", "value": discovery_count, "note": "Dispositivos vistos na última varredura"},
     ]
 
     telemetry_score = 0
@@ -315,6 +321,7 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         {"id": "inventory", "label": "Inventario", "description": "Devices, racks e topologia."},
         {"id": "ipam", "label": "IPAM", "description": "IPs, prefixes e VLANs."},
         {"id": "telemetry", "label": "Telemetria", "description": "Zabbix, SNMP e alertas."},
+        {"id": "discovery", "label": "Descoberta", "description": "Varredura SNMP e classificacao."},
         {"id": "automation", "label": "Automacao", "description": "n8n e ajustes controlados."},
         {"id": "integrations", "label": "Integracoes", "description": "NetBox, Zabbix, GLPI e n8n."},
         {"id": "settings", "label": "Configuracao", "description": "Tokens e URLs editaveis."},
@@ -339,6 +346,12 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
             {"label": "Racks", "value": counts["racks"]},
             {"label": "Zabbix", "value": counts["zabbix_hosts"]},
         ],
+        "discovery": {
+            "network": discovery_state.get("network", ""),
+            "count": discovery_count,
+            "scanned_at": discovery_state.get("scanned_at", ""),
+            "devices": discovered_devices,
+        },
     }
 
 
@@ -1343,6 +1356,7 @@ window.addEventListener('resize', () => {{
         </div>
         <div class="actions">
           <a class="btn primary" href="/settings">Configurar integrações</a>
+          <a class="btn" href="/discovery">Varredura SNMP</a>
           <a class="btn" href="/api/overview">Snapshot</a>
           <a class="btn" href="/health">Saude</a>
           <a class="btn" href="/docs">API</a>
@@ -1435,6 +1449,38 @@ window.addEventListener('resize', () => {{
           <div class="chart-card">
             <h3>Tendencia semanal</h3>
             <canvas id="telemetry-line"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="discovery" class="section" data-section="discovery">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>Descoberta SNMP</h2>
+            <p>Varredura controlada da rede local com classificacao por grupos. O resultado mais recente fica salvo para analise e ajuste.</p>
+            <table>
+              <thead><tr><th>Ultima rede</th><th>Resultado</th></tr></thead>
+              <tbody>
+                <tr><td>{escape(snapshot["discovery"]["network"] or "Nenhuma")}</td><td>{escape(str(snapshot["discovery"]["count"]))} dispositivos</td></tr>
+                <tr><td>Ultima execucao</td><td>{escape(snapshot["discovery"]["scanned_at"] or "sem data")}</td></tr>
+              </tbody>
+            </table>
+            <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
+              <a class="btn primary" href="/discovery">Abrir varredura</a>
+              <a class="btn" href="/discovery#results">Ver resultados</a>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Classificacao padrao</h2>
+            <p>Os dispositivos encontrados sao sugeridos em grupos como switch, servidor e hosts, com subgrupos para mobile, notebook, tablet, desktop e fixo.</p>
+            <table>
+              <thead><tr><th>Grupo</th><th>Subgrupo</th></tr></thead>
+              <tbody>
+                <tr><td>switches</td><td>core / access / wireless</td></tr>
+                <tr><td>servers</td><td>hypervisor / physical</td></tr>
+                <tr><td>hosts</td><td>mobile / notebook / tablet / desktop / fixed</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -1577,3 +1623,227 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
     </section>
     """
     return _render_shell("Configuracao | infra-sync-api", body)
+
+
+async def _read_form(request: Request) -> dict[str, str]:
+    body = await request.body()
+    if not body:
+        return {}
+    parsed = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+    return {key: values[-1] if values else "" for key, values in parsed.items()}
+
+
+@app.get("/discovery", include_in_schema=False)
+async def discovery_page(request: Request, saved: int = 0, error: str | None = None):
+    state = load_last_scan()
+    return HTMLResponse(_render_discovery_page(state, error=error, saved=bool(saved)))
+
+
+@app.post("/discovery/scan", include_in_schema=False)
+async def discovery_scan(request: Request):
+    form = await _read_form(request)
+    network = form.get("network", "10.0.0.0/24").strip()
+    community = form.get("community", "public").strip() or "public"
+    timeout = float(form.get("timeout", "1.0") or "1.0")
+    retries = int(form.get("retries", "0") or "0")
+    max_hosts = int(form.get("max_hosts", "128") or "128")
+    try:
+        payload = await scan_network(network, community, timeout=timeout, retries=retries, max_hosts=max_hosts)
+        return HTMLResponse(_render_discovery_page(payload, saved=True))
+    except Exception as exc:
+        state = load_last_scan()
+        state["network"] = network
+        return HTMLResponse(_render_discovery_page(state, error=str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
+
+
+@app.post("/discovery/save", include_in_schema=False)
+async def discovery_save(request: Request):
+    form = await _read_form(request)
+    state = load_last_scan()
+    devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    saved_devices: list[dict[str, Any]] = []
+
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        ip = str(device.get("ip", "")).strip()
+        key = _device_key(ip)
+        include = form.get(f"include_{key}") in {"on", "true", "True", "1", "checked", "yes"}
+        group = form.get(f"group_{key}") or str(device.get("group") or "hosts")
+        subgroup = form.get(f"subgroup_{key}") or str(device.get("subgroup") or "fixed")
+        classified_group, classified_subgroup, notes = classify_discovered_device(
+            sys_descr=str(device.get("sys_descr") or ""),
+            sys_name=str(device.get("sys_name") or ""),
+            sys_object_id=str(device.get("sys_object_id") or ""),
+        )
+        saved_devices.append(
+            {
+                **device,
+                "include": include,
+                "group": group,
+                "subgroup": subgroup,
+                "suggested_group": classified_group,
+                "suggested_subgroup": classified_subgroup,
+                "notes": notes,
+            }
+        )
+
+    payload = {
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "network": state.get("network", ""),
+        "count": len(saved_devices),
+        "devices": saved_devices,
+    }
+    save_group_selections(payload)
+    state["devices"] = saved_devices
+    save_last_scan(state)
+    return HTMLResponse(_render_discovery_page(state, saved=True))
+
+
+def _device_key(ip: str) -> str:
+    return ip.replace(".", "_")
+
+
+def _discovery_group_options() -> list[tuple[str, str, list[str]]]:
+    return [
+        ("switches", "Switches", ["core", "access", "wireless"]),
+        ("servers", "Servidores", ["hypervisor", "physical"]),
+        ("hosts", "Hosts", ["mobile", "notebook", "tablet", "desktop", "fixed"]),
+    ]
+
+
+def _render_discovery_page(state: dict[str, Any], error: str | None = None, saved: bool = False) -> str:
+    devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    rows = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        ip = str(device.get("ip", "")).strip()
+        key = _device_key(ip)
+        rows.append(
+            f"""
+            <tr>
+              <td><strong>{escape(ip or '—')}</strong></td>
+              <td>{escape(str(device.get("sys_name") or '—'))}</td>
+              <td style="max-width:280px;">{escape(str(device.get("sys_descr") or '—'))}</td>
+              <td>
+                <select name="group_{key}">
+                  <option value="switches" {"selected" if device.get("group") == "switches" else ""}>Switches</option>
+                  <option value="servers" {"selected" if device.get("group") == "servers" else ""}>Servidores</option>
+                  <option value="hosts" {"selected" if device.get("group") == "hosts" else ""}>Hosts</option>
+                </select>
+              </td>
+              <td>
+                <select name="subgroup_{key}">
+                  <option value="core" {"selected" if device.get("subgroup") == "core" else ""}>core</option>
+                  <option value="access" {"selected" if device.get("subgroup") == "access" else ""}>access</option>
+                  <option value="wireless" {"selected" if device.get("subgroup") == "wireless" else ""}>wireless</option>
+                  <option value="hypervisor" {"selected" if device.get("subgroup") == "hypervisor" else ""}>hypervisor</option>
+                  <option value="physical" {"selected" if device.get("subgroup") == "physical" else ""}>physical</option>
+                  <option value="mobile" {"selected" if device.get("subgroup") == "mobile" else ""}>mobile</option>
+                  <option value="notebook" {"selected" if device.get("subgroup") == "notebook" else ""}>notebook</option>
+                  <option value="tablet" {"selected" if device.get("subgroup") == "tablet" else ""}>tablet</option>
+                  <option value="desktop" {"selected" if device.get("subgroup") == "desktop" else ""}>desktop</option>
+                  <option value="fixed" {"selected" if device.get("subgroup") == "fixed" else ""}>fixed</option>
+                </select>
+              </td>
+              <td>
+                <label class="check" style="margin:0;">
+                  <input type="checkbox" name="include_{key}" {"checked" if device.get("include", True) else ""} />
+                  <span>Incluir</span>
+                </label>
+              </td>
+            </tr>
+            """
+        )
+
+    body = f"""
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="kicker">ECV Network Control</div>
+        <h1>Varredura SNMP</h1>
+        <p>Informe a rede, execute a busca e classifique os dispositivos encontrados antes de inserir nos grupos.</p>
+      </div>
+      <nav class="menu">
+        <a href="/">Voltar ao dashboard</a>
+        <a href="/settings">Editar conectores</a>
+        <a href="/health">Saude da API</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div>Resultado salvo</div>
+        <div>{escape(state.get("scanned_at") or "sem varredura")}</div>
+      </div>
+    </aside>
+    <section class="content">
+      <section class="topbar">
+        <div>
+          <h2 class="page-title">Descoberta SNMP</h2>
+          <div class="sub">A varredura fica restrita a redes privadas IPv4. Depois do scan, voce decide o grupo e o subgrupo de cada equipamento.</div>
+        </div>
+        <div class="actions">
+          <a class="btn" href="/">Dashboard</a>
+          <a class="btn" href="/settings">Conectores</a>
+        </div>
+      </section>
+      {"<div class='hero'><small>Salvo</small><strong>Classificacao gravada com sucesso.</strong><div class='sub' style='margin: 6px 0 0;'>Os dispositivos selecionados foram registrados localmente.</div></div>" if saved else ""}
+      {f"<div class='hero'><small>Erro</small><strong>{escape(error)}</strong></div>" if error else ""}
+      <div class="panel" style="margin-bottom:14px;">
+        <h2>Executar varredura</h2>
+        <p>Use uma rede privada como 10.0.0.0/24. O sistema consulta SNMP e monta uma lista de dispositivos com sugestao de grupo.</p>
+        <form method="post" action="/discovery/scan">
+          <div class="form-grid">
+            <div class="field">
+              <label for="network">Rede</label>
+              <input id="network" name="network" type="text" value="{escape(state.get("network") or "10.0.0.0/24")}" placeholder="10.0.0.0/24" />
+            </div>
+            <div class="field">
+              <label for="community">Community</label>
+              <input id="community" name="community" type="password" value="" placeholder="public" />
+            </div>
+            <div class="field">
+              <label for="timeout">Timeout</label>
+              <input id="timeout" name="timeout" type="text" value="1.0" />
+            </div>
+            <div class="field">
+              <label for="retries">Retries</label>
+              <input id="retries" name="retries" type="text" value="0" />
+            </div>
+          </div>
+          <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+            <button class="btn primary" type="submit">Varredura SNMP</button>
+          </div>
+        </form>
+      </div>
+      <div id="results" class="panel">
+        <h2>Resultados</h2>
+        <p>{escape(str(len(devices)))} dispositivo(s) encontrados na ultima varredura.</p>
+        <form method="post" action="/discovery/save">
+          <input type="hidden" name="network" value="{escape(state.get("network") or "")}" />
+          <table>
+            <thead>
+              <tr>
+                <th>IP</th>
+                <th>Nome</th>
+                <th>Descrição</th>
+                <th>Grupo</th>
+                <th>Subgrupo</th>
+                <th>Incluir</th>
+              </tr>
+            </thead>
+            <tbody>
+              {''.join(rows) if rows else '<tr><td colspan="6">Nenhum dispositivo na ultima varredura.</td></tr>'}
+            </tbody>
+          </table>
+          <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+            <button class="btn primary" type="submit">Salvar classificacao</button>
+            <a class="btn" href="/discovery">Recarregar</a>
+          </div>
+        </form>
+      </div>
+      <div class="foot">
+        <div>Grupo padrao: switches, servidores e hosts.</div>
+        <div>O resultado fica salvo em disco para revisao posterior.</div>
+      </div>
+    </section>
+    """
+    return _render_shell("Descoberta SNMP | infra-sync-api", body)

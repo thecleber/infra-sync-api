@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 from app.config import Settings, get_settings
 from app.main import app
+from app.discovery import classify_discovered_device
 from app.models import SyncDeviceRequest
 from app.netbox_client import NetBoxClient
 from app.zabbix_client import ZabbixClient
@@ -92,6 +93,7 @@ def test_dashboard_route_renders_dashboard(monkeypatch):
 
     assert response.status_code == 200
     assert "Atalhos operacionais" in response.text
+    assert "Varredura SNMP" in response.text
 
 
 def test_root_head_returns_ok(monkeypatch):
@@ -119,6 +121,32 @@ def test_settings_page_renders(monkeypatch):
     assert response.status_code == 200
     assert "Configuracoes" in response.text
     assert "NetBox" in response.text
+
+
+def test_discovery_classifier_switch():
+    group, subgroup, notes = classify_discovered_device(
+        sys_descr="Cisco IOS Software, Catalyst Switch",
+        sys_name="SW-ACCESS-LAN",
+        sys_object_id=".1.3.6.1.4.1.9",
+    )
+
+    assert group == "switches"
+    assert subgroup in {"access", "core", "wireless"}
+    assert "Matched" in notes
+
+
+def test_discovery_page_renders(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        response = client.get("/discovery", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "Descoberta SNMP" in response.text
+    assert "Varredura SNMP" in response.text
 
 
 def test_allowed_client_cidrs_normalize():
