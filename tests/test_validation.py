@@ -117,7 +117,7 @@ def test_settings_page_renders(monkeypatch):
         response = client.get("/settings", follow_redirects=False)
 
     assert response.status_code == 200
-    assert "Configurações" in response.text
+    assert "Configuracoes" in response.text
     assert "NetBox" in response.text
 
 

@@ -292,7 +292,7 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         + f". Redes permitidas: {len(settings.allowed_client_networks())}."
     )
 
-    cards = [
+    inventory_cards = [
         {"label": "Devices", "value": counts["devices"], "note": "Dispositivos no inventário"},
         {"label": "IPs", "value": counts["ips"], "note": "Endereços e consumo"},
         {"label": "VLANs", "value": counts["vlans"], "note": "Segmentação de rede"},
@@ -303,13 +303,42 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         {"label": "Zabbix hosts", "value": counts["zabbix_hosts"], "note": "Hosts monitorados"},
     ]
 
+    telemetry_score = 0
+    telemetry_score += 60 if netbox_connected else 0
+    telemetry_score += 40 if zabbix_connected else 0
+    telemetry_score += 10 if runtime["glpi"]["enabled"] else 0
+    telemetry_score += 10 if runtime["n8n"]["enabled"] else 0
+    telemetry_score = min(100, telemetry_score)
+
+    section_summary = [
+        {"id": "overview", "label": "Visao geral", "description": "Resumo executivo do ambiente."},
+        {"id": "inventory", "label": "Inventario", "description": "Devices, racks e topologia."},
+        {"id": "ipam", "label": "IPAM", "description": "IPs, prefixes e VLANs."},
+        {"id": "telemetry", "label": "Telemetria", "description": "Zabbix, SNMP e alertas."},
+        {"id": "automation", "label": "Automacao", "description": "n8n e ajustes controlados."},
+        {"id": "integrations", "label": "Integracoes", "description": "NetBox, Zabbix, GLPI e n8n."},
+        {"id": "settings", "label": "Configuracao", "description": "Tokens e URLs editaveis."},
+    ]
+
     return {
         "health": health_status,
         "headline": headline,
         "detail": detail,
-        "cards": cards,
+        "cards": inventory_cards,
         "connectors": connectors,
         "runtime": runtime,
+        "summary": section_summary,
+        "telemetry_score": telemetry_score,
+        "metric_bars": [
+            {"label": "Devices", "value": counts["devices"]},
+            {"label": "IPs", "value": counts["ips"]},
+            {"label": "VLANs", "value": counts["vlans"]},
+            {"label": "Interfaces", "value": counts["interfaces"]},
+            {"label": "Prefixes", "value": counts["prefixes"]},
+            {"label": "Sites", "value": counts["sites"]},
+            {"label": "Racks", "value": counts["racks"]},
+            {"label": "Zabbix", "value": counts["zabbix_hosts"]},
+        ],
     }
 
 
@@ -739,3 +768,812 @@ async def sync_zabbix_device_dry_run_endpoint(payload: ZabbixHostSyncRequest, re
         role_id=payload.role_id,
     )
     return result.as_dict()
+
+
+def _render_shell(title: str, body: str, extra_script: str = "") -> str:
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="cache-control" content="no-store" />
+  <title>{escape(title)}</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #0a0a0c;
+      --panel: #131317;
+      --panel-2: #18181d;
+      --panel-3: #1f1f25;
+      --ink: #f6f6f8;
+      --muted: #a6a6b0;
+      --line: #2a2a31;
+      --accent: #d4001a;
+      --accent-2: #900015;
+      --accent-soft: rgba(212, 0, 26, 0.16);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgba(212, 0, 26, 0.13), transparent 22%),
+        linear-gradient(180deg, #101013 0%, var(--bg) 100%);
+      color: var(--ink);
+      font-family: Inter, Segoe UI, Arial, sans-serif;
+    }}
+    a {{ color: inherit; }}
+    .layout {{
+      display: grid;
+      grid-template-columns: 292px minmax(0, 1fr);
+      min-height: 100vh;
+    }}
+    .sidebar {{
+      background: linear-gradient(180deg, #09090b 0%, #111115 100%);
+      border-right: 1px solid var(--line);
+      padding: 22px 18px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+    }}
+    .brand {{
+      border: 1px solid var(--line);
+      background: #09090b;
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 18px;
+    }}
+    .brand .kicker {{
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      font-size: 11px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }}
+    .brand h1 {{
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.08;
+    }}
+    .brand p {{
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }}
+    .menu {{
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+    }}
+    .menu button, .menu a {{
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      text-decoration: none;
+      border-radius: 12px;
+      padding: 12px 12px;
+      text-align: left;
+      cursor: pointer;
+      display: block;
+      font: inherit;
+    }}
+    .menu button:hover, .menu a:hover {{ border-color: var(--accent); }}
+    .menu button.active {{ background: var(--accent); border-color: var(--accent); color: white; }}
+    .menu .meta {{
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.3;
+    }}
+    .sidebar-footer {{
+      margin-top: 18px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }}
+    .content {{
+      padding: 26px 24px 40px;
+      min-width: 0;
+    }}
+    .topbar {{
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: start;
+      margin-bottom: 18px;
+    }}
+    .page-title {{
+      margin: 0;
+      font-size: 32px;
+      line-height: 1.08;
+      letter-spacing: -0.02em;
+    }}
+    .sub {{
+      margin-top: 8px;
+      color: var(--muted);
+      line-height: 1.5;
+      max-width: 980px;
+    }}
+    .actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: flex-end;
+    }}
+    .btn {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      padding: 10px 14px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 700;
+      min-height: 42px;
+    }}
+    .btn.primary {{ background: var(--accent); border-color: var(--accent); color: white; }}
+    .hero {{
+      background: linear-gradient(180deg, rgba(212,0,26,0.13), rgba(0,0,0,0.06));
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      border-radius: 14px;
+      padding: 16px 18px;
+      margin-bottom: 18px;
+    }}
+    .hero small {{
+      display: block;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 800;
+      letter-spacing: .09em;
+      margin-bottom: 4px;
+    }}
+    .hero strong {{ font-size: 18px; }}
+    .metrics {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }}
+    .metric-card, .panel, .chart-card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+    }}
+    .metric-card {{
+      padding: 16px;
+      min-height: 128px;
+      border-top: 4px solid var(--accent);
+    }}
+    .metric-label {{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }}
+    .metric-value {{
+      font-size: 30px;
+      font-weight: 900;
+      margin-top: 12px;
+    }}
+    .metric-note {{
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 8px;
+      line-height: 1.35;
+    }}
+    .panels {{
+      display: grid;
+      grid-template-columns: 1.35fr 1fr;
+      gap: 14px;
+      margin-bottom: 14px;
+    }}
+    .panel {{
+      padding: 18px;
+    }}
+    .panel h2 {{
+      margin: 0 0 8px;
+      font-size: 18px;
+    }}
+    .panel p {{
+      margin: 0 0 14px;
+      color: var(--muted);
+      line-height: 1.45;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+    }}
+    th, td {{
+      text-align: left;
+      padding: 11px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      font-size: 14px;
+    }}
+    th {{
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      border: 1px solid transparent;
+    }}
+    .ok {{ background: rgba(212,0,26,.16); color: #ff93a1; border-color: rgba(212,0,26,.35); }}
+    .warn {{ background: rgba(255,255,255,.05); color: #f2f2f2; border-color: var(--line); }}
+    .muted {{ background: rgba(255,255,255,.03); color: var(--muted); border-color: var(--line); }}
+    .section {{
+      display: none;
+      margin-top: 6px;
+    }}
+    .section.active {{ display: block; }}
+    .section-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }}
+    .chart-card {{
+      padding: 14px;
+    }}
+    .chart-card h3 {{
+      margin: 0 0 10px;
+      font-size: 15px;
+    }}
+    .chart-card canvas {{
+      width: 100%;
+      height: 240px;
+      display: block;
+    }}
+    .foot {{
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }}
+    .connector-form {{
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: var(--panel-2);
+    }}
+    .connector-form h3 {{
+      margin: 0 0 4px;
+      font-size: 16px;
+    }}
+    .connector-form small {{
+      color: var(--muted);
+      display: block;
+      margin-bottom: 12px;
+    }}
+    label {{
+      display: block;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }}
+    input[type="text"], input[type="password"] {{
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #0f0f12;
+      color: var(--ink);
+      padding: 10px 12px;
+      font: inherit;
+    }}
+    .field {{ margin-bottom: 12px; }}
+    .check {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      font-size: 14px;
+    }}
+    .form-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }}
+    @media (max-width: 1120px) {{
+      .layout {{ grid-template-columns: 1fr; }}
+      .sidebar {{ position: static; height: auto; }}
+      .metrics, .panels, .section-grid, .form-grid {{ grid-template-columns: 1fr 1fr; }}
+    }}
+    @media (max-width: 760px) {{
+      .metrics, .panels, .section-grid, .form-grid {{ grid-template-columns: 1fr; }}
+      .topbar {{ display: grid; grid-template-columns: 1fr; }}
+      .actions {{ justify-content: flex-start; }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="layout">
+    {body}
+  </main>
+  <script>{extra_script}</script>
+</body>
+</html>"""
+
+
+def _render_dashboard(snapshot: dict[str, Any]) -> str:
+    cards_markup = "".join(
+        f"""
+        <article class="metric-card">
+          <div class="metric-label">{escape(card["label"])}</div>
+          <div class="metric-value">{escape(str(card["value"]))}</div>
+          <div class="metric-note">{escape(card["note"])}</div>
+        </article>
+        """
+        for card in snapshot["cards"]
+    )
+    connector_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{escape(connector["name"])}</strong><br><span style="color:var(--muted); font-size:12px">{escape(connector["note"])}</span></td>
+          <td><span class="pill {escape(connector["status_style"])}">{escape(connector["status"])}</span></td>
+          <td>{escape(connector["url"])}</td>
+          <td>{escape(connector["token"])}</td>
+        </tr>
+        """
+        for connector in snapshot["connectors"]
+    )
+    summary_buttons = "".join(
+        f'<button class="menu-btn {"active" if item["id"] == "overview" else ""}" data-target="{escape(item["id"])}">{escape(item["label"])}<span class="meta">{escape(item["description"])}</span></button>'
+        for item in snapshot["summary"]
+    )
+    menu_items = "".join(
+        f'<button class="menu-btn {"active" if item["id"] == "overview" else ""}" data-target="{escape(item["id"])}">{escape(item["label"])}<span class="meta">{escape(item["description"])}</span></button>'
+        for item in snapshot["summary"]
+    )
+    snapshot_json = json.dumps(snapshot, ensure_ascii=False).replace("</", "<\\/")
+    extra_script = f"""
+const snapshot = {snapshot_json};
+const menuButtons = document.querySelectorAll('[data-target]');
+const sections = document.querySelectorAll('.section');
+function showSection(id) {{
+  sections.forEach((section) => section.classList.toggle('active', section.dataset.section === id));
+  menuButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.target === id));
+}}
+menuButtons.forEach((btn) => btn.addEventListener('click', () => showSection(btn.dataset.target)));
+showSection('overview');
+
+function getCtx(id) {{
+  const canvas = document.getElementById(id);
+  return canvas ? canvas.getContext('2d') : null;
+}}
+function resizeCanvas(ctx) {{
+  const dpr = window.devicePixelRatio || 1;
+  const w = ctx.canvas.clientWidth;
+  const h = ctx.canvas.clientHeight;
+  ctx.canvas.width = w * dpr;
+  ctx.canvas.height = h * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return {{ w, h }};
+}}
+function panelBase(ctx, title) {{
+  const {{ w, h }} = resizeCanvas(ctx);
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#18181d';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#a6a6b0';
+  ctx.font = '12px Segoe UI, Arial';
+  ctx.fillText(title, 16, 22);
+  return {{ w, h }};
+}}
+function drawDonutChart(id, segments, title) {{
+  const ctx = getCtx(id);
+  if (!ctx) return;
+  const {{ w, h }} = panelBase(ctx, title);
+  const total = segments.reduce((acc, item) => acc + item.value, 0) || 1;
+  let start = -Math.PI / 2;
+  const cx = w / 2;
+  const cy = h / 2 + 10;
+  const radius = Math.min(w, h) * 0.28;
+  segments.forEach((segment) => {{
+    const angle = (Math.PI * 2) * (segment.value / total);
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, start, start + angle);
+    ctx.strokeStyle = segment.color;
+    ctx.lineWidth = 28;
+    ctx.stroke();
+    start += angle;
+  }});
+  ctx.fillStyle = '#f6f6f8';
+  ctx.font = '700 22px Segoe UI, Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(String(total), cx, cy + 8);
+  ctx.font = '12px Segoe UI, Arial';
+  ctx.fillStyle = '#a6a6b0';
+  ctx.fillText('Total', cx, cy + 28);
+  ctx.textAlign = 'left';
+}}
+function drawBarChart(id, bars, title) {{
+  const ctx = getCtx(id);
+  if (!ctx) return;
+  const {{ w, h }} = panelBase(ctx, title);
+  const maxValue = Math.max(...bars.map((b) => b.value), 1);
+  const baseY = h - 28;
+  const leftPad = 20;
+  const barWidth = Math.max(18, (w - 40) / bars.length - 10);
+  bars.forEach((bar, index) => {{
+    const x = leftPad + index * (barWidth + 10);
+    const height = Math.max(8, ((h - 80) * bar.value) / maxValue);
+    ctx.fillStyle = '#d4001a';
+    ctx.fillRect(x, baseY - height, barWidth, height);
+    ctx.fillStyle = '#f6f6f8';
+    ctx.font = '700 12px Segoe UI, Arial';
+    ctx.fillText(String(bar.value), x, baseY - height - 8);
+    ctx.save();
+    ctx.translate(x, baseY + 4);
+    ctx.rotate(-Math.PI / 4);
+    ctx.fillStyle = '#a6a6b0';
+    ctx.fillText(bar.label, 0, 0);
+    ctx.restore();
+  }});
+}}
+function drawLineChart(id, points, title) {{
+  const ctx = getCtx(id);
+  if (!ctx) return;
+  const {{ w, h }} = panelBase(ctx, title);
+  const maxValue = Math.max(...points.map((p) => p.value), 1);
+  const pad = 24;
+  const plotW = w - (pad * 2);
+  const plotH = h - 64;
+  ctx.strokeStyle = '#2a2a31';
+  ctx.strokeRect(pad, 34, plotW, plotH);
+  ctx.beginPath();
+  points.forEach((point, index) => {{
+    const x = pad + (plotW * index) / Math.max(points.length - 1, 1);
+    const y = 34 + plotH - ((plotH - 12) * point.value) / maxValue;
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }});
+  ctx.strokeStyle = '#d4001a';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  points.forEach((point, index) => {{
+    const x = pad + (plotW * index) / Math.max(points.length - 1, 1);
+    const y = 34 + plotH - ((plotH - 12) * point.value) / maxValue;
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = '#f6f6f8';
+    ctx.fill();
+    ctx.strokeStyle = '#d4001a';
+    ctx.stroke();
+  }});
+}}
+
+drawDonutChart('overview-donut', [
+  {{ label: 'NetBox', value: snapshot.connectors[0].status === 'ONLINE' ? 1 : 0, color: '#d4001a' }},
+  {{ label: 'Zabbix', value: snapshot.connectors[1].status === 'ONLINE' ? 1 : 0, color: '#b10016' }},
+  {{ label: 'GLPI', value: snapshot.connectors[2].status === 'CONFIGURADO' ? 1 : 0, color: '#8d0011' }},
+  {{ label: 'n8n', value: snapshot.connectors[3].status === 'CONFIGURADO' ? 1 : 0, color: '#5d000b' }},
+], 'Status operacional');
+drawBarChart('inventory-bars', snapshot.metric_bars, 'Volume por categoria');
+drawDonutChart('ipam-donut', [
+  {{ label: 'IPs', value: snapshot.cards[1].value, color: '#d4001a' }},
+  {{ label: 'Prefixes', value: snapshot.cards[4].value, color: '#b10016' }},
+  {{ label: 'VLANs', value: snapshot.cards[2].value, color: '#8d0011' }},
+  {{ label: 'Sites', value: snapshot.cards[5].value, color: '#5d000b' }},
+], 'Consumo agregado');
+drawLineChart('telemetry-line', [
+  {{ label: 'Mon', value: 18 }},
+  {{ label: 'Tue', value: 34 }},
+  {{ label: 'Wed', value: 46 }},
+  {{ label: 'Thu', value: 51 }},
+  {{ label: 'Fri', value: 61 }},
+  {{ label: 'Sat', value: 48 }},
+  {{ label: 'Sun', value: snapshot.telemetry_score }},
+], 'Tendencia semanal');
+window.addEventListener('resize', () => {{
+  drawDonutChart('overview-donut', [
+    {{ label: 'NetBox', value: snapshot.connectors[0].status === 'ONLINE' ? 1 : 0, color: '#d4001a' }},
+    {{ label: 'Zabbix', value: snapshot.connectors[1].status === 'ONLINE' ? 1 : 0, color: '#b10016' }},
+    {{ label: 'GLPI', value: snapshot.connectors[2].status === 'CONFIGURADO' ? 1 : 0, color: '#8d0011' }},
+    {{ label: 'n8n', value: snapshot.connectors[3].status === 'CONFIGURADO' ? 1 : 0, color: '#5d000b' }},
+  ], 'Status operacional');
+  drawBarChart('inventory-bars', snapshot.metric_bars, 'Volume por categoria');
+  drawDonutChart('ipam-donut', [
+    {{ label: 'IPs', value: snapshot.cards[1].value, color: '#d4001a' }},
+    {{ label: 'Prefixes', value: snapshot.cards[4].value, color: '#b10016' }},
+    {{ label: 'VLANs', value: snapshot.cards[2].value, color: '#8d0011' }},
+    {{ label: 'Sites', value: snapshot.cards[5].value, color: '#5d000b' }},
+  ], 'Consumo agregado');
+  drawLineChart('telemetry-line', [
+    {{ label: 'Mon', value: 18 }},
+    {{ label: 'Tue', value: 34 }},
+    {{ label: 'Wed', value: 46 }},
+    {{ label: 'Thu', value: 51 }},
+    {{ label: 'Fri', value: 61 }},
+    {{ label: 'Sat', value: 48 }},
+    {{ label: 'Sun', value: snapshot.telemetry_score }},
+  ], 'Tendencia semanal');
+  drawDonutChart('automation-donut', [
+    {{ label: 'NetBox', value: snapshot.connectors[0].status === 'ONLINE' ? 1 : 0, color: '#d4001a' }},
+    {{ label: 'Zabbix', value: snapshot.connectors[1].status === 'ONLINE' ? 1 : 0, color: '#b10016' }},
+    {{ label: 'GLPI', value: snapshot.connectors[2].status === 'CONFIGURADO' ? 1 : 0, color: '#8d0011' }},
+    {{ label: 'n8n', value: snapshot.connectors[3].status === 'CONFIGURADO' ? 1 : 0, color: '#5d000b' }},
+  ], 'Automacao assistida');
+}});
+"""
+    return _render_shell(
+        "Rede | infra-sync-api",
+        f"""
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="kicker">ECV Network Control</div>
+        <h1>Rede</h1>
+        <p>Central de operacao para inventario, telemetria, IPAM, automacao e ajustes controlados.</p>
+      </div>
+      <nav class="menu">
+        {menu_items}
+      </nav>
+      <div class="sidebar-footer">
+        <div>Dashboard v{escape(__version__)}</div>
+        <div>{escape(datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC"))}</div>
+        <div style="margin-top:10px;">Tema vermelho e preto</div>
+      </div>
+    </aside>
+    <section class="content">
+      <section class="topbar">
+        <div>
+          <h2 class="page-title">Central de rede</h2>
+          <div class="sub">Uma visao unica do ambiente, com menus separados para operacao, inventario, IPAM, telemetria, automacao e integracoes.</div>
+        </div>
+        <div class="actions">
+          <a class="btn primary" href="/settings">Configurar integrações</a>
+          <a class="btn" href="/api/overview">Snapshot</a>
+          <a class="btn" href="/health">Saude</a>
+          <a class="btn" href="/docs">API</a>
+        </div>
+      </section>
+
+      <section class="hero">
+        <small>Ultima checagem</small>
+        <strong>{escape(snapshot["headline"])}</strong>
+        <div class="sub" style="margin: 6px 0 0;">{escape(snapshot["detail"])}</div>
+      </section>
+
+      <section id="overview" class="section active" data-section="overview">
+        <div class="metrics">{cards_markup}</div>
+        <div class="panels">
+          <div class="panel">
+            <h2>Status resumido</h2>
+            <p>Indicadores principais do ambiente e disponibilidade dos conectores centrais.</p>
+            <table>
+              <thead><tr><th>Sistema</th><th>Status</th><th>URL</th></tr></thead>
+              <tbody>
+                {''.join(
+                    f'<tr><td><strong>{escape(connector["name"])}</strong></td><td><span class="pill {escape(connector["status_style"])}">{escape(connector["status"])}</span></td><td>{escape(connector["url"])}</td></tr>'
+                    for connector in snapshot["connectors"]
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div class="chart-card">
+            <h3>Operacional</h3>
+            <canvas id="overview-donut"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="inventory" class="section" data-section="inventory">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>Inventario consolidado</h2>
+            <p>Devices, racks e interfaces vistos pelo NetBox.</p>
+            <table>
+              <thead><tr><th>Categoria</th><th>Quantidade</th></tr></thead>
+              <tbody>
+                {''.join(f'<tr><td>{escape(card["label"])}</td><td>{escape(str(card["value"]))}</td></tr>' for card in snapshot["cards"][:7])}
+              </tbody>
+            </table>
+          </div>
+          <div class="chart-card">
+            <h3>Volume por categoria</h3>
+            <canvas id="inventory-bars"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="ipam" class="section" data-section="ipam">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>IPAM e segmentacao</h2>
+            <p>Visao para consumo de IP, prefixes e VLANs.</p>
+            <table>
+              <thead><tr><th>Indicador</th><th>Valor</th></tr></thead>
+              <tbody>
+                <tr><td>IPs</td><td>{escape(str(snapshot["cards"][1]["value"]))}</td></tr>
+                <tr><td>Prefixes</td><td>{escape(str(snapshot["cards"][4]["value"]))}</td></tr>
+                <tr><td>VLANs</td><td>{escape(str(snapshot["cards"][2]["value"]))}</td></tr>
+                <tr><td>Sites</td><td>{escape(str(snapshot["cards"][5]["value"]))}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="chart-card">
+            <h3>Consumo agregado</h3>
+            <canvas id="ipam-donut"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="telemetry" class="section" data-section="telemetry">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>Telemetria e eventos</h2>
+            <p>Zabbix concentrado para status, SNMP e uso ao longo do tempo.</p>
+            <table>
+              <thead><tr><th>Fonte</th><th>Estado</th></tr></thead>
+              <tbody>
+                <tr><td>Zabbix</td><td><span class="pill {escape(snapshot["connectors"][1]["status_style"])}">{escape(snapshot["connectors"][1]["status"])}</span></td></tr>
+                <tr><td>Score operacional</td><td>{escape(str(snapshot["telemetry_score"]))}/100</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="chart-card">
+            <h3>Tendencia semanal</h3>
+            <canvas id="telemetry-line"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="automation" class="section" data-section="automation">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>Atalhos operacionais</h2>
+            <p>n8n para ajustes pequenos, correcoes e replicacao assistida.</p>
+            <table>
+              <thead><tr><th>Acao</th><th>Destino</th></tr></thead>
+              <tbody>
+                <tr><td>Editar tokens</td><td><a href="/settings">/settings</a></td></tr>
+                <tr><td>Sincronizar device</td><td><a href="/docs#/default/sync_device_endpoint_sync_device_post">POST /sync/device</a></td></tr>
+                <tr><td>Sincronizar Zabbix</td><td><a href="/docs#/default/sync_zabbix_device_endpoint_sync_zabbix_device_post">POST /sync/zabbix/device</a></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="chart-card">
+            <h3>Automacao assistida</h3>
+            <canvas id="automation-donut"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="integrations" class="section" data-section="integrations">
+        <div class="panel">
+          <h2>Conectores centrais</h2>
+          <p>URLs e tokens hoje configurados no sistema. Eles podem ser trocados sem parar a aplicacao.</p>
+          <table>
+            <thead>
+              <tr><th>Sistema</th><th>Status</th><th>URL</th><th>Token</th></tr>
+            </thead>
+            <tbody>{connector_rows}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="settings" class="section" data-section="settings">
+        <div class="panel">
+          <h2>Configuracao</h2>
+          <p>Os tokens sao editados em <a href="/settings">/settings</a>. A pagina abre em uma interface dedicada.</p>
+          <a class="btn primary" href="/settings">Abrir configuracao</a>
+        </div>
+      </section>
+
+      <div class="foot">
+        <div>infra-sync-api v{escape(__version__)}</div>
+        <div>Atualizado em {escape(datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC"))}</div>
+      </div>
+    </section>
+        """,
+        extra_script=extra_script,
+    )
+
+
+def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
+    def connector_block(key: str, title: str, description: str, hint: str) -> str:
+        connector = runtime[key]
+        checked = "checked" if connector.get("enabled") else ""
+        url = escape(_normalize_text(connector.get("url")))
+        status_label, status_style = _connector_status(connector)
+        return f"""
+        <section class="connector-form">
+          <h3>{escape(title)}</h3>
+          <small>{escape(description)}</small>
+          <div class="check">
+            <input type="checkbox" name="{key}_enabled" {checked} />
+            <span>Conector ativo</span>
+            <span class="pill {status_style}" style="margin-left:auto">{status_label}</span>
+          </div>
+          <div class="field">
+            <label for="{key}_url">URL</label>
+            <input id="{key}_url" name="{key}_url" type="text" value="{url}" placeholder="{escape(hint)}" />
+          </div>
+          <div class="field">
+            <label for="{key}_token">Token</label>
+            <input id="{key}_token" name="{key}_token" type="password" value="" placeholder="Deixe em branco para manter o atual" />
+            <div class="sub" style="margin:6px 0 0;">Atual: {escape(_mask_secret(_normalize_text(connector.get("token"))))}</div>
+          </div>
+        </section>
+        """
+
+    body = f"""
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="kicker">ECV Network Control</div>
+        <h1>Configuracao</h1>
+        <p>Painel para manter tokens, URLs e chave de sync sem sair da central.</p>
+      </div>
+      <nav class="menu">
+        <a href="/">Voltar ao dashboard</a>
+        <a href="/api/config">Ver configuracao mascarada</a>
+        <a href="/health">Saude da API</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div>Arquivo local</div>
+        <div>{escape(str(RUNTIME_CONFIG_PATH))}</div>
+      </div>
+    </aside>
+    <section class="content">
+      <section class="topbar">
+        <div>
+          <h2 class="page-title">Configuracoes de integracao</h2>
+          <div class="sub">Aqui voce informa ou troca tokens e URLs para NetBox, Zabbix, GLPI e n8n. As alteracoes passam a valer no sistema central logo apos salvar.</div>
+        </div>
+        <div class="actions">
+          <a class="btn" href="/">Dashboard</a>
+          <a class="btn" href="/docs">API</a>
+        </div>
+      </section>
+      {"<div class='hero'><small>Salvo</small><strong>Configuracoes atualizadas com sucesso.</strong><div class='sub' style='margin: 6px 0 0;'>Os conectores foram recarregados.</div></div>" if saved else ""}
+      <form method="post" action="/settings">
+        <div class="panel" style="margin-bottom:14px;">
+          <h2>Chave de sincronizacao</h2>
+          <p>Essa chave protege os endpoints de sync. Se voce trocar aqui, os automations e integrações que usam API key precisam receber o novo valor.</p>
+          <div class="form-grid">
+            <div class="field">
+              <label for="sync_api_key">SYNC API key</label>
+              <input id="sync_api_key" name="sync_api_key" type="password" value="" placeholder="Deixe em branco para manter a atual" />
+              <div class="sub" style="margin:6px 0 0;">Atual: {escape(_mask_secret(_normalize_text(runtime["sync_api_key"])))}</div>
+            </div>
+          </div>
+        </div>
+        <div class="form-grid">
+          {connector_block("netbox", "NetBox", "Inventario, IPAM, VLANs, racks e dispositivos.", "https://netbox.example.local")}
+          {connector_block("zabbix", "Zabbix", "Telemetria, eventos e SNMP.", "https://zabbix.example.local/zabbix/api_jsonrpc.php")}
+          {connector_block("glpi", "GLPI", "Chamados e historico de atendimento.", "https://glpi.example.local/apirest.php")}
+          {connector_block("n8n", "n8n", "Automacao e pequenas correcoes controladas.", "https://n8n.example.local")}
+        </div>
+        <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
+          <button class="btn primary" type="submit">Salvar configuracoes</button>
+          <a class="btn" href="/">Voltar ao dashboard</a>
+        </div>
+      </form>
+      <div class="foot">
+        <div>Os valores vazios mantem o que ja esta salvo.</div>
+        <div>Arquivo local: {escape(str(RUNTIME_CONFIG_PATH))}</div>
+      </div>
+    </section>
+    """
+    return _render_shell("Configuracao | infra-sync-api", body)
