@@ -167,7 +167,7 @@ O `compose.yaml` usa:
 
 - `container_name: infra-sync-api`
 - `restart: unless-stopped`
-- porta `8088:8088`
+- `network_mode: host` para preservar o IP real do cliente
 - `env_file: .env`
 - healthcheck local
 - logging `json-file` com limite de tamanho
