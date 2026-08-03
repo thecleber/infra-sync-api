@@ -1,10 +1,20 @@
 import pytest
 from pydantic import ValidationError
 from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock
 
 from app.config import Settings, get_settings
 from app.main import app
 from app.models import SyncDeviceRequest
+from app.netbox_client import NetBoxClient
+from app.zabbix_client import ZabbixClient
+
+
+def _mock_dashboard_clients(monkeypatch):
+    monkeypatch.setattr(NetBoxClient, "health_status", AsyncMock(return_value=True))
+    monkeypatch.setattr(NetBoxClient, "count", AsyncMock(side_effect=[7, 19, 23, 11, 5, 2, 4]))
+    monkeypatch.setattr(ZabbixClient, "healthcheck", AsyncMock(return_value=True))
+    monkeypatch.setattr(ZabbixClient, "count_hosts", AsyncMock(return_value=14))
 
 
 def test_request_validation_and_blocklist():
@@ -54,30 +64,61 @@ def test_missing_required_role_id():
         )
 
 
-def test_root_redirects_to_docs(monkeypatch):
+def test_root_renders_dashboard(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
     monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
     get_settings.cache_clear()
+    _mock_dashboard_clients(monkeypatch)
 
     with TestClient(app) as client:
         response = client.get("/", follow_redirects=False)
 
-    assert response.status_code == 307
-    assert response.headers["location"] == "/docs"
+    assert response.status_code == 200
+    assert "Rede" in response.text
+    assert "Configurar integrações" in response.text
+    assert "Conectores centrais" in response.text
 
 
-def test_root_head_redirects_to_docs(monkeypatch):
+def test_dashboard_route_renders_dashboard(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_dashboard_clients(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/dashboard", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "Atalhos operacionais" in response.text
+
+
+def test_root_head_returns_ok(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_dashboard_clients(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.head("/", follow_redirects=False)
+
+    assert response.status_code == 200
+
+
+def test_settings_page_renders(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
     monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
     get_settings.cache_clear()
 
     with TestClient(app) as client:
-        response = client.head("/", follow_redirects=False)
+        response = client.get("/settings", follow_redirects=False)
 
-    assert response.status_code == 307
-    assert response.headers["location"] == "/docs"
+    assert response.status_code == 200
+    assert "Configurações" in response.text
+    assert "NetBox" in response.text
 
 
 def test_allowed_client_cidrs_normalize():

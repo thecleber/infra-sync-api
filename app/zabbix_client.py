@@ -224,6 +224,26 @@ class ZabbixClient:
         except ZabbixClientError:
             return False
 
+    async def count_hosts(self) -> int:
+        result = await self._rpc(
+            "host.get",
+            {
+                "output": ["hostid"],
+                "countOutput": True,
+                "monitored_hosts": True,
+            },
+        )
+        if isinstance(result, int):
+            return result
+        if isinstance(result, str):
+            try:
+                return int(result)
+            except ValueError:
+                return 0
+        if isinstance(result, list):
+            return len(result)
+        return 0
+
     async def get_host_snapshot(self, hostid: str) -> ZabbixHostSnapshot:
         result = await self._rpc(
             "host.get",

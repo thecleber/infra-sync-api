@@ -60,6 +60,23 @@ class NetBoxClient:
             return payload
         return []
 
+    async def count(self, path: str, params: dict[str, Any] | None = None) -> int:
+        query = dict(params or {})
+        query["limit"] = 1
+        response = await self._client.get(path, params=query)
+        self._raise_for_response(response)
+        payload = response.json()
+        if isinstance(payload, dict):
+            count = payload.get("count")
+            if isinstance(count, int):
+                return count
+            results = payload.get("results")
+            if isinstance(results, list):
+                return len(results)
+        if isinstance(payload, list):
+            return len(payload)
+        return 0
+
     async def get(self, path: str) -> dict[str, Any]:
         response = await self._client.get(path)
         self._raise_for_response(response)

@@ -1,17 +1,26 @@
 # infra-sync-api
 
-API intermediaria em FastAPI para sincronizar hosts do Zabbix com o NetBox, com integracao pensada para o n8n.
+Painel central em FastAPI para operacao de rede em uma unica interface, com foco em NetBox, Zabbix, GLPI e n8n.
 
-## Arquitetura
+O projeto entrega:
 
-- `app/main.py`: aplica a API FastAPI, autenticacao por `X-API-Key` e rotas.
-- `app/services.py`: orquestracao da sincronizacao e modo `dry-run`.
-- `app/netbox_client.py`: cliente HTTP assíncrono para o NetBox.
-- `app/models.py`: validacao do payload de entrada.
+- dashboard na raiz;
+- pagina de configuracao para URLs e tokens;
+- snapshot operacional com contadores do inventario;
+- endpoints de sincronizacao para automacao.
+
+## Estrutura
+
+- `app/main.py`: ponto de entrada.
+- `app/new_main.py`: dashboard, configuracao, health e rotas de sync.
+- `app/services.py`: orquestracao da sincronizacao e modo dry-run.
+- `app/netbox_client.py`: cliente assicrono do NetBox.
+- `app/zabbix_client.py`: cliente JSON-RPC do Zabbix.
+- `app/models.py`: validacao dos payloads.
 - `app/utils.py`: slug, IP e merge de `custom_fields`.
-- `tests/`: testes unitarios da logica pura.
+- `tests/`: testes de dashboard e validacao.
 
-## Instalação
+## Instalacao
 
 ```powershell
 python -m venv .venv
@@ -22,34 +31,46 @@ copy .env.example .env
 
 Preencha `NETBOX_TOKEN` e `SYNC_API_KEY` no arquivo `.env`.
 
-Se `NETBOX_TOKEN` estiver vazio, a aplicacao deve ser tratada como incompleta e o container nao deve subir.
+Se `NETBOX_TOKEN` estiver vazio, a aplicacao deve ser tratada como incompleta.
 
-## Variáveis
+O sistema tambem salva configuracoes editaveis em `data/integrations.json`, via pagina `/settings`.
+
+## Variaveis
 
 - `NETBOX_URL`: URL base do NetBox.
 - `NETBOX_TOKEN`: token da API do NetBox.
-- `SYNC_API_KEY`: chave para `X-API-Key`.
+- `SYNC_API_KEY`: chave usada em `X-API-Key`.
 - `ZABBIX_URL`: endpoint JSON-RPC do Zabbix.
-- `ZABBIX_TOKEN`: token bearer do Zabbix API.
-- `DEFAULT_SITE_ID`: site padrao se o payload nao trouxer valor util.
-- `DEFAULT_ROLE_ID`: role padrao para o fluxo Zabbix.
-- `DEFAULT_ACCESS_POINT_ROLE_ID`: role usada quando o Zabbix indicar access point.
+- `ZABBIX_TOKEN`: token bearer do Zabbix.
+- `DEFAULT_SITE_ID`: site padrao.
+- `DEFAULT_ROLE_ID`: role padrao.
+- `DEFAULT_ACCESS_POINT_ROLE_ID`: role para access point.
 - `REQUEST_TIMEOUT`: timeout HTTP em segundos.
-- `ZABBIX_TIMEOUT`: timeout HTTP em segundos para o Zabbix.
+- `ZABBIX_TIMEOUT`: timeout HTTP para o Zabbix.
 - `LOG_LEVEL`: nivel de log.
 - `ALLOWED_CLIENT_CIDRS`: redes autorizadas a chamar a API.
 
-- `NETBOX_TOKEN` pode ser informado cru ou já com prefixo `Bearer ` ou `Token `.
-
 ## Endpoints
 
-- `GET /` -> redireciona para `/docs`
+- `GET /` -> dashboard central.
+- `GET /dashboard` -> mesmo dashboard.
+- `GET /settings` -> pagina de configuracao.
+- `POST /settings` -> salva a configuracao local e recarrega os conectores.
+- `GET /api/config` -> configuracao mascarada.
+- `GET /api/overview` -> snapshot operacional.
 - `GET /health`
 - `GET /version`
 - `POST /sync/device`
 - `POST /sync/device/dry-run`
 - `POST /sync/zabbix/device`
 - `POST /sync/zabbix/device/dry-run`
+
+## O que o sistema mostra
+
+- status do NetBox, Zabbix, GLPI e n8n;
+- contagem de devices, IPs, VLANs, interfaces, prefixes, sites, racks e hosts do Zabbix;
+- painel para editar URLs e tokens sem parar a aplicacao;
+- rotas de sync para alimentar o inventario central.
 
 ## Exemplos
 
@@ -59,35 +80,22 @@ Se `NETBOX_TOKEN` estiver vazio, a aplicacao deve ser tratada como incompleta e 
 curl http://127.0.0.1:8088/health
 ```
 
-### Version
+### Dashboard
 
 ```bash
-curl http://127.0.0.1:8088/version
+curl http://127.0.0.1:8088/
+```
+
+### Configuracao
+
+```bash
+curl http://127.0.0.1:8088/api/config
 ```
 
 ### Sync real
 
 ```bash
 curl -X POST http://127.0.0.1:8088/sync/device \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: <SYNC_API_KEY>" \
-  -d '{
-    "hostid": "10917",
-    "hostname": "SW-CCO-GDS7830",
-    "display_name": "SW-CCO-GDS7830",
-    "ip": "10.0.0.24",
-    "fabricante": "GENERICO",
-    "modelo": "Switch Gerenciavel Generico",
-    "site_id": 1,
-    "role_id": 2,
-    "zabbix_status": "0"
-  }'
-```
-
-### Dry-run
-
-```bash
-curl -X POST http://127.0.0.1:8088/sync/device/dry-run \
   -H "Content-Type: application/json" \
   -H "X-API-Key: <SYNC_API_KEY>" \
   -d '{
@@ -116,19 +124,15 @@ curl -X POST http://127.0.0.1:8088/sync/zabbix/device \
   }'
 ```
 
-Esse fluxo consulta o host no Zabbix, usa o inventario e as interfaces SNMP
-disponiveis e alimenta o NetBox com o que for encontrado.
-
 ## n8n
 
 HTTP Request node:
 
 - Method: `POST`
-- URL: `http://10.254.0.115:8088/sync/device`
+- URL: `http://10.0.0.115:8088/sync/device`
 - Headers:
   - `Content-Type: application/json`
   - `X-API-Key: <SYNC_API_KEY>`
-- Body em Expression:
 
 ```javascript
 ={{
@@ -146,28 +150,7 @@ HTTP Request node:
 }}
 ```
 
-### Zabbix-driven n8n
-
-Quando o passo anterior so precisar informar o `hostid`, use o endpoint novo:
-
-- Method: `POST`
-- URL: `http://10.254.0.115:8088/sync/zabbix/device`
-- Headers:
-  - `Content-Type: application/json`
-  - `X-API-Key: <SYNC_API_KEY>`
-- Body em Expression:
-
-```javascript
-={{
-  {
-    hostid: String($json.hostid),
-    site_id: Number($json.site_id || 1),
-    role_id: Number($json.role_id || 2)
-  }
-}}
-```
-
-## Atualização
+## Atualizacao
 
 ```powershell
 git pull
@@ -182,48 +165,17 @@ docker compose up -d
 docker compose logs -f infra-sync-api
 ```
 
-## Reinício
+## Reinicio
 
 ```bash
 docker compose restart infra-sync-api
 ```
 
-## Backup
+## Observacoes
 
-Antes de sobrescrever a pasta em produção:
-
-```bash
-timestamp=$(date +%Y%m%d-%H%M%S)
-mkdir -p /opt/backups/infra-sync-api/$timestamp
-cp -a /opt/infra-sync-api/. /opt/backups/infra-sync-api/$timestamp/
-```
-
-## Reversão
-
-```bash
-rsync -a /opt/backups/infra-sync-api/<timestamp>/ /opt/infra-sync-api/
-docker compose up -d --build
-```
-
-## Docker Compose
-
-O `compose.yaml` usa:
-
-- `container_name: infra-sync-api`
-- `restart: unless-stopped`
-- `network_mode: host` para preservar o IP real do cliente
-- `env_file: .env`
-- healthcheck local
-- logging `json-file` com limite de tamanho
-
-## Observações
-
-- A API nao expõe `NETBOX_TOKEN` nem `SYNC_API_KEY` em log.
+- A API nao expoe `NETBOX_TOKEN` nem `SYNC_API_KEY` em log.
 - O modo `dry-run` consulta o NetBox, mas nao cria nem atualiza nada.
-- O fluxo real valida `site_id` e `role_id` no NetBox antes de criar qualquer objeto.
-- Cada sync real grava um marcador no campo `description` do Device com hostid, acao e timestamp UTC.
-- Devices existentes em estado `planned` sao promovidos para `active` na sincronizacao, para ficar visivel na listagem do NetBox.
-- O fluxo Zabbix consulta o host, inventario e interfaces SNMP antes de sincronizar o Device.
-- O fluxo Zabbix usa `status=active` quando o host esta habilitado no Zabbix e `planned` quando esta desabilitado.
-- A criacao real do Device deve ser feita somente com autorizacao.
-- Requisicoes fora de `127.0.0.1/32`, `10.254.0.0/24` e `10.0.0.115/32` recebem `403`.
+- O dashboard exibe os conectores e os contadores do ambiente quando eles estao configurados.
+- A pagina `/settings` permite trocar tokens e URLs sem reiniciar o sistema.
+- Requisicoes fora das redes autorizadas recebem `403`.
+
