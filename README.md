@@ -177,6 +177,6 @@ O `compose.yaml` usa:
 - A API nao expõe `NETBOX_TOKEN` nem `SYNC_API_KEY` em log.
 - O modo `dry-run` consulta o NetBox, mas nao cria nem atualiza nada.
 - O fluxo real valida `site_id` e `role_id` no NetBox antes de criar qualquer objeto.
-- Quando o Device nasce pela integracao, ele recebe um comentario explicando que ainda precisa de validacao.
+- Cada sync real grava um marcador no campo `description` do Device com hostid, acao e timestamp UTC.
 - A criacao real do Device deve ser feita somente com autorizacao.
 - Requisicoes fora de `127.0.0.1/32`, `10.254.0.0/24` e `10.0.0.115/32` recebem `403`.

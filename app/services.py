@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -117,6 +118,12 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
         if not dry_run:
             update_payload: dict[str, Any] = {
                 "custom_fields": merged_custom_fields,
+                "description": merge_sync_marker(
+                    device.get("description"),
+                    payload.hostid,
+                    device_name,
+                    "updated",
+                ),
             }
             if payload.site_id:
                 update_payload["site"] = payload.site_id
@@ -151,7 +158,12 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                 "site": payload.site_id or default_site_id,
                 "status": "planned",
                 "custom_fields": merge_custom_fields({}, payload.hostid),
-                "comments": "Criado automaticamente pela integracao Zabbix/n8n e ainda precisa de validacao.",
+                "description": merge_sync_marker(
+                    None,
+                    payload.hostid,
+                    device_name,
+                    "created",
+                ),
             }
             device = await _create_or_refetch(
                 lambda: client.create_device(device_payload),
@@ -304,3 +316,17 @@ async def _validate_site_and_role(client: NetBoxClient, site_id: int, role_id: i
         if exc.status_code == 404:
             raise SyncError(f"Device role {role_id} was not found in NetBox", status_code=404) from exc
         raise
+
+
+def merge_sync_marker(existing_value: Any, hostid: str, device_name: str, action: str) -> str:
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    marker = (
+        f"[infra-sync-api] {action} at {timestamp}; "
+        f"hostid={hostid}; device={device_name}; source=Zabbix/n8n"
+    )
+    existing = str(existing_value).strip() if existing_value else ""
+    if not existing:
+        return marker
+    if marker in existing:
+        return existing
+    return f"{existing} | {marker}"
