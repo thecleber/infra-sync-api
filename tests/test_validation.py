@@ -183,6 +183,7 @@ def test_settings_page_renders(monkeypatch):
     assert response.status_code == 200
     assert "Configuracoes" in response.text
     assert "NetBox" in response.text
+    assert "Atualização automática" in response.text
 
 
 def test_discovery_classifier_switch():

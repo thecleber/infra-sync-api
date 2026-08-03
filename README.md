@@ -6,6 +6,7 @@ O projeto entrega:
 
 - dashboard na raiz;
 - pagina de configuracao para URLs e tokens;
+- configuracao de atualizacao automatica com intervalo em segundos, minutos, horas ou dias;
 - snapshot operacional com contadores do inventario;
 - endpoints de sincronizacao para automacao.
 - paginas para devices, VLANs, redes, alertas e relatórios;
@@ -82,6 +83,7 @@ O sistema tambem salva configuracoes editaveis em `data/integrations.json`, via 
 - status do NetBox, Zabbix, GLPI e n8n;
 - contagem de devices, IPs, VLANs, interfaces, prefixes, sites, racks e hosts do Zabbix;
 - painel para editar URLs e tokens sem parar a aplicacao;
+- painel para ajustar a frequencia de atualizacao dos dados exibidos;
 - cadastro e edição manual de devices, VLANs e redes dentro da própria interface;
 - painel de alertas do Zabbix com atualização periódica;
 - relatório imprimível com os principais indicadores;

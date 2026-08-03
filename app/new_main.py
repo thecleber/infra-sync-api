@@ -37,6 +37,11 @@ def configure_logging(level: str) -> None:
 def default_runtime(settings: Settings) -> dict[str, Any]:
     return {
         "sync_api_key": settings.sync_api_key,
+        "refresh": {
+            "enabled": True,
+            "value": 30,
+            "unit": "seconds",
+        },
         "netbox": {
             "enabled": bool(settings.netbox_url and settings.netbox_token),
             "url": settings.netbox_url,
@@ -71,6 +76,41 @@ def _normalize_url(value: str) -> str:
     return cleaned
 
 
+def _default_refresh_config() -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "value": 30,
+        "unit": "seconds",
+    }
+
+
+def _normalize_refresh_config(raw: Any) -> dict[str, Any]:
+    config = _default_refresh_config()
+    if not isinstance(raw, dict):
+        return config
+
+    config["enabled"] = bool(raw.get("enabled", config["enabled"]))
+    unit = _normalize_text(raw.get("unit", config["unit"])).lower()
+    if unit not in {"seconds", "minutes", "hours", "days"}:
+        unit = config["unit"]
+    config["unit"] = unit
+
+    value = raw.get("value", config["value"])
+    try:
+        normalized_value = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        normalized_value = config["value"]
+    config["value"] = max(1, normalized_value)
+    return config
+
+
+def _refresh_interval_seconds(runtime: dict[str, Any]) -> int:
+    refresh = runtime.get("refresh") if isinstance(runtime, dict) else None
+    config = _normalize_refresh_config(refresh)
+    multiplier = {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86400}[config["unit"]]
+    return config["value"] * multiplier
+
+
 def _load_runtime_payload(settings: Settings) -> dict[str, Any]:
     payload = default_runtime(settings)
     if not RUNTIME_CONFIG_PATH.exists():
@@ -81,11 +121,14 @@ def _load_runtime_payload(settings: Settings) -> dict[str, Any]:
         return payload
     if not isinstance(stored, dict):
         return payload
-    for key in ("sync_api_key", "netbox", "zabbix", "glpi", "n8n"):
+    for key in ("sync_api_key", "refresh", "netbox", "zabbix", "glpi", "n8n"):
         if key not in stored:
             continue
         if key == "sync_api_key" and isinstance(stored[key], str):
             payload[key] = _normalize_text(stored[key])
+            continue
+        if key == "refresh":
+            payload[key] = _normalize_refresh_config(stored[key])
             continue
         if isinstance(stored[key], dict):
             payload[key].update({
@@ -348,6 +391,8 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         "runtime": runtime,
         "summary": section_summary,
         "telemetry_score": telemetry_score,
+        "refresh_enabled": bool(runtime.get("refresh", {}).get("enabled", True)),
+        "refresh_interval_seconds": _refresh_interval_seconds(runtime),
         "metric_bars": [
             {"label": "Devices", "value": counts["devices"]},
             {"label": "IPs", "value": counts["ips"]},
@@ -441,7 +486,7 @@ def _render_shell(title: str, body: str) -> str:
     .connector-form h3 {{ margin: 0 0 4px; font-size: 16px; }}
     .connector-form small {{ color: var(--muted); display: block; margin-bottom: 12px; }}
     label {{ display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; }}
-    input[type="text"], input[type="password"] {{
+    input[type="text"], input[type="password"], select {{
       width: 100%; border: 1px solid var(--line); border-radius: 8px; background: white;
       padding: 10px 12px; font: inherit;
     }}
@@ -550,6 +595,8 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
 
 
 def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
+    refresh = _normalize_refresh_config(runtime.get("refresh"))
+
     def connector_block(key: str, title: str, description: str, hint: str) -> str:
         connector = runtime[key]
         checked = "checked" if connector.get("enabled") else ""
@@ -675,6 +722,15 @@ async def save_settings(request: Request):
     sync_api_key = _form_value(form, "sync_api_key")
     if sync_api_key:
         runtime["sync_api_key"] = sync_api_key
+
+    refresh_enabled = _form_bool(form, "refresh_enabled")
+    refresh_value = _form_value(form, "refresh_value")
+    refresh_unit = _form_value(form, "refresh_unit", "seconds").lower()
+    runtime["refresh"] = _normalize_refresh_config({
+        "enabled": refresh_enabled,
+        "value": refresh_value or runtime.get("refresh", {}).get("value", 30),
+        "unit": refresh_unit,
+    })
 
     updates = {
         "netbox": (_form_bool(form, "netbox_enabled"), _form_value(form, "netbox_url"), _form_value(form, "netbox_token")),
@@ -1338,12 +1394,16 @@ window.addEventListener('resize', () => {{
     {{ label: 'Sat', value: 48 }},
     {{ label: 'Sun', value: snapshot.telemetry_score }},
   ], 'Tendencia semanal');
-  drawDonutChart('automation-donut', [
-    {{ label: 'NetBox', value: snapshot.connectors[0].status === 'ONLINE' ? 1 : 0, color: '#d4001a' }},
-    {{ label: 'Zabbix', value: snapshot.connectors[1].status === 'ONLINE' ? 1 : 0, color: '#b10016' }},
-    {{ label: 'GLPI', value: snapshot.connectors[2].status === 'CONFIGURADO' ? 1 : 0, color: '#8d0011' }},
-    {{ label: 'n8n', value: snapshot.connectors[3].status === 'CONFIGURADO' ? 1 : 0, color: '#5d000b' }},
-  ], 'Automacao assistida');
+drawDonutChart('automation-donut', [
+  {{ label: 'NetBox', value: snapshot.connectors[0].status === 'ONLINE' ? 1 : 0, color: '#d4001a' }},
+  {{ label: 'Zabbix', value: snapshot.connectors[1].status === 'ONLINE' ? 1 : 0, color: '#b10016' }},
+  {{ label: 'GLPI', value: snapshot.connectors[2].status === 'CONFIGURADO' ? 1 : 0, color: '#8d0011' }},
+  {{ label: 'n8n', value: snapshot.connectors[3].status === 'CONFIGURADO' ? 1 : 0, color: '#5d000b' }},
+], 'Automacao assistida');
+const refreshSeconds = Math.max(5, snapshot.refresh_interval_seconds || 30);
+if (snapshot.refresh_enabled) {{
+  window.setInterval(() => window.location.reload(), refreshSeconds * 1000);
+}}
 }});
 """
     return _render_shell(
@@ -1673,6 +1733,8 @@ window.addEventListener('resize', () => {{
 
 
 def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
+    refresh = _normalize_refresh_config(runtime.get("refresh"))
+
     def connector_block(key: str, title: str, description: str, hint: str) -> str:
         connector = runtime[key]
         checked = "checked" if connector.get("enabled") else ""
@@ -1737,6 +1799,33 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
               <label for="sync_api_key">SYNC API key</label>
               <input id="sync_api_key" name="sync_api_key" type="password" value="" placeholder="Deixe em branco para manter a atual" />
               <div class="sub" style="margin:6px 0 0;">Atual: {escape(_mask_secret(_normalize_text(runtime["sync_api_key"])))}</div>
+            </div>
+          </div>
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
+          <h2>Atualização automática</h2>
+          <p>Escolha de quanto em quanto tempo o painel deve recarregar os dados vindos dos devices e dos conectores integrados.</p>
+          <div class="form-grid">
+            <div class="field">
+              <label for="refresh_enabled">Habilitar atualização automática</label>
+              <input id="refresh_enabled" name="refresh_enabled" type="checkbox" {"checked" if refresh["enabled"] else ""} />
+            </div>
+            <div class="field">
+              <label for="refresh_value">Intervalo</label>
+              <input id="refresh_value" name="refresh_value" type="text" value="{escape(str(refresh["value"]))}" placeholder="30" />
+            </div>
+            <div class="field">
+              <label for="refresh_unit">Unidade</label>
+              <select id="refresh_unit" name="refresh_unit">
+                <option value="seconds" {"selected" if refresh["unit"] == "seconds" else ""}>Segundos</option>
+                <option value="minutes" {"selected" if refresh["unit"] == "minutes" else ""}>Minutos</option>
+                <option value="hours" {"selected" if refresh["unit"] == "hours" else ""}>Horas</option>
+                <option value="days" {"selected" if refresh["unit"] == "days" else ""}>Dias</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Equivalente em segundos</label>
+              <input type="text" value="{escape(str(_refresh_interval_seconds(runtime)))}" readonly />
             </div>
           </div>
         </div>
@@ -2488,7 +2577,8 @@ async def api_alerts(request: Request):
 
 @app.get("/alerts", include_in_schema=False)
 async def alerts_page(request: Request):
-    return HTMLResponse(_render_alerts_page(await api_alerts(request)))
+    refresh_seconds = _refresh_interval_seconds(request.app.state.runtime)
+    return HTMLResponse(_render_alerts_page(await api_alerts(request), refresh_seconds))
 
 
 @app.get("/reports", include_in_schema=False)
@@ -2497,7 +2587,7 @@ async def reports_page(request: Request):
     return HTMLResponse(_render_reports_page(snapshot))
 
 
-def _render_alerts_page(payload: dict[str, Any]) -> str:
+def _render_alerts_page(payload: dict[str, Any], refresh_seconds: int) -> str:
     alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
     error_message = _normalize_text(payload.get("error"))
     rows = []
@@ -2545,7 +2635,8 @@ def _render_alerts_page(payload: dict[str, Any]) -> str:
           document.getElementById('alerts-body').innerHTML = rows || '<tr><td colspan="4">Nenhum alerta aberto no momento.</td></tr>';
         }} catch (error) {{}}
       }}
-      setInterval(refreshAlerts, 15000);
+      const refreshSeconds = Math.max(5, {int(refresh_seconds)});
+      setInterval(refreshAlerts, refreshSeconds * 1000);
     </script>
     """
     return _render_management_page(
