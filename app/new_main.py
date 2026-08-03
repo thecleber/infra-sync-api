@@ -20,6 +20,7 @@ from .config import Settings, get_settings
 from .discovery import classify_discovered_device, load_last_scan, save_group_selections, scan_network
 from .models import SyncDeviceRequest, ZabbixHostSyncRequest
 from .netbox_client import NetBoxClient, NetBoxClientError
+from .snmp_probe import load_last_probe, probe_device as probe_snmp_device
 from .services import SyncError, sync_device, sync_zabbix_host
 from .zabbix_client import ZabbixClient, ZabbixClientError
 
@@ -1158,7 +1159,7 @@ def _render_shell(title: str, body: str, extra_script: str = "") -> str:
       font-weight: 700;
       margin-bottom: 6px;
     }}
-    input[type="text"], input[type="password"] {{
+    input[type="text"], input[type="password"], textarea, select {{
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -1166,6 +1167,10 @@ def _render_shell(title: str, body: str, extra_script: str = "") -> str:
       color: var(--ink);
       padding: 10px 12px;
       font: inherit;
+    }}
+    textarea {{
+      min-height: 100px;
+      resize: vertical;
     }}
     .field {{ margin-bottom: 12px; }}
     .check {{
@@ -2079,6 +2084,7 @@ def _management_nav(active: str) -> str:
         ("devices", "/devices", "Devices", "Criar e editar equipamentos"),
         ("vlans", "/vlans", "VLANs", "Segmentacao e tags"),
         ("networks", "/networks", "Redes", "Prefixes e blocos IP"),
+        ("snmp", "/snmp", "SNMP", "Portas, CPU e tráfego"),
         ("alerts", "/alerts", "Alertas", "Problemas em tempo real"),
         ("reports", "/reports", "Relatorios", "Impressao e exportacao"),
         ("discovery", "/discovery", "Descoberta", "Varredura SNMP"),
@@ -2120,6 +2126,34 @@ def _related_id(value: Any) -> str:
         text = value.get("id")
         return str(text) if text is not None else ""
     return _normalize_text(value)
+
+
+def _custom_field_pairs(custom_fields: dict[str, Any] | None, limit: int = 6) -> list[tuple[str, str]]:
+    items = []
+    source = custom_fields or {}
+    if isinstance(source, dict):
+        items.extend((str(key), "" if value is None else str(value)) for key, value in source.items() if str(key).strip())
+    while len(items) < limit:
+        items.append(("", ""))
+    return items[:limit]
+
+
+def _parse_custom_fields_form(form: dict[str, str], *, limit: int = 6) -> dict[str, Any]:
+    custom_fields: dict[str, Any] = {}
+    for index in range(1, limit + 1):
+        key = _form_value(form, f"custom_field_key_{index}")
+        value = _form_value(form, f"custom_field_value_{index}")
+        if key:
+            custom_fields[key] = value
+    raw_json = _form_value(form, "custom_fields_json")
+    if raw_json:
+        parsed = json.loads(raw_json)
+        if not isinstance(parsed, dict):
+            raise ValueError("custom_fields_json must be a JSON object")
+        for key, value in parsed.items():
+            if str(key).strip():
+                custom_fields[str(key)] = value
+    return custom_fields
 
 
 def _query_value(request: Request, name: str, default: str = "") -> str:
@@ -2197,6 +2231,16 @@ def _render_table_empty(message: str, colspan: int) -> str:
 def _device_form(device: dict[str, Any] | None = None) -> str:
     device = device or {}
     custom_fields = device.get("custom_fields") if isinstance(device.get("custom_fields"), dict) else {}
+    custom_rows = _custom_field_pairs(custom_fields, limit=6)
+    custom_rows_markup = "".join(
+        f"""
+        <div class="form-grid">
+          <div class="field"><label>Campo {index}</label><input name="custom_field_key_{index}" type="text" value="{escape(key)}" placeholder="access_user" /></div>
+          <div class="field"><label>Valor {index}</label><input name="custom_field_value_{index}" type="text" value="{escape(value)}" placeholder="admin" /></div>
+        </div>
+        """
+        for index, (key, value) in enumerate(custom_rows, start=1)
+    )
     return f"""
     <div class="panel">
       <h2>{'Editar device' if device.get('id') else 'Criar device'}</h2>
@@ -2211,7 +2255,15 @@ def _device_form(device: dict[str, Any] | None = None) -> str:
           <div class="field"><label>Device Type ID</label><input name="device_type_id" type="text" value="{escape(_related_id(device.get('device_type')))}" /></div>
           <div class="field"><label>Primary IP4 ID</label><input name="primary_ip4_id" type="text" value="{escape(_related_id(device.get('primary_ip4')))}" /></div>
           <div class="field"><label>Serial</label><input name="serial" type="text" value="{escape(_normalize_text(device.get('serial')))}" /></div>
-          <div class="field"><label>Custom fields JSON</label><input name="custom_fields_json" type="text" value="{escape(json.dumps(custom_fields, ensure_ascii=False))}" /></div>
+        </div>
+        <div class="field">
+          <label>Custom fields JSON</label>
+          <textarea name="custom_fields_json" placeholder='{{"access_user": "admin", "access_password": "..."}}'>{escape(json.dumps(custom_fields, ensure_ascii=False))}</textarea>
+        </div>
+        <div class="field">
+          <label>Campos personalizados</label>
+          <p>Adicione qualquer informação extra do device. Ex.: acesso L2/L3, usuário, senha de apoio, VLAN de gerência ou observações.</p>
+          {custom_rows_markup}
         </div>
         <div class="field"><label>Comments</label><input name="comments" type="text" value="{escape(_normalize_text(device.get('comments')))}" /></div>
         <div style="display:flex; gap:10px; flex-wrap:wrap;">
@@ -2343,7 +2395,7 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
             active="devices",
             heading="Devices",
             subtitle="Criar, editar e inspecionar equipamentos do inventário.",
-            actions=f'<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatório</a>',
+            actions=f'<a class="btn" href="/">Dashboard</a><a class="btn" href="/snmp">Leitura SNMP</a><a class="btn" href="/reports">Imprimir relatório</a>',
             body=body,
             banner=banner,
         )
@@ -2366,15 +2418,19 @@ async def save_device_page(request: Request):
                 payload[key.replace("_id", "")] = int(value)
             except ValueError as exc:
                 return HTMLResponse(await _render_crud_error(request, "devices", f"{key} precisa ser um inteiro válido"), status_code=status.HTTP_400_BAD_REQUEST)
-    custom_fields_json = _form_value(form, "custom_fields_json")
-    if custom_fields_json:
-        try:
-            custom_fields = json.loads(custom_fields_json)
-            if isinstance(custom_fields, dict):
-                payload["custom_fields"] = custom_fields
-        except json.JSONDecodeError:
-            return HTMLResponse(await _render_crud_error(request, "devices", "custom_fields_json deve ser JSON válido"), status_code=status.HTTP_400_BAD_REQUEST)
+    try:
+        custom_fields = _parse_custom_fields_form(form, limit=6)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return HTMLResponse(await _render_crud_error(request, "devices", str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
     device_id = _form_value(form, "device_id")
+    if custom_fields:
+        existing_device: dict[str, Any] | None = None
+        if device_id:
+            with suppress(Exception):
+                existing_device = await client.get_device(int(device_id))
+        merged_custom_fields = dict(existing_device.get("custom_fields") or {}) if isinstance(existing_device, dict) else {}
+        merged_custom_fields.update(custom_fields)
+        payload["custom_fields"] = merged_custom_fields
     try:
         if device_id:
             await client.update_device(int(device_id), payload)
@@ -2645,6 +2701,109 @@ def _render_alerts_page(payload: dict[str, Any], refresh_seconds: int) -> str:
         heading="Alertas em tempo real",
         subtitle="Problemas e eventos abertos no Zabbix.",
         actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatório</a>',
+        body=body,
+    )
+
+
+@app.get("/snmp", include_in_schema=False)
+async def snmp_page(request: Request, saved: int = 0, error: str | None = None):
+    state = load_last_probe()
+    return HTMLResponse(_render_snmp_page(state, saved=bool(saved), error=error))
+
+
+@app.post("/snmp/probe", include_in_schema=False)
+async def snmp_probe_page(request: Request):
+    form = await _read_form(request)
+    ip = _form_value(form, "ip")
+    community = _form_value(form, "community", "public") or "public"
+    timeout = float(_form_value(form, "timeout", "1.0") or "1.0")
+    retries = int(_form_value(form, "retries", "0") or "0")
+    max_ports = int(_form_value(form, "max_ports", "48") or "48")
+    try:
+        await probe_snmp_device(ip, community, timeout=timeout, retries=retries, max_ports=max_ports)
+        return HTMLResponse(_render_snmp_page(load_last_probe(), saved=True))
+    except Exception as exc:
+        return HTMLResponse(_render_snmp_page(load_last_probe(), error=str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
+
+
+def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | None = None) -> str:
+    last_probe = state.get("last_probe") if isinstance(state.get("last_probe"), dict) else None
+    ports = last_probe.get("ports") if isinstance(last_probe.get("ports"), list) else [] if last_probe else []
+    banner = ""
+    if saved:
+        banner = "<div class='hero'><small>Salvo</small><strong>Leitura SNMP atualizada com sucesso.</strong></div>"
+    if error:
+        banner = f"<div class='hero'><small>Erro</small><strong>{escape(error)}</strong></div>"
+    summary = ""
+    if last_probe:
+        summary = f"""
+        <div class="metrics">
+          <article class="metric-card"><div class="metric-label">SysName</div><div class="metric-value" style="font-size:22px">{escape(_normalize_text(last_probe.get("sys_name")) or '—')}</div><div class="metric-note">{escape(_normalize_text(last_probe.get("sys_descr")) or 'Sem descrição')}</div></article>
+          <article class="metric-card"><div class="metric-label">Interfaces</div><div class="metric-value">{escape(_normalize_text(last_probe.get("if_number")) or '—')}</div><div class="metric-note">Portas/links vistos pelo SNMP.</div></article>
+          <article class="metric-card"><div class="metric-label">Memória</div><div class="metric-value">{escape(_normalize_text(last_probe.get("hr_memory_size")) or '—')}</div><div class="metric-note">Total reportado pelo agente.</div></article>
+          <article class="metric-card"><div class="metric-label">CPU média</div><div class="metric-value">{escape(_normalize_text(last_probe.get("processor_load_average")) or '—')}</div><div class="metric-note">Média dos processadores coletados.</div></article>
+        </div>
+        """
+    rows = []
+    for port in ports:
+        if not isinstance(port, dict):
+            continue
+        rows.append(
+            f"""
+            <tr>
+              <td>{escape(_normalize_text(port.get('index')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('name')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('description')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('alias')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('admin_status')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('oper_status')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('speed_bps')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('in_octets')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('out_octets')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('in_rate_bps')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('out_rate_bps')) or '—')}</td>
+            </tr>
+            """
+        )
+    body = f"""
+    {banner}
+    <div class="panel" style="margin-bottom:14px;">
+      <h2>Consulta SNMP</h2>
+      <p>Informe o IP privado do switch ou servidor e a community para coletar portas, CPU, memória e tráfego.</p>
+      <form method="post" action="/snmp/probe">
+        <div class="form-grid">
+          <div class="field"><label for="ip">IP</label><input id="ip" name="ip" type="text" value="{escape(_normalize_text(last_probe.get('ip')) if last_probe else '')}" placeholder="10.0.0.24" /></div>
+          <div class="field"><label for="community">Community</label><input id="community" name="community" type="password" value="" placeholder="public" /></div>
+          <div class="field"><label for="timeout">Timeout</label><input id="timeout" name="timeout" type="text" value="1.0" /></div>
+          <div class="field"><label for="retries">Retries</label><input id="retries" name="retries" type="text" value="0" /></div>
+          <div class="field"><label for="max_ports">Máximo de portas</label><input id="max_ports" name="max_ports" type="text" value="48" /></div>
+        </div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn primary" type="submit">Consultar SNMP</button>
+          <a class="btn" href="/devices">Voltar aos devices</a>
+        </div>
+      </form>
+    </div>
+    {summary}
+    <div class="panel" style="margin-top:14px;">
+      <h2>Portas</h2>
+      <p>Descrição, alias, status e contadores por interface.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Índice</th><th>Nome</th><th>Descrição</th><th>Alias</th><th>Admin</th><th>Oper</th><th>Speed</th><th>Entrada</th><th>Saída</th><th>Rate In</th><th>Rate Out</th>
+          </tr>
+        </thead>
+        <tbody>{''.join(rows) if rows else _render_table_empty('Nenhuma porta coletada ainda.', 11)}</tbody>
+      </table>
+    </div>
+    """
+    return _render_management_page(
+        title="SNMP | infra-sync-api",
+        active="snmp",
+        heading="SNMP",
+        subtitle="Leitura detalhada de portas, CPU, memória e tráfego por equipamento.",
+        actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/devices">Devices</a>',
         body=body,
     )
 

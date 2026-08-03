@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock
 
 from app.config import Settings, get_settings
+from app import new_main
 from app.main import app
 from app.discovery import classify_discovered_device
 from app.models import SyncDeviceRequest
@@ -181,9 +182,9 @@ def test_settings_page_renders(monkeypatch):
         response = client.get("/settings", follow_redirects=False)
 
     assert response.status_code == 200
-    assert "Configuracoes" in response.text
+    assert "Configuracoes de integracao" in response.text
     assert "NetBox" in response.text
-    assert "Atualização automática" in response.text
+    assert "Salvar configuracoes" in response.text
 
 
 def test_discovery_classifier_switch():
@@ -230,6 +231,8 @@ def test_management_pages_render(monkeypatch):
 
     assert devices.status_code == 200
     assert "Devices cadastrados" in devices.text
+    assert "Leitura SNMP" in devices.text
+    assert "Campos personalizados" in devices.text
     assert vlans.status_code == 200
     assert "VLANs cadastradas" in vlans.text
     assert networks.status_code == 200
@@ -238,6 +241,81 @@ def test_management_pages_render(monkeypatch):
     assert "Alertas ativos" in alerts.text
     assert reports.status_code == 200
     assert "Relatório executivo" in reports.text
+
+
+def test_snmp_page_renders(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        new_main,
+        "load_last_probe",
+        lambda: {
+            "devices": [],
+            "last_probe": {
+                "ip": "10.0.0.24",
+                "sys_name": "SW-ACCESS-LAN",
+                "sys_descr": "Access switch",
+                "if_number": "24",
+                "hr_memory_size": "1024",
+                "processor_load_average": "12.5",
+                "ports": [],
+            },
+        },
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/snmp", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "Consulta SNMP" in response.text
+    assert "Portas" in response.text
+    assert "SW-ACCESS-LAN" in response.text
+
+
+def test_snmp_probe_post_renders_success(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(new_main, "probe_snmp_device", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        new_main,
+        "load_last_probe",
+        lambda: {
+            "devices": [],
+            "last_probe": {
+                "ip": "10.0.0.24",
+                "sys_name": "SW-ACCESS-LAN",
+                "sys_descr": "Access switch",
+                "if_number": "24",
+                "hr_memory_size": "1024",
+                "processor_load_average": "12.5",
+                "ports": [],
+            },
+        },
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/snmp/probe",
+            data={
+                "ip": "10.0.0.24",
+                "community": "public",
+                "timeout": "1.0",
+                "retries": "0",
+                "max_ports": "24",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200
+    assert "Leitura SNMP atualizada com sucesso" in response.text
 
 
 def test_api_alerts_returns_json(monkeypatch):
