@@ -187,6 +187,8 @@ def test_settings_page_renders(monkeypatch):
     assert "Salvar configuracoes" in response.text
     assert "E-mail de alertas" in response.text
     assert "Servidor SMTP" in response.text
+    assert "Alerta sonoro" in response.text
+    assert "sound_min_severity" in response.text
 
 
 def test_discovery_classifier_switch():
@@ -245,6 +247,8 @@ def test_management_pages_render(monkeypatch):
     assert alerts.status_code == 200
     assert "Alertas ativos" in alerts.text
     assert "Enviar e-mail de alertas" in alerts.text
+    assert "playAlertSound" in alerts.text
+    assert "soundMinSeverity" in alerts.text
     assert reports.status_code == 200
     assert "Relatório executivo" in reports.text or "RelatÃ³rio executivo" in reports.text
 
@@ -421,3 +425,10 @@ def test_alerts_email_send_redirects_with_info(monkeypatch):
 
     assert response.status_code == 303
     assert response.headers["location"].startswith("/alerts?info=")
+
+
+def test_alert_sound_config_normalization():
+    config = new_main._normalize_alert_sound_config({"enabled": "yes", "min_severity": "9"})
+
+    assert config["enabled"] is True
+    assert config["min_severity"] == 5

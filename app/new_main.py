@@ -78,6 +78,10 @@ def default_runtime(settings: Settings) -> dict[str, Any]:
             "use_ssl": False,
             "subject_prefix": "[infra-sync-api]",
         },
+        "alert_sound": {
+            "enabled": False,
+            "min_severity": 4,
+        },
     }
 
 
@@ -120,6 +124,65 @@ def _normalize_refresh_config(raw: Any) -> dict[str, Any]:
     return config
 
 
+def _default_alert_sound_config() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "min_severity": 4,
+    }
+
+
+def _normalize_alert_sound_config(raw: Any) -> dict[str, Any]:
+    config = _default_alert_sound_config()
+    if not isinstance(raw, dict):
+        return config
+
+    config["enabled"] = bool(raw.get("enabled", config["enabled"]))
+    try:
+        severity = int(str(raw.get("min_severity", config["min_severity"])).strip())
+    except (TypeError, ValueError):
+        severity = config["min_severity"]
+    config["min_severity"] = min(5, max(0, severity))
+    return config
+
+
+def _render_alert_sound_block(config: dict[str, Any]) -> str:
+    enabled = "checked" if config.get("enabled") else ""
+    try:
+        severity_value = int(config.get("min_severity", 4))
+    except (TypeError, ValueError):
+        severity_value = 4
+    severity_value = min(5, max(0, severity_value))
+    severity_options = "".join(
+        f'<option value="{value}" {"selected" if severity_value == value else ""}>{label}</option>'
+        for value, label in (
+            (0, "0 - Sem classe"),
+            (1, "1 - Informacao"),
+            (2, "2 - Aviso"),
+            (3, "3 - Media"),
+            (4, "4 - Alta"),
+            (5, "5 - Desastre"),
+        )
+    )
+    return f"""
+        <div class="panel" style="margin-bottom:14px;">
+          <h2>Alerta sonoro</h2>
+          <p>Reproduz um som no navegador quando surgir um alerta com severidade igual ou superior ao nivel definido.</p>
+          <div class="check">
+            <input type="checkbox" name="sound_enabled" {enabled} />
+            <span>Ativar som para alertas graves</span>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="sound_min_severity">Nivel minimo</label>
+              <select id="sound_min_severity" name="sound_min_severity">
+                {severity_options}
+              </select>
+            </div>
+          </div>
+        </div>
+    """
+
+
 def _refresh_interval_seconds(runtime: dict[str, Any]) -> int:
     refresh = runtime.get("refresh") if isinstance(runtime, dict) else None
     config = _normalize_refresh_config(refresh)
@@ -137,7 +200,7 @@ def _load_runtime_payload(settings: Settings) -> dict[str, Any]:
         return payload
     if not isinstance(stored, dict):
         return payload
-    for key in ("sync_api_key", "refresh", "netbox", "zabbix", "glpi", "n8n", "email"):
+    for key in ("sync_api_key", "refresh", "netbox", "zabbix", "glpi", "n8n", "email", "alert_sound"):
         if key not in stored:
             continue
         if key == "sync_api_key" and isinstance(stored[key], str):
@@ -148,6 +211,9 @@ def _load_runtime_payload(settings: Settings) -> dict[str, Any]:
             continue
         if key == "email":
             payload[key] = normalize_email_config(stored[key])
+            continue
+        if key == "alert_sound":
+            payload[key] = _normalize_alert_sound_config(stored[key])
             continue
         if isinstance(stored[key], dict):
             payload[key].update({
@@ -616,6 +682,7 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
 def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
     refresh = _normalize_refresh_config(runtime.get("refresh"))
     email = normalize_email_config(runtime.get("email"))
+    sound = _normalize_alert_sound_config(runtime.get("alert_sound"))
 
     def connector_block(key: str, title: str, description: str, hint: str) -> str:
         connector = runtime[key]
@@ -802,6 +869,10 @@ async def save_settings(request: Request):
         "subject_prefix": _form_value(form, "email_subject_prefix") or runtime.get("email", {}).get("subject_prefix", "[infra-sync-api]"),
         "use_tls": _form_bool(form, "email_use_tls"),
         "use_ssl": _form_bool(form, "email_use_ssl"),
+    })
+    runtime["alert_sound"] = _normalize_alert_sound_config({
+        "enabled": _form_bool(form, "sound_enabled"),
+        "min_severity": _form_value(form, "sound_min_severity") or runtime.get("alert_sound", {}).get("min_severity", 4),
     })
 
     updates = {
@@ -1813,6 +1884,7 @@ if (snapshot.refresh_enabled) {{
 def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
     refresh = _normalize_refresh_config(runtime.get("refresh"))
     email = normalize_email_config(runtime.get("email"))
+    sound = _normalize_alert_sound_config(runtime.get("alert_sound"))
 
     def connector_block(key: str, title: str, description: str, hint: str) -> str:
         connector = runtime[key]
@@ -1948,6 +2020,7 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
           </div>
         </div>
         {email_block(email)}
+        {_render_alert_sound_block(sound)}
         <div class="form-grid">
           {connector_block("netbox", "NetBox", "Inventario, IPAM, VLANs, racks e dispositivos.", "https://netbox.example.local")}
           {connector_block("zabbix", "Zabbix", "Telemetria, eventos e SNMP.", "https://zabbix.example.local/zabbix/api_jsonrpc.php")}
@@ -2991,11 +3064,11 @@ async def api_alerts(request: Request):
 async def alerts_page(request: Request, info: str | None = None, error: str | None = None):
     refresh_seconds = _refresh_interval_seconds(request.app.state.runtime)
     payload = await api_alerts(request)
+    payload = dict(payload)
+    payload["sound"] = request.app.state.runtime.get("alert_sound")
     if info:
-        payload = dict(payload)
         payload["info"] = info
     if error:
-        payload = dict(payload)
         payload["error"] = error
     return HTMLResponse(_render_alerts_page(payload, refresh_seconds))
 
@@ -3026,6 +3099,7 @@ def _render_alerts_page(payload: dict[str, Any], refresh_seconds: int) -> str:
     alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
     error_message = _normalize_text(payload.get("error"))
     info_message = _normalize_text(payload.get("info"))
+    sound = _normalize_alert_sound_config(payload.get("sound"))
     rows = []
     for alert in alerts:
         hosts = alert.get("hosts") if isinstance(alert.get("hosts"), list) else []
@@ -3070,20 +3144,86 @@ def _render_alerts_page(payload: dict[str, Any], refresh_seconds: int) -> str:
           .replaceAll('"', '&quot;')
           .replaceAll("'", '&#39;');
       }}
+      function severityValue(value) {{
+        const text = String(value ?? '').trim().toLowerCase();
+        const numeric = Number.parseInt(text, 10);
+        if (!Number.isNaN(numeric)) {{
+          return numeric;
+        }}
+        const mapping = {{
+          'not classified': 0,
+          'sem classe': 0,
+          'information': 1,
+          'informacao': 1,
+          'info': 1,
+          'warning': 2,
+          'aviso': 2,
+          'average': 3,
+          'media': 3,
+          'high': 4,
+          'alta': 4,
+          'disaster': 5,
+          'desastre': 5,
+        }};
+        return mapping[text] ?? -1;
+      }}
+      function alertSignature(alerts) {{
+        return (alerts || [])
+          .map((alert) => `${{alert.name || ''}}|${{alert.clock || ''}}|${{alert.severity || ''}}`)
+          .join('||');
+      }}
+      function playAlertSound() {{
+        try {{
+          const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+          if (!AudioContextCtor) {{
+            return;
+          }}
+          const context = new AudioContextCtor();
+          const oscillator = context.createOscillator();
+          const gain = context.createGain();
+          oscillator.type = 'sine';
+          oscillator.frequency.value = 880;
+          gain.gain.value = 0.0001;
+          oscillator.connect(gain);
+          gain.connect(context.destination);
+          oscillator.start();
+          const now = context.currentTime;
+          gain.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+          oscillator.stop(now + 0.5);
+          oscillator.onended = () => context.close();
+        }} catch (error) {{}}
+      }}
+      const soundEnabled = {str(bool(sound.get("enabled"))).lower()};
+      const soundMinSeverity = {int(sound.get("min_severity", 4))};
+      let lastSoundSignature = '';
       async function refreshAlerts() {{
         try {{
           const response = await fetch('/api/alerts');
           const data = await response.json();
-          const rows = (data.alerts || []).map((alert) => {{
-            const host = (alert.hosts && alert.hosts[0] && (alert.hosts[0].name || alert.hosts[0].host || alert.hosts[0].hostid)) || 'â€”';
-            return `<tr><td>${{escapeHtml(alert.name || 'â€”')}}</td><td>${{escapeHtml(alert.severity || 'â€”')}}</td><td>${{escapeHtml(host)}}</td><td>${{escapeHtml(alert.clock || 'â€”')}}</td></tr>`;
+          const alerts = data.alerts || [];
+          const rows = alerts.map((alert) => {{
+            const host = (alert.hosts && alert.hosts[0] && (alert.hosts[0].name || alert.hosts[0].host || alert.hosts[0].hostid)) || '????????';
+            return `<tr><td>${{escapeHtml(alert.name || '????????')}}</td><td>${{escapeHtml(alert.severity || '????????')}}</td><td>${{escapeHtml(host)}}</td><td>${{escapeHtml(alert.clock || '????????')}}</td></tr>`;
           }}).join('');
           document.getElementById('alerts-body').innerHTML = rows || '<tr><td colspan="4">Nenhum alerta aberto no momento.</td></tr>';
+          if (soundEnabled) {{
+            const severeAlerts = alerts.filter((alert) => severityValue(alert.severity) >= soundMinSeverity);
+            const signature = alertSignature(severeAlerts);
+            if (signature && signature !== lastSoundSignature) {{
+              playAlertSound();
+              lastSoundSignature = signature;
+            }} else if (!signature) {{
+              lastSoundSignature = '';
+            }}
+          }}
         }} catch (error) {{}}
       }}
       const refreshSeconds = Math.max(5, {int(refresh_seconds)});
       setInterval(refreshAlerts, refreshSeconds * 1000);
+      refreshAlerts();
     </script>
+
     """
     return _render_management_page(
         title="Alertas | infra-sync-api",
