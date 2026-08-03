@@ -29,8 +29,13 @@ Se `NETBOX_TOKEN` estiver vazio, a aplicacao deve ser tratada como incompleta e 
 - `NETBOX_URL`: URL base do NetBox.
 - `NETBOX_TOKEN`: token da API do NetBox.
 - `SYNC_API_KEY`: chave para `X-API-Key`.
+- `ZABBIX_URL`: endpoint JSON-RPC do Zabbix.
+- `ZABBIX_TOKEN`: token bearer do Zabbix API.
 - `DEFAULT_SITE_ID`: site padrao se o payload nao trouxer valor util.
+- `DEFAULT_ROLE_ID`: role padrao para o fluxo Zabbix.
+- `DEFAULT_ACCESS_POINT_ROLE_ID`: role usada quando o Zabbix indicar access point.
 - `REQUEST_TIMEOUT`: timeout HTTP em segundos.
+- `ZABBIX_TIMEOUT`: timeout HTTP em segundos para o Zabbix.
 - `LOG_LEVEL`: nivel de log.
 - `ALLOWED_CLIENT_CIDRS`: redes autorizadas a chamar a API.
 
@@ -43,6 +48,8 @@ Se `NETBOX_TOKEN` estiver vazio, a aplicacao deve ser tratada como incompleta e 
 - `GET /version`
 - `POST /sync/device`
 - `POST /sync/device/dry-run`
+- `POST /sync/zabbix/device`
+- `POST /sync/zabbix/device/dry-run`
 
 ## Exemplos
 
@@ -96,6 +103,22 @@ curl -X POST http://127.0.0.1:8088/sync/device/dry-run \
   }'
 ```
 
+### Sync from Zabbix
+
+```bash
+curl -X POST http://127.0.0.1:8088/sync/zabbix/device \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <SYNC_API_KEY>" \
+  -d '{
+    "hostid": "10917",
+    "site_id": 1,
+    "role_id": 2
+  }'
+```
+
+Esse fluxo consulta o host no Zabbix, usa o inventario e as interfaces SNMP
+disponiveis e alimenta o NetBox com o que for encontrado.
+
 ## n8n
 
 HTTP Request node:
@@ -119,6 +142,27 @@ HTTP Request node:
     site_id: Number($json.site_id),
     role_id: Number($json.role_id),
     zabbix_status: String($json.zabbix_status || '')
+  }
+}}
+```
+
+### Zabbix-driven n8n
+
+Quando o passo anterior so precisar informar o `hostid`, use o endpoint novo:
+
+- Method: `POST`
+- URL: `http://10.254.0.115:8088/sync/zabbix/device`
+- Headers:
+  - `Content-Type: application/json`
+  - `X-API-Key: <SYNC_API_KEY>`
+- Body em Expression:
+
+```javascript
+={{
+  {
+    hostid: String($json.hostid),
+    site_id: Number($json.site_id || 1),
+    role_id: Number($json.role_id || 2)
   }
 }}
 ```
@@ -178,5 +222,8 @@ O `compose.yaml` usa:
 - O modo `dry-run` consulta o NetBox, mas nao cria nem atualiza nada.
 - O fluxo real valida `site_id` e `role_id` no NetBox antes de criar qualquer objeto.
 - Cada sync real grava um marcador no campo `description` do Device com hostid, acao e timestamp UTC.
+- Devices existentes em estado `planned` sao promovidos para `active` na sincronizacao, para ficar visivel na listagem do NetBox.
+- O fluxo Zabbix consulta o host, inventario e interfaces SNMP antes de sincronizar o Device.
+- O fluxo Zabbix usa `status=active` quando o host esta habilitado no Zabbix e `planned` quando esta desabilitado.
 - A criacao real do Device deve ser feita somente com autorizacao.
 - Requisicoes fora de `127.0.0.1/32`, `10.254.0.0/24` e `10.0.0.115/32` recebem `403`.

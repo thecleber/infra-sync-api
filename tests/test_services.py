@@ -4,7 +4,8 @@ import pytest
 
 from app.models import SyncDeviceRequest
 from app.netbox_client import NetBoxClientError
-from app.services import SyncError, sync_device
+from app.services import SyncError, sync_device, sync_zabbix_host
+from app.zabbix_client import ZabbixHostSnapshot
 
 
 class FakeClient:
@@ -49,6 +50,9 @@ class FakeClient:
             "name": payload["name"],
             "custom_fields": payload["custom_fields"],
             "description": payload.get("description"),
+            "comments": payload.get("comments"),
+            "serial": payload.get("serial"),
+            "status": {"value": payload.get("status", "planned")},
             "primary_ip4": None,
         }
 
@@ -59,6 +63,7 @@ class FakeClient:
             "name": "SW-CCO-GDS7830",
             "custom_fields": {"zabbix_hostid": "10917"},
             "description": payload.get("description"),
+            "status": {"value": payload.get("status", "planned")},
         }
         merged["primary_ip4"] = payload.get("primary_ip4")
         return merged
@@ -118,6 +123,7 @@ class ExistingDeviceClient(FakeClient):
             "name": "SW-CCO-GDS7830",
             "custom_fields": {"site_tag": "A", "zabbix_hostid": hostid},
             "description": "existing description",
+            "status": {"value": "planned"},
             "primary_ip4": None,
         }]
 
@@ -129,6 +135,61 @@ class ExistingDeviceClient(FakeClient):
 
     async def find_ip_address(self, address: str):
         return {"id": 99, "address": address, "assigned_object_type": "dcim.interface", "assigned_object_id": 88}
+
+
+class FakeZabbixClient:
+    def __init__(self, snapshot: ZabbixHostSnapshot) -> None:
+        self.snapshot = snapshot
+
+    async def get_host_snapshot(self, hostid: str):
+        return self.snapshot
+
+
+def test_sync_zabbix_host_creates_enriched_device():
+    snapshot = ZabbixHostSnapshot(
+        hostid="10917",
+        host="sw-cco-gds7830",
+        name="SW-CCO-GDS7830",
+        status=0,
+        description="Zabbix managed switch",
+        inventory={
+            "vendor": "GENERIC",
+            "model": "Switch Gerenciavel Generico",
+            "serialno_a": "ABC123",
+            "hardware_full": "Switch Gerenciavel Generico 24p",
+            "os_full": "Zabbix SNMP inventory",
+        },
+        interfaces=[
+            {"interfaceid": "1", "main": "1", "type": "2", "useip": "1", "ip": "10.0.0.24", "dns": "", "port": "161"},
+        ],
+        items=[
+            {"key_": "system.cpu.num", "name": "CPU cores", "lastvalue": "4"},
+            {"key_": "vm.memory.size[total]", "name": "Memory", "lastvalue": "8192"},
+            {"key_": "vfs.fs.size[/,total]", "name": "Storage", "lastvalue": "120G"},
+        ],
+    )
+    client = FakeClient()
+
+    outcome = asyncio.run(
+        sync_zabbix_host(
+            "10917",
+            FakeZabbixClient(snapshot),
+            client,
+            default_site_id=1,
+            default_role_id=2,
+            access_point_role_id=7,
+            dry_run=False,
+        )
+    )
+
+    assert outcome.success is True
+    assert client.created_device_payload["status"] == "active"
+    assert client.created_device_payload["serial"] == "ABC123"
+    assert "vendor=GENERIC" in client.created_device_payload["comments"]
+    assert "cpu=4" in client.created_device_payload["comments"]
+    assert client.created_device_payload["name"] == "SW-CCO-GDS7830"
+    assert client.created_device_payload["description"].startswith("[infra-sync-api] created at ")
+    assert client.created_ip_payload["address"] == "10.0.0.24/32"
 
 
 def test_sync_device_updates_existing_device_with_marker():
@@ -147,6 +208,7 @@ def test_sync_device_updates_existing_device_with_marker():
     outcome = asyncio.run(sync_device(payload, client, default_site_id=1, dry_run=False))
 
     assert outcome.action == "updated"
+    assert any(payload.get("status") == "active" for payload in client.updated_device_payloads)
     assert any(
         "[infra-sync-api] updated at " in payload.get("description", "")
         for payload in client.updated_device_payloads

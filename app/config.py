@@ -17,7 +17,12 @@ class Settings(BaseSettings):
     netbox_token: str = Field(..., min_length=1)
     sync_api_key: str = Field(..., min_length=1)
     default_site_id: int = 1
+    default_role_id: int = 2
+    default_access_point_role_id: int = 7
     request_timeout: float = 30.0
+    zabbix_url: str | None = None
+    zabbix_token: str | None = None
+    zabbix_timeout: float = 30.0
     log_level: str = "INFO"
     allowed_client_cidrs: str = "127.0.0.1/32,10.254.0.0/24,10.0.0.115/32"
 
@@ -27,6 +32,18 @@ class Settings(BaseSettings):
         normalized = value.strip().rstrip("/")
         if not normalized.startswith(("http://", "https://")):
             raise ValueError("NETBOX_URL must start with http:// or https://")
+        return normalized
+
+    @field_validator("zabbix_url")
+    @classmethod
+    def normalize_zabbix_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            return None
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("ZABBIX_URL must start with http:// or https://")
         return normalized
 
     @field_validator("log_level")
@@ -49,6 +66,9 @@ class Settings(BaseSettings):
 
     def allowed_client_networks(self) -> list[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]]:
         return [ipaddress.ip_network(item.strip(), strict=False) for item in self.allowed_client_cidrs.split(",") if item.strip()]
+
+    def zabbix_configured(self) -> bool:
+        return bool(self.zabbix_url and self.zabbix_token)
 
 
 @lru_cache(maxsize=1)

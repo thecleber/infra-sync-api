@@ -15,6 +15,9 @@ class SyncDeviceRequest(BaseModel):
     site_id: int = Field(..., gt=0)
     role_id: int = Field(..., gt=0)
     zabbix_status: str | None = None
+    serial: str | None = None
+    comments_summary: str | None = None
+    netbox_status: str | None = None
 
     @field_validator("hostid", "hostname", "ip", "fabricante", "modelo")
     @classmethod
@@ -27,6 +30,14 @@ class SyncDeviceRequest(BaseModel):
     @field_validator("display_name")
     @classmethod
     def strip_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @field_validator("serial", "comments_summary", "netbox_status", "zabbix_status")
+    @classmethod
+    def strip_optional_metadata(cls, value: str | None) -> str | None:
         if value is None:
             return None
         cleaned = value.strip()
@@ -48,3 +59,16 @@ class SyncDeviceRequest(BaseModel):
             or is_ipv4_only_hostname(self.hostname)
         )
 
+
+class ZabbixHostSyncRequest(BaseModel):
+    hostid: str = Field(..., min_length=1)
+    site_id: int | None = Field(default=None, gt=0)
+    role_id: int | None = Field(default=None, gt=0)
+
+    @field_validator("hostid")
+    @classmethod
+    def strip_hostid(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Field cannot be empty")
+        return cleaned

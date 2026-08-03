@@ -10,9 +10,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from . import __version__
 from .config import Settings, get_settings
-from .models import SyncDeviceRequest
+from .models import SyncDeviceRequest, ZabbixHostSyncRequest
 from .netbox_client import NetBoxClient, NetBoxClientError
-from .services import SyncError, sync_device
+from .services import SyncError, sync_device, sync_zabbix_host
+from .zabbix_client import ZabbixClient, ZabbixClientError
 
 
 def configure_logging(level: str) -> None:
@@ -28,10 +29,17 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     app.state.settings = settings
     app.state.netbox_client = NetBoxClient(settings.netbox_url, settings.netbox_token, settings.request_timeout)
+    app.state.zabbix_client = (
+        ZabbixClient(settings.zabbix_url, settings.zabbix_token, settings.zabbix_timeout)
+        if settings.zabbix_configured()
+        else None
+    )
     try:
         yield
     finally:
         await app.state.netbox_client.aclose()
+        if app.state.zabbix_client is not None:
+            await app.state.zabbix_client.aclose()
 
 
 app = FastAPI(title="infra-sync-api", version=__version__, lifespan=lifespan)
@@ -76,6 +84,14 @@ async def netbox_error_handler(request: Request, exc: NetBoxClientError):
     )
 
 
+@app.exception_handler(ZabbixClientError)
+async def zabbix_error_handler(request: Request, exc: ZabbixClientError):
+    return JSONResponse(
+        status_code=exc.status_code or status.HTTP_502_BAD_GATEWAY,
+        content={"detail": "Zabbix request failed", "message": str(exc)},
+    )
+
+
 @app.exception_handler(SyncError)
 async def sync_error_handler(request: Request, exc: SyncError):
     return JSONResponse(
@@ -107,7 +123,15 @@ async def root_head():
 async def health(request: Request):
     client: NetBoxClient = request.app.state.netbox_client
     connected = await client.health_status()
-    return {"service": "infra-sync-api", "status": "ok" if connected else "degraded", "netbox_connected": connected}
+    zabbix_client: ZabbixClient | None = request.app.state.zabbix_client
+    zabbix_connected = await zabbix_client.healthcheck() if zabbix_client is not None else False
+    status_value = "ok" if connected and (zabbix_client is None or zabbix_connected) else "degraded"
+    return {
+        "service": "infra-sync-api",
+        "status": status_value,
+        "netbox_connected": connected,
+        "zabbix_connected": zabbix_connected,
+    }
 
 
 @app.get("/version")
@@ -136,4 +160,54 @@ async def sync_device_dry_run_endpoint(
     client: NetBoxClient = request.app.state.netbox_client
     settings: Settings = request.app.state.settings
     result = await sync_device(payload, client, settings.default_site_id, dry_run=True)
+    return result.as_dict()
+
+
+@app.post("/sync/zabbix/device")
+async def sync_zabbix_device_endpoint(
+    payload: ZabbixHostSyncRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+):
+    zabbix_client: ZabbixClient | None = request.app.state.zabbix_client
+    if zabbix_client is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Zabbix client is not configured")
+    netbox_client: NetBoxClient = request.app.state.netbox_client
+    settings: Settings = request.app.state.settings
+    result = await sync_zabbix_host(
+        payload.hostid,
+        zabbix_client,
+        netbox_client,
+        settings.default_site_id,
+        settings.default_role_id,
+        settings.default_access_point_role_id,
+        dry_run=False,
+        site_id=payload.site_id,
+        role_id=payload.role_id,
+    )
+    return result.as_dict()
+
+
+@app.post("/sync/zabbix/device/dry-run")
+async def sync_zabbix_device_dry_run_endpoint(
+    payload: ZabbixHostSyncRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+):
+    zabbix_client: ZabbixClient | None = request.app.state.zabbix_client
+    if zabbix_client is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Zabbix client is not configured")
+    netbox_client: NetBoxClient = request.app.state.netbox_client
+    settings: Settings = request.app.state.settings
+    result = await sync_zabbix_host(
+        payload.hostid,
+        zabbix_client,
+        netbox_client,
+        settings.default_site_id,
+        settings.default_role_id,
+        settings.default_access_point_role_id,
+        dry_run=True,
+        site_id=payload.site_id,
+        role_id=payload.role_id,
+    )
     return result.as_dict()

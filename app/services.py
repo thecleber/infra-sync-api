@@ -7,6 +7,7 @@ from typing import Any
 from .models import SyncDeviceRequest
 from .netbox_client import NetBoxClient, NetBoxClientError
 from .utils import merge_custom_fields, slugify
+from .zabbix_client import ZabbixClient, ZabbixHostSnapshot
 
 
 class SyncError(RuntimeError):
@@ -113,6 +114,24 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
     created_device = False
     current_custom_fields: dict[str, Any] = {}
     if device is not None:
+        warnings = [
+            warning
+            for warning in warnings
+            if warning not in {"Manufacturer would be created automatically.", "Device type would be created automatically."}
+        ]
+        if manufacturer_id is None:
+            existing_device_type = device.get("device_type")
+            existing_manufacturer = None
+            if isinstance(existing_device_type, dict):
+                existing_manufacturer = existing_device_type.get("manufacturer")
+                if device_type is None:
+                    device_type = existing_device_type
+                if device_type_id is None and existing_device_type.get("id"):
+                    device_type_id = existing_device_type.get("id")
+            if isinstance(existing_manufacturer, dict):
+                manufacturer_id = existing_manufacturer.get("id") or manufacturer_id
+            elif isinstance(existing_manufacturer, int):
+                manufacturer_id = existing_manufacturer or manufacturer_id
         current_custom_fields = dict(device.get("custom_fields") or {})
         merged_custom_fields = merge_custom_fields(current_custom_fields, payload.hostid)
         if not dry_run:
@@ -125,6 +144,19 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                     "updated",
                 ),
             }
+            if payload.comments_summary:
+                update_payload["comments"] = merge_sync_notes(device.get("comments"), payload.comments_summary)
+            if payload.serial:
+                current_serial = str(device.get("serial") or "").strip()
+                if current_serial != payload.serial:
+                    update_payload["serial"] = payload.serial
+            current_status = device.get("status")
+            current_status_value = current_status.get("value") if isinstance(current_status, dict) else current_status
+            if payload.netbox_status:
+                if current_status_value != payload.netbox_status:
+                    update_payload["status"] = payload.netbox_status
+            elif current_status_value == "planned":
+                update_payload["status"] = "active"
             if payload.site_id:
                 update_payload["site"] = payload.site_id
             if payload.role_id:
@@ -156,7 +188,7 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                 "device_type": device_type_id,
                 "role": payload.role_id,
                 "site": payload.site_id or default_site_id,
-                "status": "planned",
+                "status": payload.netbox_status or "planned",
                 "custom_fields": merge_custom_fields({}, payload.hostid),
                 "description": merge_sync_marker(
                     None,
@@ -165,6 +197,10 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                     "created",
                 ),
             }
+            if payload.comments_summary:
+                device_payload["comments"] = payload.comments_summary
+            if payload.serial:
+                device_payload["serial"] = payload.serial
             device = await _create_or_refetch(
                 lambda: client.create_device(device_payload),
                 lambda: _find_device(client, payload.hostid, device_name),
@@ -236,7 +272,7 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
             ):
                 ip_address = await client.update_ip_address(ip_address["id"], desired_assignment)
 
-        if ip_address is not None and device.get("primary_ip4") != ip_address.get("id"):
+        if ip_address is not None and _extract_related_id(device.get("primary_ip4")) != ip_address.get("id"):
             device = await client.update_device(
                 device["id"],
                 {
@@ -330,3 +366,58 @@ def merge_sync_marker(existing_value: Any, hostid: str, device_name: str, action
     if marker in existing:
         return existing
     return f"{existing} | {marker}"
+
+
+def _extract_related_id(value: Any) -> int | None:
+    if isinstance(value, dict):
+        related_id = value.get("id")
+        return related_id if isinstance(related_id, int) else None
+    return value if isinstance(value, int) else None
+
+
+def merge_sync_notes(existing_value: Any, addition: str) -> str:
+    existing = str(existing_value).strip() if existing_value else ""
+    addition = addition.strip()
+    if not existing:
+        return addition
+    if addition in existing:
+        return existing
+    return f"{existing} | {addition}"
+
+
+async def sync_zabbix_host(
+    hostid: str,
+    zabbix_client: ZabbixClient,
+    netbox_client: NetBoxClient,
+    default_site_id: int,
+    default_role_id: int,
+    access_point_role_id: int,
+    dry_run: bool = False,
+    site_id: int | None = None,
+    role_id: int | None = None,
+) -> SyncOutcome:
+    snapshot = await zabbix_client.get_host_snapshot(hostid)
+    sync_role_id = role_id or snapshot.infer_role_id(default_role_id, access_point_role_id)
+    sync_site_id = site_id or default_site_id
+    primary_ip = snapshot.primary_ip()
+    if not primary_ip:
+        raise SyncError(f"Zabbix host {hostid} does not expose a usable primary IP", status_code=422)
+
+    manufacturer = snapshot.infer_manufacturer() or snapshot.technical_name.split(".")[0] or "UNKNOWN"
+    model = snapshot.infer_model() or snapshot.visible_name or snapshot.technical_name
+
+    payload = SyncDeviceRequest(
+        hostid=snapshot.hostid,
+        hostname=snapshot.technical_name,
+        display_name=snapshot.visible_name,
+        ip=primary_ip,
+        fabricante=manufacturer,
+        modelo=model,
+        site_id=sync_site_id,
+        role_id=sync_role_id,
+        zabbix_status=str(snapshot.status),
+        serial=snapshot.infer_serial(),
+        comments_summary=snapshot.comments_summary(),
+        netbox_status=snapshot.netbox_status,
+    )
+    return await sync_device(payload, netbox_client, default_site_id, dry_run=dry_run)
