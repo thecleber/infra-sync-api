@@ -140,7 +140,7 @@ def test_root_renders_dashboard(monkeypatch):
 
     assert response.status_code == 200
     assert "Rede" in response.text
-    assert "Configurar integrações" in response.text
+    assert "Configurar integraÃ§Ãµes" in response.text
     assert "Conectores centrais" in response.text
 
 
@@ -185,6 +185,8 @@ def test_settings_page_renders(monkeypatch):
     assert "Configuracoes de integracao" in response.text
     assert "NetBox" in response.text
     assert "Salvar configuracoes" in response.text
+    assert "E-mail de alertas" in response.text
+    assert "Servidor SMTP" in response.text
 
 
 def test_discovery_classifier_switch():
@@ -242,8 +244,9 @@ def test_management_pages_render(monkeypatch):
     assert "Mapa da rota" in networks.text
     assert alerts.status_code == 200
     assert "Alertas ativos" in alerts.text
+    assert "Enviar e-mail de alertas" in alerts.text
     assert reports.status_code == 200
-    assert "Relatório executivo" in reports.text
+    assert "Relatório executivo" in reports.text or "RelatÃ³rio executivo" in reports.text
 
 
 def test_snmp_page_renders(monkeypatch):
@@ -384,3 +387,37 @@ def test_allowed_client_cidrs_normalize():
 
     assert settings.allowed_client_cidrs == "127.0.0.1/32,10.0.0.0/24,10.254.0.0/24,10.0.0.115/32"
     assert len(settings.allowed_client_networks()) == 4
+
+
+def test_alerts_email_send_redirects_with_info(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    async def fake_to_thread(func, *args, **kwargs):
+        assert func is new_main.send_alert_email
+        return {"subject": "x", "from": "noreply@example.com", "recipients": ["ops@example.com"], "alerts": 1}
+
+    monkeypatch.setattr(new_main.asyncio, "to_thread", fake_to_thread)
+
+    with TestClient(app) as client:
+        client.app.state.runtime["email"] = {
+            "enabled": True,
+            "host": "smtp.example.com",
+            "port": 587,
+            "username": "infra@example.com",
+            "password": "secret",
+            "from_address": "infra@example.com",
+            "to_addresses": "ops@example.com",
+            "use_tls": True,
+            "use_ssl": False,
+            "subject_prefix": "[infra-sync-api]",
+        }
+        response = client.post("/alerts/email/send", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/alerts?info=")

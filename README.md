@@ -5,13 +5,13 @@ Painel central em FastAPI para operacao de rede em uma unica interface, com foco
 O projeto entrega:
 
 - dashboard na raiz;
-- pagina de configuracao para URLs e tokens;
+- pagina de configuracao para URLs, tokens e SMTP de alertas;
 - configuracao de atualizacao automatica com intervalo em segundos, minutos, horas ou dias;
 - snapshot operacional com contadores do inventario;
 - endpoints de sincronizacao para automacao.
 - paginas para devices, VLANs, redes, alertas e relatórios;
 - consulta de alertas do Zabbix em tempo real;
-- formulários para criar e editar devices, VLANs e prefixes no NetBox.
+- formulÃ¡rios para criar e editar devices, VLANs e prefixes no NetBox.
 
 ## Estrutura
 
@@ -59,6 +59,7 @@ O sistema tambem salva configuracoes editaveis em `data/integrations.json`, via 
 - `GET /` -> dashboard central.
 - `GET /dashboard` -> mesmo dashboard.
 - `GET /settings` -> pagina de configuracao.
+- `POST /settings` -> configura também o e-mail de alertas.
 - `POST /settings` -> salva a configuracao local e recarrega os conectores.
 - `GET /api/config` -> configuracao mascarada.
 - `GET /api/overview` -> snapshot operacional.
@@ -69,8 +70,9 @@ O sistema tambem salva configuracoes editaveis em `data/integrations.json`, via 
 - `GET /networks` -> lista e edita prefixes/redes.
 - `POST /networks/save` -> cria ou atualiza um prefix.
 - `GET /alerts` -> painel de alertas em tempo real.
+- `POST /alerts/email/send` -> envia um resumo dos alertas atuais por e-mail.
 - `GET /api/alerts` -> JSON com os problemas abertos no Zabbix.
-- `GET /reports` -> relatório imprimível.
+- `GET /reports` -> relatÃ³rio imprimÃ­vel.
 - `GET /health`
 - `GET /version`
 - `POST /sync/device`
@@ -84,8 +86,9 @@ O sistema tambem salva configuracoes editaveis em `data/integrations.json`, via 
 - contagem de devices, IPs, VLANs, interfaces, prefixes, sites, racks e hosts do Zabbix;
 - painel para editar URLs e tokens sem parar a aplicacao;
 - painel para ajustar a frequencia de atualizacao dos dados exibidos;
-- cadastro e edição manual de devices, VLANs e redes dentro da própria interface;
+- cadastro e ediÃ§Ã£o manual de devices, VLANs e redes dentro da prÃ³pria interface;
 - painel de alertas do Zabbix com atualização periódica;
+- configuração de SMTP e disparo manual do resumo dos alertas por e-mail;
 - relatório imprimível com os principais indicadores;
 - rotas de sync para alimentar o inventario central.
 
@@ -195,3 +198,4 @@ docker compose restart infra-sync-api
 - O dashboard exibe os conectores e os contadores do ambiente quando eles estao configurados.
 - A pagina `/settings` permite trocar tokens e URLs sem reiniciar o sistema.
 - Requisicoes fora das redes autorizadas recebem `403`.
+

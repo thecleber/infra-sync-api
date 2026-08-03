@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import hmac
 import ipaddress
 import json
@@ -9,7 +10,7 @@ from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -17,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from . import __version__
 from .config import Settings, get_settings
+from .email_notifications import EmailNotificationError, normalize_email_config, send_alert_email
 from .discovery import classify_discovered_device, load_last_scan, save_group_selections, scan_network
 from .models import SyncDeviceRequest, ZabbixHostSyncRequest
 from .netbox_client import NetBoxClient, NetBoxClientError
@@ -63,6 +65,18 @@ def default_runtime(settings: Settings) -> dict[str, Any]:
             "enabled": False,
             "url": "",
             "token": "",
+        },
+        "email": {
+            "enabled": False,
+            "host": "",
+            "port": 587,
+            "username": "",
+            "password": "",
+            "from_address": "",
+            "to_addresses": "",
+            "use_tls": True,
+            "use_ssl": False,
+            "subject_prefix": "[infra-sync-api]",
         },
     }
 
@@ -123,7 +137,7 @@ def _load_runtime_payload(settings: Settings) -> dict[str, Any]:
         return payload
     if not isinstance(stored, dict):
         return payload
-    for key in ("sync_api_key", "refresh", "netbox", "zabbix", "glpi", "n8n"):
+    for key in ("sync_api_key", "refresh", "netbox", "zabbix", "glpi", "n8n", "email"):
         if key not in stored:
             continue
         if key == "sync_api_key" and isinstance(stored[key], str):
@@ -131,6 +145,9 @@ def _load_runtime_payload(settings: Settings) -> dict[str, Any]:
             continue
         if key == "refresh":
             payload[key] = _normalize_refresh_config(stored[key])
+            continue
+        if key == "email":
+            payload[key] = normalize_email_config(stored[key])
             continue
         if isinstance(stored[key], dict):
             payload[key].update({
@@ -149,7 +166,7 @@ def _save_runtime_payload(payload: dict[str, Any]) -> None:
 def _mask_secret(value: str) -> str:
     cleaned = _normalize_text(value)
     if not cleaned:
-        return "não configurado"
+        return "nÃ£o configurado"
     if len(cleaned) <= 8:
         return "*" * len(cleaned)
     return f"{cleaned[:4]}...{cleaned[-4:]}"
@@ -314,10 +331,10 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
 
     connectors = []
     for key, title, note in (
-        ("netbox", "NetBox", "Inventário, IPAM e documentação"),
+        ("netbox", "NetBox", "InventÃ¡rio, IPAM e documentaÃ§Ã£o"),
         ("zabbix", "Zabbix", "Telemetria, eventos e SNMP"),
-        ("glpi", "GLPI", "Chamados e histórico operacional"),
-        ("n8n", "n8n", "Automação segura e ajustes pequenos"),
+        ("glpi", "GLPI", "Chamados e histÃ³rico operacional"),
+        ("n8n", "n8n", "AutomaÃ§Ã£o segura e ajustes pequenos"),
     ):
         connector = runtime[key]
         status_label, status_style = _connector_status(connector)
@@ -331,34 +348,34 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
             "name": title,
             "status": status_label,
             "status_style": status_style,
-            "url": _normalize_text(connector.get("url")) or "não informado",
+            "url": _normalize_text(connector.get("url")) or "nÃ£o informado",
             "token": _mask_secret(_normalize_text(connector.get("token"))),
             "note": note,
         })
 
     health_status = "ok" if netbox_connected and (zabbix_client is None or zabbix_connected) else "degraded"
-    headline = "Sistema central pronto" if health_status == "ok" else "Sistema central parcialmente indisponível"
+    headline = "Sistema central pronto" if health_status == "ok" else "Sistema central parcialmente indisponÃ­vel"
     detail = (
         f"NetBox {'online' if netbox_connected else 'offline'}"
         + (
             f", Zabbix {'online' if zabbix_connected else 'offline'}"
             if zabbix_client is not None
-            else ", Zabbix não configurado"
+            else ", Zabbix nÃ£o configurado"
         )
         + f". Redes permitidas: {len(settings.allowed_client_networks())}."
     )
 
     inventory_cards = [
-        {"label": "Devices", "value": counts["devices"], "note": "Dispositivos no inventário"},
-        {"label": "IPs", "value": counts["ips"], "note": "Endereços e consumo"},
-        {"label": "VLANs", "value": counts["vlans"], "note": "Segmentação de rede"},
+        {"label": "Devices", "value": counts["devices"], "note": "Dispositivos no inventÃ¡rio"},
+        {"label": "IPs", "value": counts["ips"], "note": "EndereÃ§os e consumo"},
+        {"label": "VLANs", "value": counts["vlans"], "note": "SegmentaÃ§Ã£o de rede"},
         {"label": "Interfaces", "value": counts["interfaces"], "note": "Portas, uplinks e trunks"},
         {"label": "Prefixes", "value": counts["prefixes"], "note": "Blocos e pools"},
         {"label": "Sites", "value": counts["sites"], "note": "Locais e unidades"},
-        {"label": "Racks", "value": counts["racks"], "note": "Racks físicos"},
+        {"label": "Racks", "value": counts["racks"], "note": "Racks fÃ­sicos"},
         {"label": "Zabbix hosts", "value": counts["zabbix_hosts"], "note": "Hosts monitorados"},
         {"label": "Alertas", "value": counts["zabbix_problems"], "note": "Problemas abertos no Zabbix"},
-        {"label": "Descobertos", "value": discovery_count, "note": "Dispositivos vistos na última varredura"},
+        {"label": "Descobertos", "value": discovery_count, "note": "Dispositivos vistos na Ãºltima varredura"},
     ]
 
     telemetry_score = 0
@@ -538,17 +555,17 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
         <section class="topbar">
           <div>
             <h1>Rede</h1>
-            <div class="sub">Painel central para NetBox, Zabbix, GLPI e n8n. A visão principal do ambiente fica aqui, com inventário, telemetria e automação reunidos em um só lugar.</div>
+            <div class="sub">Painel central para NetBox, Zabbix, GLPI e n8n. A visÃ£o principal do ambiente fica aqui, com inventÃ¡rio, telemetria e automaÃ§Ã£o reunidos em um sÃ³ lugar.</div>
           </div>
           <div class="actions">
-            <a class="btn primary" href="/settings">Configurar integrações</a>
+            <a class="btn primary" href="/settings">Configurar integraÃ§Ãµes</a>
             <a class="btn" href="/docs">API</a>
-            <a class="btn" href="/health">Saúde</a>
-            <a class="btn" href="/version">Versão</a>
+            <a class="btn" href="/health">SaÃºde</a>
+            <a class="btn" href="/version">VersÃ£o</a>
           </div>
         </section>
         <section class="hero">
-          <small>Última checagem</small>
+          <small>Ãšltima checagem</small>
           <strong>{escape(snapshot["headline"])}</strong>
           <div class="sub" style="margin: 6px 0 0;">{escape(snapshot["detail"])}</div>
         </section>
@@ -556,7 +573,7 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
         <section class="panels">
           <div class="panel">
             <h2>Conectores centrais</h2>
-            <p>Os tokens e URLs ficam editáveis no próprio sistema. Assim você consegue ligar ou trocar a origem sem sair do painel.</p>
+            <p>Os tokens e URLs ficam editÃ¡veis no prÃ³prio sistema. Assim vocÃª consegue ligar ou trocar a origem sem sair do painel.</p>
             <table>
               <thead>
                 <tr>
@@ -571,19 +588,19 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
           </div>
           <div class="panel">
             <h2>Atalhos operacionais</h2>
-            <p>Rotas e ações principais para a operação do dia a dia.</p>
+            <p>Rotas e aÃ§Ãµes principais para a operaÃ§Ã£o do dia a dia.</p>
             <table>
               <thead>
                 <tr>
-                  <th>Ação</th>
+                  <th>AÃ§Ã£o</th>
                   <th>Destino</th>
                 </tr>
               </thead>
               <tbody>
-                <tr><td>Saúde da API</td><td><a href="/health">/health</a></td></tr>
-                <tr><td>Documentação</td><td><a href="/docs">/docs</a></td></tr>
-                <tr><td>Editar integrações</td><td><a href="/settings">/settings</a></td></tr>
-                <tr><td>Versão</td><td><a href="/version">/version</a></td></tr>
+                <tr><td>SaÃºde da API</td><td><a href="/health">/health</a></td></tr>
+                <tr><td>DocumentaÃ§Ã£o</td><td><a href="/docs">/docs</a></td></tr>
+                <tr><td>Editar integraÃ§Ãµes</td><td><a href="/settings">/settings</a></td></tr>
+                <tr><td>VersÃ£o</td><td><a href="/version">/version</a></td></tr>
               </tbody>
             </table>
           </div>
@@ -598,6 +615,7 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
 
 def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
     refresh = _normalize_refresh_config(runtime.get("refresh"))
+    email = normalize_email_config(runtime.get("email"))
 
     def connector_block(key: str, title: str, description: str, hint: str) -> str:
         connector = runtime[key]
@@ -625,24 +643,63 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
         </section>
         """
 
+    def email_block(config: dict[str, Any]) -> str:
+        checked = "checked" if config.get("enabled") else ""
+        tls_checked = "checked" if config.get("use_tls") else ""
+        ssl_checked = "checked" if config.get("use_ssl") else ""
+        host = escape(_normalize_text(config.get("host")))
+        username = escape(_normalize_text(config.get("username")))
+        from_address = escape(_normalize_text(config.get("from_address")))
+        to_addresses = escape(_normalize_text(config.get("to_addresses")))
+        subject_prefix = escape(_normalize_text(config.get("subject_prefix")))
+        status = "CONFIGURADO" if config.get("enabled") else "DESATIVADO"
+        pill_class = "ok" if config.get("enabled") else "muted"
+        return f"""
+        <div class="panel" style="margin-bottom:14px;">
+          <h2>E-mail de alertas</h2>
+          <p>Configure o SMTP para enviar alertas do Zabbix por e-mail quando houver problemas ativos.</p>
+          <div class="check">
+            <input type="checkbox" name="email_enabled" {checked} />
+            <span>Envio de e-mail ativo</span>
+            <span class="pill {pill_class}" style="margin-left:auto">{status}</span>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label for="email_host">Servidor SMTP</label><input id="email_host" name="email_host" type="text" value="{host}" placeholder="smtp.exemplo.com" /></div>
+            <div class="field"><label for="email_port">Porta SMTP</label><input id="email_port" name="email_port" type="text" value="{escape(str(config.get('port', 587)))}" placeholder="587" /></div>
+            <div class="field"><label for="email_username">Usu?rio SMTP</label><input id="email_username" name="email_username" type="text" value="{username}" placeholder="usuario@exemplo.com" /></div>
+            <div class="field"><label for="email_password">Senha SMTP</label><input id="email_password" name="email_password" type="password" value="" placeholder="Deixe em branco para manter a atual" /><div class="sub" style="margin:6px 0 0;">Atual: {escape(_mask_secret(_normalize_text(config.get('password'))))}</div></div>
+            <div class="field"><label for="email_from_address">Remetente</label><input id="email_from_address" name="email_from_address" type="text" value="{from_address}" placeholder="alertas@ecvitoria.local" /></div>
+            <div class="field"><label for="email_to_addresses">Destinat?rios</label><input id="email_to_addresses" name="email_to_addresses" type="text" value="{to_addresses}" placeholder="ti@exemplo.com, noc@exemplo.com" /></div>
+            <div class="field"><label for="email_subject_prefix">Prefixo do assunto</label><input id="email_subject_prefix" name="email_subject_prefix" type="text" value="{subject_prefix}" placeholder="[infra-sync-api]" /></div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Seguran?a da conex?o</label>
+              <div class="check"><input type="checkbox" name="email_use_tls" {tls_checked} /><span>Usar STARTTLS</span></div>
+              <div class="check"><input type="checkbox" name="email_use_ssl" {ssl_checked} /><span>Usar SSL direto</span></div>
+            </div>
+          </div>
+        </div>
+        """
+
     return _render_shell(
-        "Configurações | infra-sync-api",
+        "ConfiguraÃ§Ãµes | infra-sync-api",
         f"""
         <section class="topbar">
           <div>
-            <h1>Configurações</h1>
-            <div class="sub">Aqui você insere e altera os tokens e URLs que alimentam o sistema central. A atualização vale na hora para o painel e para os conectores.</div>
+            <h1>ConfiguraÃ§Ãµes</h1>
+            <div class="sub">Aqui vocÃª insere e altera os tokens e URLs que alimentam o sistema central. A atualizaÃ§Ã£o vale na hora para o painel e para os conectores.</div>
           </div>
           <div class="actions">
             <a class="btn" href="/">Dashboard</a>
             <a class="btn" href="/docs">API</a>
           </div>
         </section>
-        {"<div class='hero'><small>Salvo</small><strong>Configurações atualizadas com sucesso.</strong><div class='sub' style='margin: 6px 0 0;'>As conexões foram recarregadas sem sair do sistema.</div></div>" if saved else ""}
+        {"<div class='hero'><small>Salvo</small><strong>ConfiguraÃ§Ãµes atualizadas com sucesso.</strong><div class='sub' style='margin: 6px 0 0;'>As conexÃµes foram recarregadas sem sair do sistema.</div></div>" if saved else ""}
         <form method="post" action="/settings">
           <div class="panel" style="margin-bottom:14px;">
-            <h2>Chave de sincronização</h2>
-            <p>Essa chave protege os endpoints de sync. Se você trocar aqui, os processos que usam API key precisam ser atualizados também.</p>
+            <h2>Chave de sincronizaÃ§Ã£o</h2>
+            <p>Essa chave protege os endpoints de sync. Se vocÃª trocar aqui, os processos que usam API key precisam ser atualizados tambÃ©m.</p>
             <div class="form-grid">
               <div class="field">
                 <label for="sync_api_key">SYNC API key</label>
@@ -652,18 +709,18 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
             </div>
           </div>
           <div class="form-grid">
-            {connector_block("netbox", "NetBox", "Inventário, IPAM, VLANs, racks e dispositivos.", "https://netbox.example.local")}
+            {connector_block("netbox", "NetBox", "InventÃ¡rio, IPAM, VLANs, racks e dispositivos.", "https://netbox.example.local")}
             {connector_block("zabbix", "Zabbix", "Telemetria, eventos e SNMP.", "https://zabbix.example.local/zabbix/api_jsonrpc.php")}
-            {connector_block("glpi", "GLPI", "Chamados e histórico de atendimento.", "https://glpi.example.local/apirest.php")}
-            {connector_block("n8n", "n8n", "Automação e pequenas correções controladas.", "https://n8n.example.local")}
+            {connector_block("glpi", "GLPI", "Chamados e histÃ³rico de atendimento.", "https://glpi.example.local/apirest.php")}
+            {connector_block("n8n", "n8n", "AutomaÃ§Ã£o e pequenas correÃ§Ãµes controladas.", "https://n8n.example.local")}
           </div>
           <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
-            <button class="btn primary" type="submit">Salvar configurações</button>
+            <button class="btn primary" type="submit">Salvar configuraÃ§Ãµes</button>
             <a class="btn" href="/">Voltar ao dashboard</a>
           </div>
         </form>
         <div class="foot">
-          <div>Os valores vazios mantêm o que já está salvo.</div>
+          <div>Os valores vazios mantÃªm o que jÃ¡ estÃ¡ salvo.</div>
           <div>Arquivo local: {escape(str(RUNTIME_CONFIG_PATH))}</div>
         </div>
         """,
@@ -734,6 +791,19 @@ async def save_settings(request: Request):
         "unit": refresh_unit,
     })
 
+    runtime["email"] = normalize_email_config({
+        "enabled": _form_bool(form, "email_enabled"),
+        "host": _form_value(form, "email_host"),
+        "port": _form_value(form, "email_port") or runtime.get("email", {}).get("port", 587),
+        "username": _form_value(form, "email_username"),
+        "password": _form_value(form, "email_password") or runtime.get("email", {}).get("password", ""),
+        "from_address": _form_value(form, "email_from_address"),
+        "to_addresses": _form_value(form, "email_to_addresses"),
+        "subject_prefix": _form_value(form, "email_subject_prefix") or runtime.get("email", {}).get("subject_prefix", "[infra-sync-api]"),
+        "use_tls": _form_bool(form, "email_use_tls"),
+        "use_ssl": _form_bool(form, "email_use_ssl"),
+    })
+
     updates = {
         "netbox": (_form_bool(form, "netbox_enabled"), _form_value(form, "netbox_url"), _form_value(form, "netbox_token")),
         "zabbix": (_form_bool(form, "zabbix_enabled"), _form_value(form, "zabbix_url"), _form_value(form, "zabbix_token")),
@@ -760,6 +830,8 @@ async def api_config(request: Request):
     masked = copy.deepcopy(runtime)
     for key in ("sync_api_key",):
         masked[key] = _mask_secret(_normalize_text(masked[key]))
+    if "email" in masked and isinstance(masked["email"], dict):
+        masked["email"]["password"] = _mask_secret(_normalize_text(masked["email"].get("password")))
     for key in ("netbox", "zabbix", "glpi", "n8n"):
         masked[key]["token"] = _mask_secret(_normalize_text(masked[key]["token"]))
     return masked
@@ -1437,7 +1509,7 @@ if (snapshot.refresh_enabled) {{
           <div class="sub">Uma visao unica do ambiente, com menus separados para operacao, inventario, IPAM, telemetria, automacao e integracoes.</div>
         </div>
         <div class="actions">
-          <a class="btn primary" href="/settings">Configurar integrações</a>
+          <a class="btn primary" href="/settings">Configurar integraÃ§Ãµes</a>
           <a class="btn" href="/discovery">Varredura SNMP</a>
           <a class="btn" href="/api/overview">Snapshot</a>
           <a class="btn" href="/health">Saude</a>
@@ -1613,20 +1685,20 @@ if (snapshot.refresh_enabled) {{
         <div class="section-grid">
           <div class="panel">
             <h2>Devices</h2>
-            <p>Cadastro e edição de equipamentos do inventário central.</p>
+            <p>Cadastro e ediÃ§Ã£o de equipamentos do inventÃ¡rio central.</p>
             <table>
-              <thead><tr><th>Ação</th><th>Destino</th></tr></thead>
+              <thead><tr><th>AÃ§Ã£o</th><th>Destino</th></tr></thead>
               <tbody>
                 <tr><td>Listar devices</td><td><a href="/devices">/devices</a></td></tr>
-                <tr><td>Imprimir relatório</td><td><a href="/reports">/reports</a></td></tr>
+                <tr><td>Imprimir relatÃ³rio</td><td><a href="/reports">/reports</a></td></tr>
               </tbody>
             </table>
           </div>
           <div class="panel">
             <h2>Resumo</h2>
-            <p>Dados atuais do inventário para apoiar a operação.</p>
+            <p>Dados atuais do inventÃ¡rio para apoiar a operaÃ§Ã£o.</p>
             <table>
-              <thead><tr><th>Métrica</th><th>Valor</th></tr></thead>
+              <thead><tr><th>MÃ©trica</th><th>Valor</th></tr></thead>
               <tbody>
                 <tr><td>Devices</td><td>{escape(str(snapshot["cards"][0]["value"]))}</td></tr>
                 <tr><td>Interfaces</td><td>{escape(str(snapshot["cards"][3]["value"]))}</td></tr>
@@ -1641,12 +1713,12 @@ if (snapshot.refresh_enabled) {{
         <div class="section-grid">
           <div class="panel">
             <h2>VLANs</h2>
-            <p>Criação e edição de VLANs com acesso direto ao NetBox.</p>
+            <p>CriaÃ§Ã£o e ediÃ§Ã£o de VLANs com acesso direto ao NetBox.</p>
             <a class="btn primary" href="/vlans">Abrir VLANs</a>
           </div>
           <div class="panel">
             <h2>Consumo</h2>
-            <p>Visão rápida da segmentação de rede.</p>
+            <p>VisÃ£o rÃ¡pida da segmentaÃ§Ã£o de rede.</p>
             <table>
               <thead><tr><th>Indicador</th><th>Valor</th></tr></thead>
               <tbody>
@@ -1667,7 +1739,7 @@ if (snapshot.refresh_enabled) {{
           </div>
           <div class="panel">
             <h2>Blocos IP</h2>
-            <p>Consumo do espaço de endereçamento do ambiente.</p>
+            <p>Consumo do espaÃ§o de endereÃ§amento do ambiente.</p>
             <table>
               <thead><tr><th>Indicador</th><th>Valor</th></tr></thead>
               <tbody>
@@ -1695,7 +1767,7 @@ if (snapshot.refresh_enabled) {{
               <thead><tr><th>Problema</th><th>Host</th></tr></thead>
               <tbody>
                 {''.join(
-                    f'<tr><td>{escape(_normalize_text(alert.get("name")) or "—")}</td><td>{escape(_relation_label((alert.get("hosts") or [{}])[0]) if isinstance(alert.get("hosts"), list) and alert.get("hosts") else "—")}</td></tr>'
+                    f'<tr><td>{escape(_normalize_text(alert.get("name")) or "â€”")}</td><td>{escape(_relation_label((alert.get("hosts") or [{}])[0]) if isinstance(alert.get("hosts"), list) and alert.get("hosts") else "â€”")}</td></tr>'
                     for alert in (snapshot["alerts"][:5] if isinstance(snapshot.get("alerts"), list) else [])
                 ) or '<tr><td colspan="2">Nenhum alerta aberto.</td></tr>'}
               </tbody>
@@ -1707,11 +1779,11 @@ if (snapshot.refresh_enabled) {{
       <section id="reports" class="section" data-section="reports">
         <div class="section-grid">
           <div class="panel">
-            <h2>Relatórios</h2>
-            <p>Resumo pronto para impressão ou exportação via navegador.</p>
+            <h2>RelatÃ³rios</h2>
+            <p>Resumo pronto para impressÃ£o ou exportaÃ§Ã£o via navegador.</p>
             <div style="display:flex; gap:10px; flex-wrap:wrap;">
-              <a class="btn primary" href="/reports">Abrir relatório</a>
-              <button class="btn" type="button" onclick="window.print()">Imprimir página</button>
+              <a class="btn primary" href="/reports">Abrir relatÃ³rio</a>
+              <button class="btn" type="button" onclick="window.print()">Imprimir pÃ¡gina</button>
             </div>
           </div>
           <div class="panel">
@@ -1740,6 +1812,7 @@ if (snapshot.refresh_enabled) {{
 
 def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
     refresh = _normalize_refresh_config(runtime.get("refresh"))
+    email = normalize_email_config(runtime.get("email"))
 
     def connector_block(key: str, title: str, description: str, hint: str) -> str:
         connector = runtime[key]
@@ -1765,6 +1838,45 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
             <div class="sub" style="margin:6px 0 0;">Atual: {escape(_mask_secret(_normalize_text(connector.get("token"))))}</div>
           </div>
         </section>
+        """
+
+    def email_block(config: dict[str, Any]) -> str:
+        checked = "checked" if config.get("enabled") else ""
+        tls_checked = "checked" if config.get("use_tls") else ""
+        ssl_checked = "checked" if config.get("use_ssl") else ""
+        host = escape(_normalize_text(config.get("host")))
+        username = escape(_normalize_text(config.get("username")))
+        from_address = escape(_normalize_text(config.get("from_address")))
+        to_addresses = escape(_normalize_text(config.get("to_addresses")))
+        subject_prefix = escape(_normalize_text(config.get("subject_prefix")))
+        status = "CONFIGURADO" if config.get("enabled") else "DESATIVADO"
+        pill_class = "ok" if config.get("enabled") else "muted"
+        return f"""
+        <div class="panel" style="margin-bottom:14px;">
+          <h2>E-mail de alertas</h2>
+          <p>Configure o SMTP para enviar alertas do Zabbix por e-mail quando houver problemas ativos.</p>
+          <div class="check">
+            <input type="checkbox" name="email_enabled" {checked} />
+            <span>Envio de e-mail ativo</span>
+            <span class="pill {pill_class}" style="margin-left:auto">{status}</span>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label for="email_host">Servidor SMTP</label><input id="email_host" name="email_host" type="text" value="{host}" placeholder="smtp.exemplo.com" /></div>
+            <div class="field"><label for="email_port">Porta SMTP</label><input id="email_port" name="email_port" type="text" value="{escape(str(config.get('port', 587)))}" placeholder="587" /></div>
+            <div class="field"><label for="email_username">Usu?rio SMTP</label><input id="email_username" name="email_username" type="text" value="{username}" placeholder="usuario@exemplo.com" /></div>
+            <div class="field"><label for="email_password">Senha SMTP</label><input id="email_password" name="email_password" type="password" value="" placeholder="Deixe em branco para manter a atual" /><div class="sub" style="margin:6px 0 0;">Atual: {escape(_mask_secret(_normalize_text(config.get('password'))))}</div></div>
+            <div class="field"><label for="email_from_address">Remetente</label><input id="email_from_address" name="email_from_address" type="text" value="{from_address}" placeholder="alertas@ecvitoria.local" /></div>
+            <div class="field"><label for="email_to_addresses">Destinat?rios</label><input id="email_to_addresses" name="email_to_addresses" type="text" value="{to_addresses}" placeholder="ti@exemplo.com, noc@exemplo.com" /></div>
+            <div class="field"><label for="email_subject_prefix">Prefixo do assunto</label><input id="email_subject_prefix" name="email_subject_prefix" type="text" value="{subject_prefix}" placeholder="[infra-sync-api]" /></div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Seguran?a da conex?o</label>
+              <div class="check"><input type="checkbox" name="email_use_tls" {tls_checked} /><span>Usar STARTTLS</span></div>
+              <div class="check"><input type="checkbox" name="email_use_ssl" {ssl_checked} /><span>Usar SSL direto</span></div>
+            </div>
+          </div>
+        </div>
         """
 
     body = f"""
@@ -1799,7 +1911,7 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
       <form method="post" action="/settings">
         <div class="panel" style="margin-bottom:14px;">
           <h2>Chave de sincronizacao</h2>
-          <p>Essa chave protege os endpoints de sync. Se voce trocar aqui, os automations e integrações que usam API key precisam receber o novo valor.</p>
+          <p>Essa chave protege os endpoints de sync. Se voce trocar aqui, os automations e integraÃ§Ãµes que usam API key precisam receber o novo valor.</p>
           <div class="form-grid">
             <div class="field">
               <label for="sync_api_key">SYNC API key</label>
@@ -1809,11 +1921,11 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
           </div>
         </div>
         <div class="panel" style="margin-bottom:14px;">
-          <h2>Atualização automática</h2>
+          <h2>AtualizaÃ§Ã£o automÃ¡tica</h2>
           <p>Escolha de quanto em quanto tempo o painel deve recarregar os dados vindos dos devices e dos conectores integrados.</p>
           <div class="form-grid">
             <div class="field">
-              <label for="refresh_enabled">Habilitar atualização automática</label>
+              <label for="refresh_enabled">Habilitar atualizaÃ§Ã£o automÃ¡tica</label>
               <input id="refresh_enabled" name="refresh_enabled" type="checkbox" {"checked" if refresh["enabled"] else ""} />
             </div>
             <div class="field">
@@ -1835,6 +1947,7 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
             </div>
           </div>
         </div>
+        {email_block(email)}
         <div class="form-grid">
           {connector_block("netbox", "NetBox", "Inventario, IPAM, VLANs, racks e dispositivos.", "https://netbox.example.local")}
           {connector_block("zabbix", "Zabbix", "Telemetria, eventos e SNMP.", "https://zabbix.example.local/zabbix/api_jsonrpc.php")}
@@ -1953,9 +2066,9 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         rows.append(
             f"""
             <tr>
-              <td><strong>{escape(ip or '—')}</strong></td>
-              <td>{escape(str(device.get("sys_name") or '—'))}</td>
-              <td style="max-width:280px;">{escape(str(device.get("sys_descr") or '—'))}</td>
+              <td><strong>{escape(ip or 'â€”')}</strong></td>
+              <td>{escape(str(device.get("sys_name") or 'â€”'))}</td>
+              <td style="max-width:280px;">{escape(str(device.get("sys_descr") or 'â€”'))}</td>
               <td>
                 <select name="group_{key}">
                   <option value="switches" {"selected" if device.get("group") == "switches" else ""}>Switches</option>
@@ -2054,7 +2167,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
               <tr>
                 <th>IP</th>
                 <th>Nome</th>
-                <th>Descrição</th>
+                <th>DescriÃ§Ã£o</th>
                 <th>Grupo</th>
                 <th>Subgrupo</th>
                 <th>Incluir</th>
@@ -2085,7 +2198,7 @@ def _management_nav(active: str) -> str:
         ("devices", "/devices", "Devices", "Criar e editar equipamentos"),
         ("vlans", "/vlans", "VLANs", "Segmentacao e tags"),
         ("networks", "/networks", "Redes", "Prefixes e blocos IP"),
-        ("snmp", "/snmp", "SNMP", "Portas, CPU e tráfego"),
+        ("snmp", "/snmp", "SNMP", "Portas, CPU e trÃ¡fego"),
         ("alerts", "/alerts", "Alertas", "Problemas em tempo real"),
         ("reports", "/reports", "Relatorios", "Impressao e exportacao"),
         ("discovery", "/discovery", "Descoberta", "Varredura SNMP"),
@@ -2106,9 +2219,9 @@ def _relation_label(value: Any) -> str:
         related_id = value.get("id")
         if related_id is not None:
             return str(related_id)
-        return "—"
+        return "â€”"
     text = _normalize_text(value)
-    return text or "—"
+    return text or "â€”"
 
 
 def _status_value(value: Any, default: str = "active") -> str:
@@ -2195,7 +2308,7 @@ def _render_device_choice_options(devices: list[dict[str, Any]], selected: Any =
         value = _related_id(device.get("id"))
         label = _normalize_text(device.get("name")) or value or "-"
         site = _relation_label(device.get("site"))
-        if site and site != "—":
+        if site and site != "â€”":
             label = f"{label} ({site})"
         current = " selected" if value and value == selected_value else ""
         options.append(f'<option value="{escape(value)}"{current}>{escape(label)}</option>')
@@ -2254,7 +2367,7 @@ def _render_management_page(
       <div class="brand">
         <div class="kicker">ECV Network Control</div>
         <h1>Rede</h1>
-        <p>Central de operação para inventário, IPAM, alertas e automação.</p>
+        <p>Central de operaÃ§Ã£o para inventÃ¡rio, IPAM, alertas e automaÃ§Ã£o.</p>
       </div>
       <nav class="menu">
         {_management_nav(active)}
@@ -2305,7 +2418,7 @@ def _device_form(device: dict[str, Any] | None = None) -> str:
     return f"""
     <div class="panel">
       <h2>{'Editar device' if device.get('id') else 'Criar device'}</h2>
-      <p>Use este formulário para cadastrar ou corrigir um equipamento no NetBox.</p>
+      <p>Use este formulÃ¡rio para cadastrar ou corrigir um equipamento no NetBox.</p>
       <form method="post" action="/devices/save">
         <input type="hidden" name="device_id" value="{escape(_related_id(device.get('id')))}" />
         <div class="form-grid">
@@ -2323,7 +2436,7 @@ def _device_form(device: dict[str, Any] | None = None) -> str:
         </div>
         <div class="field">
           <label>Campos personalizados</label>
-          <p>Adicione qualquer informação extra do device. Ex.: acesso L2/L3, usuário, senha de apoio, VLAN de gerência ou observações.</p>
+          <p>Adicione qualquer informaÃ§Ã£o extra do device. Ex.: acesso L2/L3, usuÃ¡rio, senha de apoio, VLAN de gerÃªncia ou observaÃ§Ãµes.</p>
           {custom_rows_markup}
         </div>
         <div class="field"><label>Comments</label><input name="comments" type="text" value="{escape(_normalize_text(device.get('comments')))}" /></div>
@@ -2341,7 +2454,7 @@ def _vlan_form(vlan: dict[str, Any] | None = None) -> str:
     return f"""
     <div class="panel">
       <h2>{'Editar VLAN' if vlan.get('id') else 'Criar VLAN'}</h2>
-      <p>Cadastro de segmentação L2 para a rede central.</p>
+      <p>Cadastro de segmentaÃ§Ã£o L2 para a rede central.</p>
       <form method="post" action="/vlans/save">
         <input type="hidden" name="vlan_id" value="{escape(_related_id(vlan.get('id')))}" />
         <div class="form-grid">
@@ -2350,7 +2463,7 @@ def _vlan_form(vlan: dict[str, Any] | None = None) -> str:
           <div class="field"><label>Status</label><input name="status" type="text" value="{escape(_status_value(vlan.get('status')))}" /></div>
           <div class="field"><label>Site ID</label><input name="site_id" type="text" value="{escape(_related_id(vlan.get('site')))}" /></div>
         </div>
-        <div class="field"><label>Descrição</label><input name="description" type="text" value="{escape(_normalize_text(vlan.get('description')))}" /></div>
+        <div class="field"><label>DescriÃ§Ã£o</label><input name="description" type="text" value="{escape(_normalize_text(vlan.get('description')))}" /></div>
         <div style="display:flex; gap:10px; flex-wrap:wrap;">
           <button class="btn primary" type="submit">Salvar VLAN</button>
           <a class="btn" href="/vlans">Limpar</a>
@@ -2390,7 +2503,7 @@ def _prefix_form(
           </div>
           <div class="field"><label>VLAN associada</label><input name="vlan_id" type="text" value="{escape(_related_id(prefix.get('vlan')))}" placeholder="50" /></div>
         </div>
-        <div class="field"><label>Descrição</label><input name="description" type="text" value="{escape(_normalize_text(prefix.get('description')))}" /></div>
+        <div class="field"><label>DescriÃ§Ã£o</label><input name="description" type="text" value="{escape(_normalize_text(prefix.get('description')))}" /></div>
         <div class="panel" style="margin:14px 0 0; background:#0f0f12;">
           <h3 style="margin-top:0;">Mapa da rota</h3>
           <p>Preencha de onde essa VLAN ou prefixo nasce, por qual porta sai e para onde segue.</p>
@@ -2467,21 +2580,21 @@ def _render_topology_rows(
         prefix = prefix_lookup.get(str(entry.get("prefix_id")))
         if not prefix:
             continue
-        origin_device = device_lookup.get(_normalize_text(entry.get("origin_device_id")), "—")
-        next_device = device_lookup.get(_normalize_text(entry.get("next_device_id")), "—")
+        origin_device = device_lookup.get(_normalize_text(entry.get("origin_device_id")), "â€”")
+        next_device = device_lookup.get(_normalize_text(entry.get("next_device_id")), "â€”")
         rows.append(
             f"""
             <tr>
-              <td><strong>{escape(_normalize_text(prefix.get('prefix')) or '—')}</strong></td>
+              <td><strong>{escape(_normalize_text(prefix.get('prefix')) or 'â€”')}</strong></td>
               <td>{escape(_normalize_text(entry.get('network_kind')) or ('VLAN' if _related_id(prefix.get('vlan')) else 'Prefixo'))}</td>
-              <td>{escape(_related_id(prefix.get('vlan')) or '—')}</td>
+              <td>{escape(_related_id(prefix.get('vlan')) or 'â€”')}</td>
               <td>{escape(origin_device)}</td>
-              <td>{escape(_normalize_text(entry.get('origin_interface')) or '—')}</td>
-              <td>{escape(_normalize_text(entry.get('origin_mode')) or '—')}</td>
+              <td>{escape(_normalize_text(entry.get('origin_interface')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(entry.get('origin_mode')) or 'â€”')}</td>
               <td>{escape(next_device)}</td>
-              <td>{escape(_normalize_text(entry.get('next_interface')) or '—')}</td>
-              <td>{escape(_normalize_text(entry.get('next_mode')) or '—')}</td>
-              <td>{escape(_normalize_text(entry.get('route_notes')) or '—')}</td>
+              <td>{escape(_normalize_text(entry.get('next_interface')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(entry.get('next_mode')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(entry.get('route_notes')) or 'â€”')}</td>
             </tr>
             """
         )
@@ -2511,13 +2624,13 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
         rows.append(
             f"""
             <tr>
-              <td><strong>{escape(_normalize_text(device.get('name')) or '—')}</strong></td>
+              <td><strong>{escape(_normalize_text(device.get('name')) or 'â€”')}</strong></td>
               <td>{escape(_relation_label(device.get('status')))}</td>
               <td>{escape(_relation_label(device.get('site')))}</td>
               <td>{escape(_relation_label(device.get('role')))}</td>
               <td>{escape(_relation_label(device.get('device_type')))}</td>
               <td>{escape(_relation_label(device.get('primary_ip4')))}</td>
-              <td>{escape(_normalize_text(device.get('serial')) or '—')}</td>
+              <td>{escape(_normalize_text(device.get('serial')) or 'â€”')}</td>
               <td><a href="/devices?edit={escape(_related_id(device.get('id')))}">Editar</a></td>
             </tr>
             """
@@ -2545,8 +2658,8 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
             title="Devices | infra-sync-api",
             active="devices",
             heading="Devices",
-            subtitle="Criar, editar e inspecionar equipamentos do inventário.",
-            actions=f'<a class="btn" href="/">Dashboard</a><a class="btn" href="/snmp">Leitura SNMP</a><a class="btn" href="/reports">Imprimir relatório</a>',
+            subtitle="Criar, editar e inspecionar equipamentos do inventÃ¡rio.",
+            actions=f'<a class="btn" href="/">Dashboard</a><a class="btn" href="/snmp">Leitura SNMP</a><a class="btn" href="/reports">Imprimir relatÃ³rio</a>',
             body=body,
             banner=banner,
         )
@@ -2568,7 +2681,7 @@ async def save_device_page(request: Request):
             try:
                 payload[key.replace("_id", "")] = int(value)
             except ValueError as exc:
-                return HTMLResponse(await _render_crud_error(request, "devices", f"{key} precisa ser um inteiro válido"), status_code=status.HTTP_400_BAD_REQUEST)
+                return HTMLResponse(await _render_crud_error(request, "devices", f"{key} precisa ser um inteiro vÃ¡lido"), status_code=status.HTTP_400_BAD_REQUEST)
     try:
         custom_fields = _parse_custom_fields_form(form, limit=6)
     except (ValueError, json.JSONDecodeError) as exc:
@@ -2614,11 +2727,11 @@ async def vlans_page(request: Request, saved: int = 0, error: str | None = None,
         rows.append(
             f"""
             <tr>
-              <td><strong>{escape(_normalize_text(vlan.get('vid')) or '—')}</strong></td>
-              <td>{escape(_normalize_text(vlan.get('name')) or '—')}</td>
+              <td><strong>{escape(_normalize_text(vlan.get('vid')) or 'â€”')}</strong></td>
+              <td>{escape(_normalize_text(vlan.get('name')) or 'â€”')}</td>
               <td>{escape(_relation_label(vlan.get('status')))}</td>
               <td>{escape(_relation_label(vlan.get('site')))}</td>
-              <td>{escape(_normalize_text(vlan.get('description')) or '—')}</td>
+              <td>{escape(_normalize_text(vlan.get('description')) or 'â€”')}</td>
               <td><a href="/vlans?edit={escape(_related_id(vlan.get('id')))}">Editar</a></td>
             </tr>
             """
@@ -2631,9 +2744,9 @@ async def vlans_page(request: Request, saved: int = 0, error: str | None = None,
       {_vlan_form(edit_vlan)}
       <div class="panel">
         <h2>VLANs cadastradas</h2>
-        <p>Segmentações registradas no NetBox.</p>
+        <p>SegmentaÃ§Ãµes registradas no NetBox.</p>
         <table>
-          <thead><tr><th>VID</th><th>Nome</th><th>Status</th><th>Site</th><th>Descrição</th><th></th></tr></thead>
+          <thead><tr><th>VID</th><th>Nome</th><th>Status</th><th>Site</th><th>DescriÃ§Ã£o</th><th></th></tr></thead>
           <tbody>{''.join(rows) if rows else _render_table_empty('Nenhuma VLAN encontrada.', 6)}</tbody>
         </table>
       </div>
@@ -2644,8 +2757,8 @@ async def vlans_page(request: Request, saved: int = 0, error: str | None = None,
             title="VLANs | infra-sync-api",
             active="vlans",
             heading="VLANs",
-            subtitle="Criar, editar e visualizar segmentações de rede.",
-            actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatório</a>',
+            subtitle="Criar, editar e visualizar segmentaÃ§Ãµes de rede.",
+            actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatÃ³rio</a>',
             body=body,
             banner=banner,
         )
@@ -2666,7 +2779,7 @@ async def save_vlan_page(request: Request):
         try:
             payload["site"] = int(site_id)
         except ValueError:
-            return HTMLResponse(await _render_crud_error(request, "vlans", "site_id precisa ser um inteiro válido"), status_code=status.HTTP_400_BAD_REQUEST)
+            return HTMLResponse(await _render_crud_error(request, "vlans", "site_id precisa ser um inteiro vÃ¡lido"), status_code=status.HTTP_400_BAD_REQUEST)
     vlan_id = _form_value(form, "vlan_id")
     try:
         if vlan_id:
@@ -2875,9 +2988,32 @@ async def api_alerts(request: Request):
 
 
 @app.get("/alerts", include_in_schema=False)
-async def alerts_page(request: Request):
+async def alerts_page(request: Request, info: str | None = None, error: str | None = None):
     refresh_seconds = _refresh_interval_seconds(request.app.state.runtime)
-    return HTMLResponse(_render_alerts_page(await api_alerts(request), refresh_seconds))
+    payload = await api_alerts(request)
+    if info:
+        payload = dict(payload)
+        payload["info"] = info
+    if error:
+        payload = dict(payload)
+        payload["error"] = error
+    return HTMLResponse(_render_alerts_page(payload, refresh_seconds))
+
+
+@app.post("/alerts/email/send", include_in_schema=False)
+async def send_alerts_email(request: Request):
+    runtime = request.app.state.runtime
+    email_config = runtime.get("email")
+    payload = await api_alerts(request)
+    alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
+    try:
+        result = await asyncio.to_thread(send_alert_email, email_config, alerts, source="Zabbix")
+        message = f"E-mail enviado para {len(result['recipients'])} destinatario(s) com {result['alerts']} alerta(s)."
+        return RedirectResponse(url=f"/alerts?info={quote(message)}", status_code=status.HTTP_303_SEE_OTHER)
+    except EmailNotificationError as exc:
+        return RedirectResponse(url=f"/alerts?error={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
+    except Exception as exc:
+        return RedirectResponse(url=f"/alerts?error={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/reports", include_in_schema=False)
@@ -2889,27 +3025,38 @@ async def reports_page(request: Request):
 def _render_alerts_page(payload: dict[str, Any], refresh_seconds: int) -> str:
     alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
     error_message = _normalize_text(payload.get("error"))
+    info_message = _normalize_text(payload.get("info"))
     rows = []
     for alert in alerts:
         hosts = alert.get("hosts") if isinstance(alert.get("hosts"), list) else []
-        host_name = _relation_label(hosts[0]) if hosts else "—"
+        host_name = _relation_label(hosts[0]) if hosts else "â€”"
         rows.append(
             f"""
             <tr>
-              <td>{escape(_normalize_text(alert.get('name')) or '—')}</td>
-              <td>{escape(_normalize_text(alert.get('severity')) or '—')}</td>
+              <td>{escape(_normalize_text(alert.get('name')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(alert.get('severity')) or 'â€”')}</td>
               <td>{escape(_normalize_text(host_name))}</td>
-              <td>{escape(_normalize_text(alert.get('clock')) or '—')}</td>
+              <td>{escape(_normalize_text(alert.get('clock')) or 'â€”')}</td>
             </tr>
             """
         )
-    banner = f"<div class='hero'><small>Erro</small><strong>{escape(error_message)}</strong><div class='sub' style='margin: 6px 0 0;'>O Zabbix respondeu sem permissão suficiente para problem.get. O painel segue operando com o inventário e demais telas.</div></div>" if error_message else ""
+    banner = ""
+    if error_message:
+        banner = f"<div class='hero'><small>Erro</small><strong>{escape(error_message)}</strong><div class='sub' style='margin: 6px 0 0;'>O Zabbix respondeu sem permissÃ£o suficiente para problem.get. O painel segue operando com o inventÃ¡rio e demais telas.</div></div>"
+    elif info_message:
+        banner = f"<div class='hero'><small>OK</small><strong>{escape(info_message)}</strong></div>"
     body = f"""
     {banner}
     <div class="panel">
       <h2>Alertas ativos</h2>
-      <p>Atualiza automaticamente pelo Zabbix em carregamentos de página e via API.</p>
-    <table>
+      <p>Atualiza automaticamente pelo Zabbix em carregamentos de pÃ¡gina e via API.</p>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 14px;">
+        <form method="post" action="/alerts/email/send" style="margin:0;">
+          <button class="btn primary" type="submit">Enviar e-mail de alertas</button>
+        </form>
+        <a class="btn" href="/settings">Configurar SMTP</a>
+      </div>
+      <table>
         <thead><tr><th>Problema</th><th>Severidade</th><th>Host</th><th>Clock</th></tr></thead>
         <tbody id="alerts-body">{''.join(rows) if rows else _render_table_empty('Nenhum alerta aberto no momento.', 4)}</tbody>
       </table>
@@ -2928,8 +3075,8 @@ def _render_alerts_page(payload: dict[str, Any], refresh_seconds: int) -> str:
           const response = await fetch('/api/alerts');
           const data = await response.json();
           const rows = (data.alerts || []).map((alert) => {{
-            const host = (alert.hosts && alert.hosts[0] && (alert.hosts[0].name || alert.hosts[0].host || alert.hosts[0].hostid)) || '—';
-            return `<tr><td>${{escapeHtml(alert.name || '—')}}</td><td>${{escapeHtml(alert.severity || '—')}}</td><td>${{escapeHtml(host)}}</td><td>${{escapeHtml(alert.clock || '—')}}</td></tr>`;
+            const host = (alert.hosts && alert.hosts[0] && (alert.hosts[0].name || alert.hosts[0].host || alert.hosts[0].hostid)) || 'â€”';
+            return `<tr><td>${{escapeHtml(alert.name || 'â€”')}}</td><td>${{escapeHtml(alert.severity || 'â€”')}}</td><td>${{escapeHtml(host)}}</td><td>${{escapeHtml(alert.clock || 'â€”')}}</td></tr>`;
           }}).join('');
           document.getElementById('alerts-body').innerHTML = rows || '<tr><td colspan="4">Nenhum alerta aberto no momento.</td></tr>';
         }} catch (error) {{}}
@@ -2943,7 +3090,7 @@ def _render_alerts_page(payload: dict[str, Any], refresh_seconds: int) -> str:
         active="alerts",
         heading="Alertas em tempo real",
         subtitle="Problemas e eventos abertos no Zabbix.",
-        actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatório</a>',
+        actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatÃ³rio</a>',
         body=body,
     )
 
@@ -2981,10 +3128,10 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
     if last_probe:
         summary = f"""
         <div class="metrics">
-          <article class="metric-card"><div class="metric-label">SysName</div><div class="metric-value" style="font-size:22px">{escape(_normalize_text(last_probe.get("sys_name")) or '—')}</div><div class="metric-note">{escape(_normalize_text(last_probe.get("sys_descr")) or 'Sem descrição')}</div></article>
-          <article class="metric-card"><div class="metric-label">Interfaces</div><div class="metric-value">{escape(_normalize_text(last_probe.get("if_number")) or '—')}</div><div class="metric-note">Portas/links vistos pelo SNMP.</div></article>
-          <article class="metric-card"><div class="metric-label">Memória</div><div class="metric-value">{escape(_normalize_text(last_probe.get("hr_memory_size")) or '—')}</div><div class="metric-note">Total reportado pelo agente.</div></article>
-          <article class="metric-card"><div class="metric-label">CPU média</div><div class="metric-value">{escape(_normalize_text(last_probe.get("processor_load_average")) or '—')}</div><div class="metric-note">Média dos processadores coletados.</div></article>
+          <article class="metric-card"><div class="metric-label">SysName</div><div class="metric-value" style="font-size:22px">{escape(_normalize_text(last_probe.get("sys_name")) or 'â€”')}</div><div class="metric-note">{escape(_normalize_text(last_probe.get("sys_descr")) or 'Sem descriÃ§Ã£o')}</div></article>
+          <article class="metric-card"><div class="metric-label">Interfaces</div><div class="metric-value">{escape(_normalize_text(last_probe.get("if_number")) or 'â€”')}</div><div class="metric-note">Portas/links vistos pelo SNMP.</div></article>
+          <article class="metric-card"><div class="metric-label">MemÃ³ria</div><div class="metric-value">{escape(_normalize_text(last_probe.get("hr_memory_size")) or 'â€”')}</div><div class="metric-note">Total reportado pelo agente.</div></article>
+          <article class="metric-card"><div class="metric-label">CPU mÃ©dia</div><div class="metric-value">{escape(_normalize_text(last_probe.get("processor_load_average")) or 'â€”')}</div><div class="metric-note">MÃ©dia dos processadores coletados.</div></article>
         </div>
         """
     rows = []
@@ -2994,17 +3141,17 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
         rows.append(
             f"""
             <tr>
-              <td>{escape(_normalize_text(port.get('index')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('name')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('description')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('alias')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('admin_status')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('oper_status')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('speed_bps')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('in_octets')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('out_octets')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('in_rate_bps')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('out_rate_bps')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('index')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('name')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('description')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('alias')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('admin_status')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('oper_status')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('speed_bps')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('in_octets')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('out_octets')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('in_rate_bps')) or 'â€”')}</td>
+              <td>{escape(_normalize_text(port.get('out_rate_bps')) or 'â€”')}</td>
             </tr>
             """
         )
@@ -3012,14 +3159,14 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
     {banner}
     <div class="panel" style="margin-bottom:14px;">
       <h2>Consulta SNMP</h2>
-      <p>Informe o IP privado do switch ou servidor e a community para coletar portas, CPU, memória e tráfego.</p>
+      <p>Informe o IP privado do switch ou servidor e a community para coletar portas, CPU, memÃ³ria e trÃ¡fego.</p>
       <form method="post" action="/snmp/probe">
         <div class="form-grid">
           <div class="field"><label for="ip">IP</label><input id="ip" name="ip" type="text" value="{escape(_normalize_text(last_probe.get('ip')) if last_probe else '')}" placeholder="10.0.0.24" /></div>
           <div class="field"><label for="community">Community</label><input id="community" name="community" type="password" value="" placeholder="public" /></div>
           <div class="field"><label for="timeout">Timeout</label><input id="timeout" name="timeout" type="text" value="1.0" /></div>
           <div class="field"><label for="retries">Retries</label><input id="retries" name="retries" type="text" value="0" /></div>
-          <div class="field"><label for="max_ports">Máximo de portas</label><input id="max_ports" name="max_ports" type="text" value="48" /></div>
+          <div class="field"><label for="max_ports">MÃ¡ximo de portas</label><input id="max_ports" name="max_ports" type="text" value="48" /></div>
         </div>
         <div style="display:flex; gap:10px; flex-wrap:wrap;">
           <button class="btn primary" type="submit">Consultar SNMP</button>
@@ -3030,11 +3177,11 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
     {summary}
     <div class="panel" style="margin-top:14px;">
       <h2>Portas</h2>
-      <p>Descrição, alias, status e contadores por interface.</p>
+      <p>DescriÃ§Ã£o, alias, status e contadores por interface.</p>
       <table>
         <thead>
           <tr>
-            <th>Índice</th><th>Nome</th><th>Descrição</th><th>Alias</th><th>Admin</th><th>Oper</th><th>Speed</th><th>Entrada</th><th>Saída</th><th>Rate In</th><th>Rate Out</th>
+            <th>Ãndice</th><th>Nome</th><th>DescriÃ§Ã£o</th><th>Alias</th><th>Admin</th><th>Oper</th><th>Speed</th><th>Entrada</th><th>SaÃ­da</th><th>Rate In</th><th>Rate Out</th>
           </tr>
         </thead>
         <tbody>{''.join(rows) if rows else _render_table_empty('Nenhuma porta coletada ainda.', 11)}</tbody>
@@ -3045,7 +3192,7 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
         title="SNMP | infra-sync-api",
         active="snmp",
         heading="SNMP",
-        subtitle="Leitura detalhada de portas, CPU, memória e tráfego por equipamento.",
+        subtitle="Leitura detalhada de portas, CPU, memÃ³ria e trÃ¡fego por equipamento.",
         actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/devices">Devices</a>',
         body=body,
     )
@@ -3056,9 +3203,9 @@ def _render_reports_page(snapshot: dict[str, Any]) -> str:
     alert_rows = []
     for alert in alerts[:10]:
         hosts = alert.get("hosts") if isinstance(alert.get("hosts"), list) else []
-        host_name = _relation_label(hosts[0]) if hosts else "—"
+        host_name = _relation_label(hosts[0]) if hosts else "â€”"
         alert_rows.append(
-            f"<tr><td>{escape(_normalize_text(alert.get('name')) or '—')}</td><td>{escape(_normalize_text(host_name))}</td><td>{escape(_normalize_text(alert.get('severity')) or '—')}</td></tr>"
+            f"<tr><td>{escape(_normalize_text(alert.get('name')) or 'â€”')}</td><td>{escape(_normalize_text(host_name))}</td><td>{escape(_normalize_text(alert.get('severity')) or 'â€”')}</td></tr>"
         )
     body = f"""
     <style>
@@ -3069,15 +3216,15 @@ def _render_reports_page(snapshot: dict[str, Any]) -> str:
       }}
     </style>
     <div class="panel">
-      <h2>Relatório executivo</h2>
-      <p>Resumo operacional pronto para impressão ou PDF do navegador.</p>
+      <h2>RelatÃ³rio executivo</h2>
+      <p>Resumo operacional pronto para impressÃ£o ou PDF do navegador.</p>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 14px;">
         <button class="btn primary" type="button" onclick="window.print()">Imprimir</button>
         <a class="btn" href="/alerts">Ver alertas</a>
         <a class="btn" href="/devices">Ver devices</a>
       </div>
       <table>
-        <thead><tr><th>Métrica</th><th>Valor</th></tr></thead>
+        <thead><tr><th>MÃ©trica</th><th>Valor</th></tr></thead>
         <tbody>
           {''.join(f'<tr><td>{escape(card["label"])}</td><td>{escape(str(card["value"]))}</td></tr>' for card in snapshot["cards"])}
         </tbody>
@@ -3092,9 +3239,9 @@ def _render_reports_page(snapshot: dict[str, Any]) -> str:
     </div>
     """
     return _render_management_page(
-        title="Relatórios | infra-sync-api",
+        title="RelatÃ³rios | infra-sync-api",
         active="reports",
-        heading="Relatórios",
+        heading="RelatÃ³rios",
         subtitle="Resumo executivo para imprimir, salvar em PDF ou compartilhar.",
         actions='<button class="btn primary" type="button" onclick="window.print()">Imprimir</button><a class="btn" href="/">Dashboard</a>',
         body=body,
@@ -3104,10 +3251,11 @@ def _render_reports_page(snapshot: dict[str, Any]) -> str:
 async def _render_crud_error(request: Request, active: str, message: str) -> str:
     title_map = {"devices": "Devices", "vlans": "VLANs", "networks": "Redes"}
     return _render_management_page(
-        title=f"{title_map.get(active, 'Operação')} | infra-sync-api",
+        title=f"{title_map.get(active, 'OperaÃ§Ã£o')} | infra-sync-api",
         active=active,
-        heading=title_map.get(active, "Operação"),
+        heading=title_map.get(active, "OperaÃ§Ã£o"),
         subtitle="Houve um problema ao salvar os dados.",
         actions='<a class="btn" href="/">Dashboard</a>',
         body=f"<div class='hero'><small>Erro</small><strong>{escape(message)}</strong></div>",
     )
+
