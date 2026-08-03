@@ -37,6 +37,7 @@ Se `NETBOX_TOKEN` estiver vazio, a aplicacao deve ser tratada como incompleta e 
 
 ## Endpoints
 
+- `GET /` -> redireciona para `/docs`
 - `GET /health`
 - `GET /version`
 - `POST /sync/device`
