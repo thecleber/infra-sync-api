@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from .utils import normalize_auth_header
+
 
 @dataclass(slots=True)
 class NetBoxResult:
@@ -29,7 +31,7 @@ class NetBoxClient:
             timeout=httpx.Timeout(timeout),
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
             headers={
-                "Authorization": f"Token {token}",
+                "Authorization": normalize_auth_header(token),
                 "Accept": "application/json",
                 "Content-Type": "application/json",
             },

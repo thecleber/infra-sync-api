@@ -47,3 +47,9 @@ def truthy_string(value: str | None) -> bool:
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
+
+def normalize_auth_header(token: str) -> str:
+    cleaned = token.strip()
+    if cleaned.lower().startswith(("bearer ", "token ")):
+        return cleaned
+    return f"Token {cleaned}"

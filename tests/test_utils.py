@@ -1,4 +1,10 @@
-from app.utils import is_ipv4_only_hostname, merge_custom_fields, normalize_ip_input, slugify
+from app.utils import (
+    is_ipv4_only_hostname,
+    merge_custom_fields,
+    normalize_auth_header,
+    normalize_ip_input,
+    slugify,
+)
 
 
 def test_slugify_removes_accents_and_symbols():
@@ -22,3 +28,8 @@ def test_merge_custom_fields_preserves_existing_values():
     merged = merge_custom_fields({"site_tag": "A", "zabbix_hostid": "old"}, "10917")
     assert merged == {"site_tag": "A", "zabbix_hostid": "10917"}
 
+
+def test_normalize_auth_header_accepts_prefixed_tokens():
+    assert normalize_auth_header("Bearer abc123") == "Bearer abc123"
+    assert normalize_auth_header("Token abc123") == "Token abc123"
+    assert normalize_auth_header("abc123") == "Token abc123"

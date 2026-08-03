@@ -33,6 +33,8 @@ Se `NETBOX_TOKEN` estiver vazio, a aplicacao deve ser tratada como incompleta e 
 - `REQUEST_TIMEOUT`: timeout HTTP em segundos.
 - `LOG_LEVEL`: nivel de log.
 
+- `NETBOX_TOKEN` pode ser informado cru ou já com prefixo `Bearer ` ou `Token `.
+
 ## Endpoints
 
 - `GET /health`
@@ -173,4 +175,3 @@ O `compose.yaml` usa:
 - A API nao expõe `NETBOX_TOKEN` nem `SYNC_API_KEY` em log.
 - O modo `dry-run` consulta o NetBox, mas nao cria nem atualiza nada.
 - A criacao real do Device deve ser feita somente com autorizacao.
-
