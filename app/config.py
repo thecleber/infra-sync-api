@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     zabbix_token: str | None = None
     zabbix_timeout: float = 30.0
     log_level: str = "INFO"
-    allowed_client_cidrs: str = "127.0.0.1/32,10.254.0.0/24,10.0.0.115/32"
+    allowed_client_cidrs: str = "127.0.0.1/32,10.0.0.0/24,10.254.0.0/24,10.0.0.115/32"
 
     @field_validator("netbox_url")
     @classmethod

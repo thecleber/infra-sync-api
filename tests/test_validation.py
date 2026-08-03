@@ -85,8 +85,8 @@ def test_allowed_client_cidrs_normalize():
         netbox_url="http://10.254.0.15:8000",
         netbox_token="Bearer test-token",
         sync_api_key="test-api-key",
-        allowed_client_cidrs="127.0.0.1/32, 10.254.0.0/24,10.0.0.115/32",
+        allowed_client_cidrs="127.0.0.1/32, 10.0.0.0/24,10.254.0.0/24,10.0.0.115/32",
     )
 
-    assert settings.allowed_client_cidrs == "127.0.0.1/32,10.254.0.0/24,10.0.0.115/32"
-    assert len(settings.allowed_client_networks()) == 3
+    assert settings.allowed_client_cidrs == "127.0.0.1/32,10.0.0.0/24,10.254.0.0/24,10.0.0.115/32"
+    assert len(settings.allowed_client_networks()) == 4
