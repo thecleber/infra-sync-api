@@ -2728,7 +2728,7 @@ async def snmp_probe_page(request: Request):
 
 def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | None = None) -> str:
     last_probe = state.get("last_probe") if isinstance(state.get("last_probe"), dict) else None
-    ports = last_probe.get("ports") if isinstance(last_probe.get("ports"), list) else [] if last_probe else []
+    ports = last_probe.get("ports") if last_probe and isinstance(last_probe.get("ports"), list) else []
     banner = ""
     if saved:
         banner = "<div class='hero'><small>Salvo</small><strong>Leitura SNMP atualizada com sucesso.</strong></div>"
