@@ -237,6 +237,9 @@ def test_management_pages_render(monkeypatch):
     assert "VLANs cadastradas" in vlans.text
     assert networks.status_code == 200
     assert "Redes e prefixes" in networks.text
+    assert "Mapa da rede" in networks.text
+    assert "Tipo da rede" in networks.text
+    assert "Mapa da rota" in networks.text
     assert alerts.status_code == 200
     assert "Alertas ativos" in alerts.text
     assert reports.status_code == 200
@@ -316,6 +319,42 @@ def test_snmp_probe_post_renders_success(monkeypatch):
 
     assert response.status_code == 200
     assert "Leitura SNMP atualizada com sucesso" in response.text
+
+
+def test_topology_page_renders(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+    monkeypatch.setattr(
+        new_main,
+        "load_network_topology",
+        lambda: {
+            "entries": [
+                {
+                    "prefix_id": "301",
+                    "network_kind": "vlan",
+                    "origin_device_id": "101",
+                    "origin_interface": "port 1",
+                    "origin_mode": "trunk",
+                    "next_device_id": "101",
+                    "next_interface": "port 7",
+                    "next_mode": "tagged",
+                    "route_notes": "CCR trunk vlan 50",
+                }
+            ]
+        },
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/topology", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "Mapa da rede" in response.text
+    assert "CCR trunk vlan 50" in response.text
 
 
 def test_api_alerts_returns_json(monkeypatch):

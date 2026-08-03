@@ -26,6 +26,7 @@ from .zabbix_client import ZabbixClient, ZabbixClientError
 
 
 RUNTIME_CONFIG_PATH = Path("data") / "integrations.json"
+TOPOLOGY_CONFIG_PATH = Path("data") / "network_topology.json"
 
 
 def configure_logging(level: str) -> None:
@@ -2156,6 +2157,66 @@ def _parse_custom_fields_form(form: dict[str, str], *, limit: int = 6) -> dict[s
     return custom_fields
 
 
+def _default_topology_state() -> dict[str, Any]:
+    return {"entries": []}
+
+
+def load_network_topology() -> dict[str, Any]:
+    return _load_json(TOPOLOGY_CONFIG_PATH, default=_default_topology_state())
+
+
+def save_network_topology(payload: dict[str, Any]) -> None:
+    _save_json(TOPOLOGY_CONFIG_PATH, payload)
+
+
+def _network_topology_entries(state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(state, dict):
+        return []
+    entries = state.get("entries")
+    return [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+
+def _topology_entry_for_prefix(topology_state: dict[str, Any] | None, prefix_id: Any) -> dict[str, Any] | None:
+    if prefix_id in (None, "") or not isinstance(topology_state, dict):
+        return None
+    target = str(prefix_id)
+    for entry in _network_topology_entries(topology_state):
+        if str(entry.get("prefix_id")) == target:
+            return entry
+    return None
+
+
+def _render_device_choice_options(devices: list[dict[str, Any]], selected: Any = "") -> str:
+    selected_value = str(selected or "")
+    options = ['<option value="">-</option>']
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        value = _related_id(device.get("id"))
+        label = _normalize_text(device.get("name")) or value or "-"
+        site = _relation_label(device.get("site"))
+        if site and site != "—":
+            label = f"{label} ({site})"
+        current = " selected" if value and value == selected_value else ""
+        options.append(f'<option value="{escape(value)}"{current}>{escape(label)}</option>')
+    return "".join(options)
+
+
+def _load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    if not path.exists():
+        return default
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+    return data if isinstance(data, dict) else default
+
+
+def _save_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def _query_value(request: Request, name: str, default: str = "") -> str:
     return _normalize_text(request.query_params.get(name, default))
 
@@ -2299,21 +2360,79 @@ def _vlan_form(vlan: dict[str, Any] | None = None) -> str:
     """
 
 
-def _prefix_form(prefix: dict[str, Any] | None = None) -> str:
+def _prefix_form(
+    prefix: dict[str, Any] | None = None,
+    topology: dict[str, Any] | None = None,
+    device_choices: list[dict[str, Any]] | None = None,
+) -> str:
     prefix = prefix or {}
+    topology = topology or {}
+    device_choices = device_choices or []
+    network_kind = _normalize_text(topology.get("network_kind")) or ("vlan" if _related_id(prefix.get("vlan")) else "prefix")
+    origin_device_id = _normalize_text(topology.get("origin_device_id"))
+    next_device_id = _normalize_text(topology.get("next_device_id"))
     return f"""
     <div class="panel">
       <h2>{'Editar rede' if prefix.get('id') else 'Criar rede'}</h2>
-      <p>Cadastro de prefixos e blocos IP para IPAM.</p>
+      <p>Cadastro de prefixos e blocos IP para IPAM e desenho da rota entre equipamentos.</p>
       <form method="post" action="/networks/save">
         <input type="hidden" name="prefix_id" value="{escape(_related_id(prefix.get('id')))}" />
         <div class="form-grid">
           <div class="field"><label>Prefixo</label><input name="prefix" type="text" value="{escape(_normalize_text(prefix.get('prefix')))}" placeholder="10.0.0.0/24" /></div>
           <div class="field"><label>Status</label><input name="status" type="text" value="{escape(_status_value(prefix.get('status')))}" /></div>
           <div class="field"><label>Site ID</label><input name="site_id" type="text" value="{escape(_related_id(prefix.get('site')))}" /></div>
-          <div class="field"><label>VLAN ID</label><input name="vlan_id" type="text" value="{escape(_related_id(prefix.get('vlan')))}" /></div>
+          <div class="field">
+            <label>Tipo da rede</label>
+            <select name="network_kind">
+              <option value="prefix" {"selected" if network_kind == "prefix" else ""}>Prefixo</option>
+              <option value="vlan" {"selected" if network_kind == "vlan" else ""}>VLAN</option>
+            </select>
+          </div>
+          <div class="field"><label>VLAN associada</label><input name="vlan_id" type="text" value="{escape(_related_id(prefix.get('vlan')))}" placeholder="50" /></div>
         </div>
         <div class="field"><label>Descrição</label><input name="description" type="text" value="{escape(_normalize_text(prefix.get('description')))}" /></div>
+        <div class="panel" style="margin:14px 0 0; background:#0f0f12;">
+          <h3 style="margin-top:0;">Mapa da rota</h3>
+          <p>Preencha de onde essa VLAN ou prefixo nasce, por qual porta sai e para onde segue.</p>
+          <div class="form-grid">
+            <div class="field">
+              <label>Equipamento de origem</label>
+              <select name="origin_device_id">
+                {_render_device_choice_options(device_choices, origin_device_id)}
+              </select>
+            </div>
+            <div class="field"><label>Porta de origem</label><input name="origin_interface" type="text" value="{escape(_normalize_text(topology.get('origin_interface')))}" placeholder="Gi0/7" /></div>
+            <div class="field">
+              <label>Saida da origem</label>
+              <select name="origin_mode">
+                <option value="">-</option>
+                <option value="tagged" {"selected" if _normalize_text(topology.get('origin_mode')) == 'tagged' else ""}>Tagged</option>
+                <option value="untagged" {"selected" if _normalize_text(topology.get('origin_mode')) == 'untagged' else ""}>Untagged</option>
+                <option value="trunk" {"selected" if _normalize_text(topology.get('origin_mode')) == 'trunk' else ""}>Trunk</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Equipamento seguinte</label>
+              <select name="next_device_id">
+                {_render_device_choice_options(device_choices, next_device_id)}
+              </select>
+            </div>
+            <div class="field"><label>Porta seguinte</label><input name="next_interface" type="text" value="{escape(_normalize_text(topology.get('next_interface')))}" placeholder="Porta 12" /></div>
+            <div class="field">
+              <label>Entrada no proximo salto</label>
+              <select name="next_mode">
+                <option value="">-</option>
+                <option value="tagged" {"selected" if _normalize_text(topology.get('next_mode')) == 'tagged' else ""}>Tagged</option>
+                <option value="untagged" {"selected" if _normalize_text(topology.get('next_mode')) == 'untagged' else ""}>Untagged</option>
+                <option value="trunk" {"selected" if _normalize_text(topology.get('next_mode')) == 'trunk' else ""}>Trunk</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Observacoes da rota</label>
+            <textarea name="route_notes" placeholder="CCR porta 7 trunk vlan 50">{escape(_normalize_text(topology.get('route_notes')))}</textarea>
+          </div>
+        </div>
         <div style="display:flex; gap:10px; flex-wrap:wrap;">
           <button class="btn primary" type="submit">Salvar rede</button>
           <a class="btn" href="/networks">Limpar</a>
@@ -2335,6 +2454,38 @@ async def _get_zabbix_client_or_error(request: Request) -> ZabbixClient:
     if client is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Zabbix client is not configured")
     return client
+
+
+def _render_topology_rows(
+    prefixes: list[dict[str, Any]],
+    topology_state: dict[str, Any] | None,
+    device_lookup: dict[str, str],
+) -> str:
+    prefix_lookup = {str(prefix.get("id")): prefix for prefix in prefixes if isinstance(prefix, dict)}
+    rows = []
+    for entry in _network_topology_entries(topology_state):
+        prefix = prefix_lookup.get(str(entry.get("prefix_id")))
+        if not prefix:
+            continue
+        origin_device = device_lookup.get(_normalize_text(entry.get("origin_device_id")), "—")
+        next_device = device_lookup.get(_normalize_text(entry.get("next_device_id")), "—")
+        rows.append(
+            f"""
+            <tr>
+              <td><strong>{escape(_normalize_text(prefix.get('prefix')) or '—')}</strong></td>
+              <td>{escape(_normalize_text(entry.get('network_kind')) or ('VLAN' if _related_id(prefix.get('vlan')) else 'Prefixo'))}</td>
+              <td>{escape(_related_id(prefix.get('vlan')) or '—')}</td>
+              <td>{escape(origin_device)}</td>
+              <td>{escape(_normalize_text(entry.get('origin_interface')) or '—')}</td>
+              <td>{escape(_normalize_text(entry.get('origin_mode')) or '—')}</td>
+              <td>{escape(next_device)}</td>
+              <td>{escape(_normalize_text(entry.get('next_interface')) or '—')}</td>
+              <td>{escape(_normalize_text(entry.get('next_mode')) or '—')}</td>
+              <td>{escape(_normalize_text(entry.get('route_notes')) or '—')}</td>
+            </tr>
+            """
+        )
+    return "".join(rows) if rows else _render_table_empty("Nenhuma rota cadastrada ainda.", 10)
 
 
 @app.get("/devices", include_in_schema=False)
@@ -2531,7 +2682,10 @@ async def save_vlan_page(request: Request):
 async def networks_page(request: Request, saved: int = 0, error: str | None = None, edit: int | None = None):
     client = request.app.state.netbox_client
     prefixes: list[dict[str, Any]] = []
+    devices: list[dict[str, Any]] = []
+    topology_state = load_network_topology()
     edit_prefix: dict[str, Any] | None = None
+    edit_topology: dict[str, Any] | None = None
     page_error = error
     try:
         if client is not None:
@@ -2540,8 +2694,10 @@ async def networks_page(request: Request, saved: int = 0, error: str | None = No
             if q:
                 params["q"] = q
             prefixes = await client.list_prefixes(params=params)
+            devices = await client.list_devices(params={"limit": 100})
             if edit is not None:
                 edit_prefix = await client.get_prefix(edit)
+                edit_topology = _topology_entry_for_prefix(topology_state, edit)
     except Exception as exc:
         page_error = str(exc)
     rows = []
@@ -2549,8 +2705,8 @@ async def networks_page(request: Request, saved: int = 0, error: str | None = No
         rows.append(
             f"""
             <tr>
-              <td><strong>{escape(_normalize_text(prefix.get('prefix')) or '—')}</strong></td>
-              <td>{escape(_normalize_text(prefix.get('description')) or '—')}</td>
+              <td><strong>{escape(_normalize_text(prefix.get('prefix')) or '?')}</strong></td>
+              <td>{escape(_normalize_text(prefix.get('description')) or '?')}</td>
               <td>{escape(_relation_label(prefix.get('status')))}</td>
               <td>{escape(_relation_label(prefix.get('site')))}</td>
               <td>{escape(_relation_label(prefix.get('vlan')))}</td>
@@ -2561,17 +2717,34 @@ async def networks_page(request: Request, saved: int = 0, error: str | None = No
     banner = "<div class='hero'><small>Salvo</small><strong>Rede atualizada com sucesso.</strong></div>" if saved else ""
     if page_error:
         banner = f"<div class='hero'><small>Erro</small><strong>{escape(page_error)}</strong></div>"
+    device_lookup = {
+        _related_id(device.get("id")): _normalize_text(device.get("name"))
+        for device in devices
+        if isinstance(device, dict)
+    }
     body = f"""
     <div class="panels" style="grid-template-columns: 1fr 1.2fr;">
-      {_prefix_form(edit_prefix)}
+      {_prefix_form(edit_prefix, edit_topology, devices)}
       <div class="panel">
         <h2>Redes e prefixes</h2>
         <p>Blocos IP cadastrados no IPAM do NetBox.</p>
         <table>
-          <thead><tr><th>Prefixo</th><th>Descrição</th><th>Status</th><th>Site</th><th>VLAN</th><th></th></tr></thead>
+          <thead><tr><th>Prefixo</th><th>Descricao</th><th>Status</th><th>Site</th><th>VLAN</th><th></th></tr></thead>
           <tbody>{''.join(rows) if rows else _render_table_empty('Nenhuma rede encontrada.', 6)}</tbody>
         </table>
       </div>
+    </div>
+    <div class="panel" style="margin-top:14px;">
+      <h2>Mapa da rede</h2>
+      <p>Origem, porta, modo e proximo salto de cada rede ou VLAN mapeada.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Rede</th><th>Tipo</th><th>VLAN</th><th>Origem</th><th>Porta origem</th><th>Modo origem</th><th>Proximo salto</th><th>Porta destino</th><th>Modo destino</th><th>Observacoes</th>
+          </tr>
+        </thead>
+        <tbody>{_render_topology_rows(prefixes, topology_state, device_lookup)}</tbody>
+      </table>
     </div>
     """
     return HTMLResponse(
@@ -2580,7 +2753,7 @@ async def networks_page(request: Request, saved: int = 0, error: str | None = No
             active="networks",
             heading="Redes",
             subtitle="Criar, editar e revisar blocos IP e prefixes.",
-            actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatório</a>',
+            actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/topology">Mapa</a><a class="btn" href="/reports">Imprimir relat?rio</a>',
             body=body,
             banner=banner,
         )
@@ -2601,22 +2774,92 @@ async def save_network_page(request: Request):
         try:
             payload["site"] = int(site_id)
         except ValueError:
-            return HTMLResponse(await _render_crud_error(request, "networks", "site_id precisa ser um inteiro válido"), status_code=status.HTTP_400_BAD_REQUEST)
+            return HTMLResponse(await _render_crud_error(request, "networks", "site_id precisa ser um inteiro v?lido"), status_code=status.HTTP_400_BAD_REQUEST)
     vlan_id = _form_value(form, "vlan_id")
     if vlan_id:
         try:
             payload["vlan"] = int(vlan_id)
         except ValueError:
-            return HTMLResponse(await _render_crud_error(request, "networks", "vlan_id precisa ser um inteiro válido"), status_code=status.HTTP_400_BAD_REQUEST)
+            return HTMLResponse(await _render_crud_error(request, "networks", "vlan_id precisa ser um inteiro v?lido"), status_code=status.HTTP_400_BAD_REQUEST)
     prefix_id = _form_value(form, "prefix_id")
     try:
         if prefix_id:
-            await client.update_prefix(int(prefix_id), payload)
+            saved_prefix = await client.update_prefix(int(prefix_id), payload)
         else:
-            await client.create_prefix(payload)
+            saved_prefix = await client.create_prefix(payload)
     except Exception as exc:
         return HTMLResponse(await _render_crud_error(request, "networks", str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
+    if isinstance(saved_prefix, dict):
+        topology_state = load_network_topology()
+        entry = {
+            "prefix_id": _related_id(saved_prefix.get("id")),
+            "network_kind": _form_value(form, "network_kind", "prefix") or "prefix",
+            "origin_device_id": _form_value(form, "origin_device_id"),
+            "origin_interface": _form_value(form, "origin_interface"),
+            "origin_mode": _form_value(form, "origin_mode"),
+            "next_device_id": _form_value(form, "next_device_id"),
+            "next_interface": _form_value(form, "next_interface"),
+            "next_mode": _form_value(form, "next_mode"),
+            "route_notes": _form_value(form, "route_notes"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        entries = _network_topology_entries(topology_state)
+        updated = False
+        for existing in entries:
+            if str(existing.get("prefix_id")) == str(entry["prefix_id"]):
+                existing.update({key: value for key, value in entry.items() if value != ""})
+                updated = True
+                break
+        if not updated:
+            entries.append({key: value for key, value in entry.items() if value != ""})
+        topology_state["entries"] = entries
+        save_network_topology(topology_state)
     return RedirectResponse(url="/networks?saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/topology", include_in_schema=False)
+async def topology_page(request: Request):
+    client = request.app.state.netbox_client
+    prefixes: list[dict[str, Any]] = []
+    devices: list[dict[str, Any]] = []
+    topology_state = load_network_topology()
+    page_error: str | None = None
+    try:
+        if client is not None:
+            prefixes = await client.list_prefixes(params={"limit": 100})
+            devices = await client.list_devices(params={"limit": 100})
+    except Exception as exc:
+        page_error = str(exc)
+    device_lookup = {
+        _related_id(device.get("id")): _normalize_text(device.get("name"))
+        for device in devices
+        if isinstance(device, dict)
+    }
+    body = f"""
+    <div class="panel">
+      <h2>Mapa da rede</h2>
+      <p>Visualizacao central das rotas entre redes, VLANs, switches e equipamentos.</p>
+      {f'<div class="hero"><small>Erro</small><strong>{escape(page_error)}</strong></div>' if page_error else ''}
+      <table>
+        <thead>
+          <tr>
+            <th>Rede</th><th>Tipo</th><th>VLAN</th><th>Origem</th><th>Porta origem</th><th>Modo origem</th><th>Proximo salto</th><th>Porta destino</th><th>Modo destino</th><th>Observacoes</th>
+          </tr>
+        </thead>
+        <tbody>{_render_topology_rows(prefixes, topology_state, device_lookup)}</tbody>
+      </table>
+    </div>
+    """
+    return HTMLResponse(
+        _render_management_page(
+            title="Mapa | infra-sync-api",
+            active="networks",
+            heading="Mapa da rede",
+            subtitle="Ligacoes entre equipamentos, portas, VLANs e prefixes.",
+            actions='<a class="btn" href="/networks">Redes</a><a class="btn" href="/devices">Devices</a>',
+            body=body,
+        )
+    )
 
 
 @app.get("/api/alerts")
