@@ -58,6 +58,8 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
     manufacturer_slug = slugify(payload.fabricante)
     device_type_slug = slugify(f"{payload.fabricante}-{payload.modelo}")
 
+    await _validate_site_and_role(client, payload.site_id or default_site_id, payload.role_id)
+
     manufacturer = await client.find_manufacturer_by_slug(manufacturer_slug)
     created_manufacturer = False
     if manufacturer is None and not dry_run:
@@ -149,6 +151,7 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                 "site": payload.site_id or default_site_id,
                 "status": "planned",
                 "custom_fields": merge_custom_fields({}, payload.hostid),
+                "comments": "Criado automaticamente pela integracao Zabbix/n8n e ainda precisa de validacao.",
             }
             device = await _create_or_refetch(
                 lambda: client.create_device(device_payload),
@@ -284,4 +287,20 @@ async def _create_or_refetch(create_fn, refetch_fn):
             refetched = await refetch_fn()
             if refetched is not None:
                 return refetched
+        raise
+
+
+async def _validate_site_and_role(client: NetBoxClient, site_id: int, role_id: int) -> None:
+    try:
+        await client.get_site(site_id)
+    except NetBoxClientError as exc:
+        if exc.status_code == 404:
+            raise SyncError(f"Site {site_id} was not found in NetBox", status_code=404) from exc
+        raise
+
+    try:
+        await client.get_device_role(role_id)
+    except NetBoxClientError as exc:
+        if exc.status_code == 404:
+            raise SyncError(f"Device role {role_id} was not found in NetBox", status_code=404) from exc
         raise

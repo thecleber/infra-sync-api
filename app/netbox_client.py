@@ -68,6 +68,12 @@ class NetBoxClient:
             return payload
         raise NetBoxClientError("NetBox detail response was not a JSON object", payload=payload)
 
+    async def get_site(self, site_id: int) -> dict[str, Any]:
+        return await self.get(f"/api/dcim/sites/{site_id}/")
+
+    async def get_device_role(self, role_id: int) -> dict[str, Any]:
+        return await self.get(f"/api/dcim/device-roles/{role_id}/")
+
     async def get_unique(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         results = await self.list(path, params=params)
         if len(results) == 1:
