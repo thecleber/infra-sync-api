@@ -1,4 +1,6 @@
+import ipaddress
 from functools import lru_cache
+from typing import Union
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,6 +19,7 @@ class Settings(BaseSettings):
     default_site_id: int = 1
     request_timeout: float = 30.0
     log_level: str = "INFO"
+    allowed_client_cidrs: str = "127.0.0.1/32,10.254.0.0/24,10.0.0.115/32"
 
     @field_validator("netbox_url")
     @classmethod
@@ -31,8 +34,23 @@ class Settings(BaseSettings):
     def normalize_log_level(cls, value: str) -> str:
         return value.strip().upper()
 
+    @field_validator("allowed_client_cidrs")
+    @classmethod
+    def normalize_allowed_client_cidrs(cls, value: str) -> str:
+        networks = []
+        for item in value.split(","):
+            cleaned = item.strip()
+            if not cleaned:
+                continue
+            networks.append(str(ipaddress.ip_network(cleaned, strict=False)))
+        if not networks:
+            raise ValueError("allowed_client_cidrs must contain at least one CIDR")
+        return ",".join(networks)
+
+    def allowed_client_networks(self) -> list[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]]:
+        return [ipaddress.ip_network(item.strip(), strict=False) for item in self.allowed_client_cidrs.split(",") if item.strip()]
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-

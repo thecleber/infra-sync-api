@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import ipaddress
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -43,6 +44,28 @@ def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Ke
 
 def get_client(request: Request) -> NetBoxClient:
     return request.app.state.netbox_client
+
+
+@app.middleware("http")
+async def restrict_client_networks(request: Request, call_next):
+    settings: Settings | None = getattr(request.app.state, "settings", None)
+    client = request.client
+    client_host = getattr(client, "host", None)
+
+    if settings is not None and client_host:
+        try:
+            client_ip = ipaddress.ip_address(client_host)
+        except ValueError:
+            client_ip = None
+        if client_ip is not None:
+            allowed = any(client_ip in network for network in settings.allowed_client_networks())
+            if not allowed:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "Client IP not allowed"},
+                )
+
+    return await call_next(request)
 
 
 @app.exception_handler(NetBoxClientError)

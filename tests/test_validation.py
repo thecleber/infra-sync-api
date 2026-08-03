@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.main import app
 from app.models import SyncDeviceRequest
 
@@ -78,3 +78,15 @@ def test_root_head_redirects_to_docs(monkeypatch):
 
     assert response.status_code == 307
     assert response.headers["location"] == "/docs"
+
+
+def test_allowed_client_cidrs_normalize():
+    settings = Settings(
+        netbox_url="http://10.254.0.15:8000",
+        netbox_token="Bearer test-token",
+        sync_api_key="test-api-key",
+        allowed_client_cidrs="127.0.0.1/32, 10.254.0.0/24,10.0.0.115/32",
+    )
+
+    assert settings.allowed_client_cidrs == "127.0.0.1/32,10.254.0.0/24,10.0.0.115/32"
+    assert len(settings.allowed_client_networks()) == 3
