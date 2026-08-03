@@ -91,6 +91,9 @@ class NetBoxClient:
     async def get_device_role(self, role_id: int) -> dict[str, Any]:
         return await self.get(f"/api/dcim/device-roles/{role_id}/")
 
+    async def get_device(self, device_id: int) -> dict[str, Any]:
+        return await self.get(f"/api/dcim/devices/{device_id}/")
+
     async def get_unique(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         results = await self.list(path, params=params)
         if len(results) == 1:
@@ -156,6 +159,9 @@ class NetBoxClient:
     async def find_devices_by_name(self, name: str) -> list[dict[str, Any]]:
         return await self.list("/api/dcim/devices/", params={"name": name})
 
+    async def list_devices(self, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return await self.list("/api/dcim/devices/", params=params)
+
     async def find_devices_by_ip(self, ip_value: str) -> list[dict[str, Any]]:
         ip_results = await self.list("/api/ipam/ip-addresses/", params={"address": ip_value})
         device_ids: list[dict[str, Any]] = []
@@ -182,6 +188,30 @@ class NetBoxClient:
 
     async def create_interface(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.create("/api/dcim/interfaces/", payload)
+
+    async def list_vlans(self, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return await self.list("/api/ipam/vlans/", params=params)
+
+    async def get_vlan(self, vlan_id: int) -> dict[str, Any]:
+        return await self.get(f"/api/ipam/vlans/{vlan_id}/")
+
+    async def create_vlan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.create("/api/ipam/vlans/", payload)
+
+    async def update_vlan(self, vlan_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.update(f"/api/ipam/vlans/{vlan_id}/", payload)
+
+    async def list_prefixes(self, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return await self.list("/api/ipam/prefixes/", params=params)
+
+    async def get_prefix(self, prefix_id: int) -> dict[str, Any]:
+        return await self.get(f"/api/ipam/prefixes/{prefix_id}/")
+
+    async def create_prefix(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.create("/api/ipam/prefixes/", payload)
+
+    async def update_prefix(self, prefix_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.update(f"/api/ipam/prefixes/{prefix_id}/", payload)
 
     async def find_ip_address(self, address: str) -> dict[str, Any] | None:
         return await self.get_unique("/api/ipam/ip-addresses/", params={"address": address})

@@ -221,7 +221,8 @@ async def netbox_error_handler(request: Request, exc: NetBoxClientError):
 
 @app.exception_handler(ZabbixClientError)
 async def zabbix_error_handler(request: Request, exc: ZabbixClientError):
-    return JSONResponse(status_code=exc.status_code or status.HTTP_502_BAD_GATEWAY, content={"detail": "Zabbix request failed", "message": str(exc)})
+    status_code = exc.status_code if isinstance(exc.status_code, int) and 100 <= exc.status_code < 600 else status.HTTP_502_BAD_GATEWAY
+    return JSONResponse(status_code=status_code, content={"detail": "Zabbix request failed", "message": str(exc)})
 
 
 @app.exception_handler(SyncError)
@@ -244,7 +245,7 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
     netbox_connected = await netbox_client.health_status() if netbox_client is not None else False
     zabbix_connected = await zabbix_client.healthcheck() if zabbix_client is not None else False
 
-    counts = {"devices": 0, "interfaces": 0, "ips": 0, "prefixes": 0, "vlans": 0, "sites": 0, "racks": 0, "zabbix_hosts": 0}
+    counts = {"devices": 0, "interfaces": 0, "ips": 0, "prefixes": 0, "vlans": 0, "sites": 0, "racks": 0, "zabbix_hosts": 0, "zabbix_problems": 0}
     if netbox_connected and netbox_client is not None:
         counts["devices"] = await netbox_client.count("/api/dcim/devices/")
         counts["interfaces"] = await netbox_client.count("/api/dcim/interfaces/")
@@ -254,8 +255,17 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         counts["sites"] = await netbox_client.count("/api/dcim/sites/")
         counts["racks"] = await netbox_client.count("/api/dcim/racks/")
 
+    recent_alerts: list[dict[str, Any]] = []
     if zabbix_connected and zabbix_client is not None:
         counts["zabbix_hosts"] = await zabbix_client.count_hosts()
+        with suppress(Exception):
+            counts["zabbix_problems"] = await zabbix_client.count_problems()
+        with suppress(Exception):
+            recent_alerts = await zabbix_client.list_problems(limit=10)
+
+    discovery_state = load_last_scan()
+    discovered_devices = discovery_state.get("devices") if isinstance(discovery_state.get("devices"), list) else []
+    discovery_count = len(discovered_devices)
 
     connectors = []
     for key, title, note in (
@@ -293,10 +303,6 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         + f". Redes permitidas: {len(settings.allowed_client_networks())}."
     )
 
-    discovery_state = load_last_scan()
-    discovered_devices = discovery_state.get("devices") if isinstance(discovery_state.get("devices"), list) else []
-    discovery_count = len(discovered_devices)
-
     inventory_cards = [
         {"label": "Devices", "value": counts["devices"], "note": "Dispositivos no inventário"},
         {"label": "IPs", "value": counts["ips"], "note": "Endereços e consumo"},
@@ -306,6 +312,7 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         {"label": "Sites", "value": counts["sites"], "note": "Locais e unidades"},
         {"label": "Racks", "value": counts["racks"], "note": "Racks físicos"},
         {"label": "Zabbix hosts", "value": counts["zabbix_hosts"], "note": "Hosts monitorados"},
+        {"label": "Alertas", "value": counts["zabbix_problems"], "note": "Problemas abertos no Zabbix"},
         {"label": "Descobertos", "value": discovery_count, "note": "Dispositivos vistos na última varredura"},
     ]
 
@@ -324,6 +331,11 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
         {"id": "discovery", "label": "Descoberta", "description": "Varredura SNMP e classificacao."},
         {"id": "automation", "label": "Automacao", "description": "n8n e ajustes controlados."},
         {"id": "integrations", "label": "Integracoes", "description": "NetBox, Zabbix, GLPI e n8n."},
+        {"id": "devices", "label": "Devices", "description": "Cadastro e edicao de equipamentos."},
+        {"id": "vlans", "label": "VLANs", "description": "Criacao e manutencao de VLANs."},
+        {"id": "networks", "label": "Redes", "description": "Prefixes e blocos IP."},
+        {"id": "alerts", "label": "Alertas", "description": "Eventos do Zabbix em tempo real."},
+        {"id": "reports", "label": "Relatorios", "description": "Impressao e exportacao."},
         {"id": "settings", "label": "Configuracao", "description": "Tokens e URLs editaveis."},
     ]
 
@@ -345,6 +357,7 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
             {"label": "Sites", "value": counts["sites"]},
             {"label": "Racks", "value": counts["racks"]},
             {"label": "Zabbix", "value": counts["zabbix_hosts"]},
+            {"label": "Alertas", "value": counts["zabbix_problems"]},
         ],
         "discovery": {
             "network": discovery_state.get("network", ""),
@@ -352,6 +365,7 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
             "scanned_at": discovery_state.get("scanned_at", ""),
             "devices": discovered_devices,
         },
+        "alerts": recent_alerts,
     }
 
 
@@ -875,6 +889,8 @@ def _render_shell(title: str, body: str, extra_script: str = "") -> str:
     }}
     .menu button:hover, .menu a:hover {{ border-color: var(--accent); }}
     .menu button.active {{ background: var(--accent); border-color: var(--accent); color: white; }}
+    .menu a.active {{ background: var(--accent); border-color: var(--accent); color: white; }}
+    .menu a.active .meta {{ color: rgba(255,255,255,.8); }}
     .menu .meta {{
       display: block;
       margin-top: 4px;
@@ -1527,6 +1543,125 @@ window.addEventListener('resize', () => {{
         </div>
       </section>
 
+      <section id="devices" class="section" data-section="devices">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>Devices</h2>
+            <p>Cadastro e edição de equipamentos do inventário central.</p>
+            <table>
+              <thead><tr><th>Ação</th><th>Destino</th></tr></thead>
+              <tbody>
+                <tr><td>Listar devices</td><td><a href="/devices">/devices</a></td></tr>
+                <tr><td>Imprimir relatório</td><td><a href="/reports">/reports</a></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="panel">
+            <h2>Resumo</h2>
+            <p>Dados atuais do inventário para apoiar a operação.</p>
+            <table>
+              <thead><tr><th>Métrica</th><th>Valor</th></tr></thead>
+              <tbody>
+                <tr><td>Devices</td><td>{escape(str(snapshot["cards"][0]["value"]))}</td></tr>
+                <tr><td>Interfaces</td><td>{escape(str(snapshot["cards"][3]["value"]))}</td></tr>
+                <tr><td>Zabbix hosts</td><td>{escape(str(snapshot["cards"][7]["value"]))}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="vlans" class="section" data-section="vlans">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>VLANs</h2>
+            <p>Criação e edição de VLANs com acesso direto ao NetBox.</p>
+            <a class="btn primary" href="/vlans">Abrir VLANs</a>
+          </div>
+          <div class="panel">
+            <h2>Consumo</h2>
+            <p>Visão rápida da segmentação de rede.</p>
+            <table>
+              <thead><tr><th>Indicador</th><th>Valor</th></tr></thead>
+              <tbody>
+                <tr><td>VLANs</td><td>{escape(str(snapshot["cards"][2]["value"]))}</td></tr>
+                <tr><td>Sites</td><td>{escape(str(snapshot["cards"][5]["value"]))}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="networks" class="section" data-section="networks">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>Redes</h2>
+            <p>Prefixes e blocos IP para IPAM centralizado.</p>
+            <a class="btn primary" href="/networks">Abrir redes</a>
+          </div>
+          <div class="panel">
+            <h2>Blocos IP</h2>
+            <p>Consumo do espaço de endereçamento do ambiente.</p>
+            <table>
+              <thead><tr><th>Indicador</th><th>Valor</th></tr></thead>
+              <tbody>
+                <tr><td>IPs</td><td>{escape(str(snapshot["cards"][1]["value"]))}</td></tr>
+                <tr><td>Prefixes</td><td>{escape(str(snapshot["cards"][4]["value"]))}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="alerts" class="section" data-section="alerts">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>Alertas do Zabbix</h2>
+            <p>Problemas em aberto e acompanhamento em tempo real.</p>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <a class="btn primary" href="/alerts">Abrir alertas</a>
+              <a class="btn" href="/api/alerts">Ver JSON</a>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Alertas recentes</h2>
+            <table>
+              <thead><tr><th>Problema</th><th>Host</th></tr></thead>
+              <tbody>
+                {''.join(
+                    f'<tr><td>{escape(_normalize_text(alert.get("name")) or "—")}</td><td>{escape(_relation_label((alert.get("hosts") or [{}])[0]) if isinstance(alert.get("hosts"), list) and alert.get("hosts") else "—")}</td></tr>'
+                    for alert in (snapshot["alerts"][:5] if isinstance(snapshot.get("alerts"), list) else [])
+                ) or '<tr><td colspan="2">Nenhum alerta aberto.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="reports" class="section" data-section="reports">
+        <div class="section-grid">
+          <div class="panel">
+            <h2>Relatórios</h2>
+            <p>Resumo pronto para impressão ou exportação via navegador.</p>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <a class="btn primary" href="/reports">Abrir relatório</a>
+              <button class="btn" type="button" onclick="window.print()">Imprimir página</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Resumo executivo</h2>
+            <table>
+              <thead><tr><th>Bloco</th><th>Valor</th></tr></thead>
+              <tbody>
+                <tr><td>Telemetria</td><td>{escape(str(snapshot["telemetry_score"]))}/100</td></tr>
+                <tr><td>Alertas</td><td>{escape(str(snapshot["cards"][8]["value"]))}</td></tr>
+                <tr><td>Descobertos</td><td>{escape(str(snapshot["cards"][9]["value"]))}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <div class="foot">
         <div>infra-sync-api v{escape(__version__)}</div>
         <div>Atualizado em {escape(datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC"))}</div>
@@ -1847,3 +1982,639 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
     </section>
     """
     return _render_shell("Descoberta SNMP | infra-sync-api", body)
+
+
+def _management_nav(active: str) -> str:
+    items = [
+        ("overview", "/", "Dashboard", "Resumo operacional"),
+        ("devices", "/devices", "Devices", "Criar e editar equipamentos"),
+        ("vlans", "/vlans", "VLANs", "Segmentacao e tags"),
+        ("networks", "/networks", "Redes", "Prefixes e blocos IP"),
+        ("alerts", "/alerts", "Alertas", "Problemas em tempo real"),
+        ("reports", "/reports", "Relatorios", "Impressao e exportacao"),
+        ("discovery", "/discovery", "Descoberta", "Varredura SNMP"),
+        ("settings", "/settings", "Configuracao", "Tokens e URLs"),
+    ]
+    return "".join(
+        f'<a class="{"active" if key == active else ""}" href="{escape(href)}">{escape(label)}<span class="meta">{escape(meta)}</span></a>'
+        for key, href, label, meta in items
+    )
+
+
+def _relation_label(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("display", "name", "label", "slug"):
+            text = _normalize_text(value.get(key))
+            if text:
+                return text
+        related_id = value.get("id")
+        if related_id is not None:
+            return str(related_id)
+        return "—"
+    text = _normalize_text(value)
+    return text or "—"
+
+
+def _status_value(value: Any, default: str = "active") -> str:
+    if isinstance(value, dict):
+        for key in ("value", "slug", "name", "label"):
+            text = _normalize_text(value.get(key))
+            if text:
+                return text
+        return default
+    text = _normalize_text(value)
+    return text or default
+
+
+def _related_id(value: Any) -> str:
+    if isinstance(value, dict):
+        text = value.get("id")
+        return str(text) if text is not None else ""
+    return _normalize_text(value)
+
+
+def _query_value(request: Request, name: str, default: str = "") -> str:
+    return _normalize_text(request.query_params.get(name, default))
+
+
+def _query_int(request: Request, name: str) -> int | None:
+    text = _query_value(request, name)
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _checkbox_value(form: dict[str, str], key: str, default: bool = False) -> bool:
+    if key not in form:
+        return default
+    return form.get(key) in {"on", "true", "True", "1", "yes", "checked"}
+
+
+def _render_management_page(
+    *,
+    title: str,
+    active: str,
+    heading: str,
+    subtitle: str,
+    body: str,
+    actions: str = "",
+    banner: str = "",
+) -> str:
+    return _render_shell(
+        title,
+        f"""
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="kicker">ECV Network Control</div>
+        <h1>Rede</h1>
+        <p>Central de operação para inventário, IPAM, alertas e automação.</p>
+      </div>
+      <nav class="menu">
+        {_management_nav(active)}
+      </nav>
+      <div class="sidebar-footer">
+        <div>infra-sync-api v{escape(__version__)}</div>
+        <div>{escape(datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC"))}</div>
+      </div>
+    </aside>
+    <section class="content">
+      <section class="topbar">
+        <div>
+          <h2 class="page-title">{escape(heading)}</h2>
+          <div class="sub">{escape(subtitle)}</div>
+        </div>
+        <div class="actions">
+          {actions}
+        </div>
+      </section>
+      {banner}
+      {body}
+      <div class="foot">
+        <div>Tema vermelho e preto</div>
+        <div>Atualizado em {escape(datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC"))}</div>
+      </div>
+    </section>
+        """,
+    )
+
+
+def _render_table_empty(message: str, colspan: int) -> str:
+    return f'<tr><td colspan="{colspan}">{escape(message)}</td></tr>'
+
+
+def _device_form(device: dict[str, Any] | None = None) -> str:
+    device = device or {}
+    custom_fields = device.get("custom_fields") if isinstance(device.get("custom_fields"), dict) else {}
+    return f"""
+    <div class="panel">
+      <h2>{'Editar device' if device.get('id') else 'Criar device'}</h2>
+      <p>Use este formulário para cadastrar ou corrigir um equipamento no NetBox.</p>
+      <form method="post" action="/devices/save">
+        <input type="hidden" name="device_id" value="{escape(_related_id(device.get('id')))}" />
+        <div class="form-grid">
+          <div class="field"><label>Nome</label><input name="name" type="text" value="{escape(_normalize_text(device.get('name')))}" /></div>
+          <div class="field"><label>Status</label><input name="status" type="text" value="{escape(_status_value(device.get('status')))}" placeholder="active" /></div>
+          <div class="field"><label>Site ID</label><input name="site_id" type="text" value="{escape(_related_id(device.get('site')))}" /></div>
+          <div class="field"><label>Role ID</label><input name="role_id" type="text" value="{escape(_related_id(device.get('role')))}" /></div>
+          <div class="field"><label>Device Type ID</label><input name="device_type_id" type="text" value="{escape(_related_id(device.get('device_type')))}" /></div>
+          <div class="field"><label>Primary IP4 ID</label><input name="primary_ip4_id" type="text" value="{escape(_related_id(device.get('primary_ip4')))}" /></div>
+          <div class="field"><label>Serial</label><input name="serial" type="text" value="{escape(_normalize_text(device.get('serial')))}" /></div>
+          <div class="field"><label>Custom fields JSON</label><input name="custom_fields_json" type="text" value="{escape(json.dumps(custom_fields, ensure_ascii=False))}" /></div>
+        </div>
+        <div class="field"><label>Comments</label><input name="comments" type="text" value="{escape(_normalize_text(device.get('comments')))}" /></div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn primary" type="submit">Salvar device</button>
+          <a class="btn" href="/devices">Limpar</a>
+        </div>
+      </form>
+    </div>
+    """
+
+
+def _vlan_form(vlan: dict[str, Any] | None = None) -> str:
+    vlan = vlan or {}
+    return f"""
+    <div class="panel">
+      <h2>{'Editar VLAN' if vlan.get('id') else 'Criar VLAN'}</h2>
+      <p>Cadastro de segmentação L2 para a rede central.</p>
+      <form method="post" action="/vlans/save">
+        <input type="hidden" name="vlan_id" value="{escape(_related_id(vlan.get('id')))}" />
+        <div class="form-grid">
+          <div class="field"><label>VID</label><input name="vid" type="text" value="{escape(_normalize_text(vlan.get('vid')))}" /></div>
+          <div class="field"><label>Nome</label><input name="name" type="text" value="{escape(_normalize_text(vlan.get('name')))}" /></div>
+          <div class="field"><label>Status</label><input name="status" type="text" value="{escape(_status_value(vlan.get('status')))}" /></div>
+          <div class="field"><label>Site ID</label><input name="site_id" type="text" value="{escape(_related_id(vlan.get('site')))}" /></div>
+        </div>
+        <div class="field"><label>Descrição</label><input name="description" type="text" value="{escape(_normalize_text(vlan.get('description')))}" /></div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn primary" type="submit">Salvar VLAN</button>
+          <a class="btn" href="/vlans">Limpar</a>
+        </div>
+      </form>
+    </div>
+    """
+
+
+def _prefix_form(prefix: dict[str, Any] | None = None) -> str:
+    prefix = prefix or {}
+    return f"""
+    <div class="panel">
+      <h2>{'Editar rede' if prefix.get('id') else 'Criar rede'}</h2>
+      <p>Cadastro de prefixos e blocos IP para IPAM.</p>
+      <form method="post" action="/networks/save">
+        <input type="hidden" name="prefix_id" value="{escape(_related_id(prefix.get('id')))}" />
+        <div class="form-grid">
+          <div class="field"><label>Prefixo</label><input name="prefix" type="text" value="{escape(_normalize_text(prefix.get('prefix')))}" placeholder="10.0.0.0/24" /></div>
+          <div class="field"><label>Status</label><input name="status" type="text" value="{escape(_status_value(prefix.get('status')))}" /></div>
+          <div class="field"><label>Site ID</label><input name="site_id" type="text" value="{escape(_related_id(prefix.get('site')))}" /></div>
+          <div class="field"><label>VLAN ID</label><input name="vlan_id" type="text" value="{escape(_related_id(prefix.get('vlan')))}" /></div>
+        </div>
+        <div class="field"><label>Descrição</label><input name="description" type="text" value="{escape(_normalize_text(prefix.get('description')))}" /></div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn primary" type="submit">Salvar rede</button>
+          <a class="btn" href="/networks">Limpar</a>
+        </div>
+      </form>
+    </div>
+    """
+
+
+async def _get_netbox_client_or_error(request: Request) -> NetBoxClient:
+    client: NetBoxClient | None = request.app.state.netbox_client
+    if client is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="NetBox client is not configured")
+    return client
+
+
+async def _get_zabbix_client_or_error(request: Request) -> ZabbixClient:
+    client: ZabbixClient | None = request.app.state.zabbix_client
+    if client is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Zabbix client is not configured")
+    return client
+
+
+@app.get("/devices", include_in_schema=False)
+async def devices_page(request: Request, saved: int = 0, error: str | None = None, edit: int | None = None):
+    client = request.app.state.netbox_client
+    devices: list[dict[str, Any]] = []
+    edit_device: dict[str, Any] | None = None
+    page_error = error
+    try:
+        if client is not None:
+            params: dict[str, Any] = {"limit": 50}
+            q = _query_value(request, "q")
+            if q:
+                params["q"] = q
+            devices = await client.list_devices(params=params)
+            if edit is not None:
+                edit_device = await client.get_device(edit)
+    except Exception as exc:
+        page_error = str(exc)
+
+    rows = []
+    for device in devices:
+        rows.append(
+            f"""
+            <tr>
+              <td><strong>{escape(_normalize_text(device.get('name')) or '—')}</strong></td>
+              <td>{escape(_relation_label(device.get('status')))}</td>
+              <td>{escape(_relation_label(device.get('site')))}</td>
+              <td>{escape(_relation_label(device.get('role')))}</td>
+              <td>{escape(_relation_label(device.get('device_type')))}</td>
+              <td>{escape(_relation_label(device.get('primary_ip4')))}</td>
+              <td>{escape(_normalize_text(device.get('serial')) or '—')}</td>
+              <td><a href="/devices?edit={escape(_related_id(device.get('id')))}">Editar</a></td>
+            </tr>
+            """
+        )
+    banner = ""
+    if saved:
+        banner = "<div class='hero'><small>Salvo</small><strong>Device atualizado com sucesso.</strong></div>"
+    if page_error:
+        banner = f"<div class='hero'><small>Erro</small><strong>{escape(page_error)}</strong></div>"
+    body = f"""
+    <div class="panels" style="grid-template-columns: 1fr 1.2fr;">
+      {_device_form(edit_device)}
+      <div class="panel">
+        <h2>Devices cadastrados</h2>
+        <p>Lista dos ativos mais recentes no NetBox.</p>
+        <table>
+          <thead><tr><th>Nome</th><th>Status</th><th>Site</th><th>Role</th><th>Tipo</th><th>IP</th><th>Serial</th><th></th></tr></thead>
+          <tbody>{''.join(rows) if rows else _render_table_empty('Nenhum device encontrado.', 8)}</tbody>
+        </table>
+      </div>
+    </div>
+    """
+    return HTMLResponse(
+        _render_management_page(
+            title="Devices | infra-sync-api",
+            active="devices",
+            heading="Devices",
+            subtitle="Criar, editar e inspecionar equipamentos do inventário.",
+            actions=f'<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatório</a>',
+            body=body,
+            banner=banner,
+        )
+    )
+
+
+@app.post("/devices/save", include_in_schema=False)
+async def save_device_page(request: Request):
+    form = await _read_form(request)
+    client = await _get_netbox_client_or_error(request)
+    payload: dict[str, Any] = {}
+    for key in ("name", "status", "comments", "serial"):
+        value = _form_value(form, key)
+        if value:
+            payload[key] = value
+    for key in ("site_id", "role_id", "device_type_id", "primary_ip4_id"):
+        value = _form_value(form, key)
+        if value:
+            try:
+                payload[key.replace("_id", "")] = int(value)
+            except ValueError as exc:
+                return HTMLResponse(await _render_crud_error(request, "devices", f"{key} precisa ser um inteiro válido"), status_code=status.HTTP_400_BAD_REQUEST)
+    custom_fields_json = _form_value(form, "custom_fields_json")
+    if custom_fields_json:
+        try:
+            custom_fields = json.loads(custom_fields_json)
+            if isinstance(custom_fields, dict):
+                payload["custom_fields"] = custom_fields
+        except json.JSONDecodeError:
+            return HTMLResponse(await _render_crud_error(request, "devices", "custom_fields_json deve ser JSON válido"), status_code=status.HTTP_400_BAD_REQUEST)
+    device_id = _form_value(form, "device_id")
+    try:
+        if device_id:
+            await client.update_device(int(device_id), payload)
+        else:
+            await client.create_device(payload)
+    except Exception as exc:
+        return HTMLResponse(await _render_crud_error(request, "devices", str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
+    return RedirectResponse(url="/devices?saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/vlans", include_in_schema=False)
+async def vlans_page(request: Request, saved: int = 0, error: str | None = None, edit: int | None = None):
+    client = request.app.state.netbox_client
+    vlans: list[dict[str, Any]] = []
+    edit_vlan: dict[str, Any] | None = None
+    page_error = error
+    try:
+        if client is not None:
+            params: dict[str, Any] = {"limit": 50}
+            q = _query_value(request, "q")
+            if q:
+                params["q"] = q
+            vlans = await client.list_vlans(params=params)
+            if edit is not None:
+                edit_vlan = await client.get_vlan(edit)
+    except Exception as exc:
+        page_error = str(exc)
+    rows = []
+    for vlan in vlans:
+        rows.append(
+            f"""
+            <tr>
+              <td><strong>{escape(_normalize_text(vlan.get('vid')) or '—')}</strong></td>
+              <td>{escape(_normalize_text(vlan.get('name')) or '—')}</td>
+              <td>{escape(_relation_label(vlan.get('status')))}</td>
+              <td>{escape(_relation_label(vlan.get('site')))}</td>
+              <td>{escape(_normalize_text(vlan.get('description')) or '—')}</td>
+              <td><a href="/vlans?edit={escape(_related_id(vlan.get('id')))}">Editar</a></td>
+            </tr>
+            """
+        )
+    banner = "<div class='hero'><small>Salvo</small><strong>VLAN atualizada com sucesso.</strong></div>" if saved else ""
+    if page_error:
+        banner = f"<div class='hero'><small>Erro</small><strong>{escape(page_error)}</strong></div>"
+    body = f"""
+    <div class="panels" style="grid-template-columns: 1fr 1.2fr;">
+      {_vlan_form(edit_vlan)}
+      <div class="panel">
+        <h2>VLANs cadastradas</h2>
+        <p>Segmentações registradas no NetBox.</p>
+        <table>
+          <thead><tr><th>VID</th><th>Nome</th><th>Status</th><th>Site</th><th>Descrição</th><th></th></tr></thead>
+          <tbody>{''.join(rows) if rows else _render_table_empty('Nenhuma VLAN encontrada.', 6)}</tbody>
+        </table>
+      </div>
+    </div>
+    """
+    return HTMLResponse(
+        _render_management_page(
+            title="VLANs | infra-sync-api",
+            active="vlans",
+            heading="VLANs",
+            subtitle="Criar, editar e visualizar segmentações de rede.",
+            actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatório</a>',
+            body=body,
+            banner=banner,
+        )
+    )
+
+
+@app.post("/vlans/save", include_in_schema=False)
+async def save_vlan_page(request: Request):
+    form = await _read_form(request)
+    client = await _get_netbox_client_or_error(request)
+    payload: dict[str, Any] = {}
+    for key in ("vid", "name", "status", "description"):
+        value = _form_value(form, key)
+        if value:
+            payload[key] = value if key != "vid" else int(value)
+    site_id = _form_value(form, "site_id")
+    if site_id:
+        try:
+            payload["site"] = int(site_id)
+        except ValueError:
+            return HTMLResponse(await _render_crud_error(request, "vlans", "site_id precisa ser um inteiro válido"), status_code=status.HTTP_400_BAD_REQUEST)
+    vlan_id = _form_value(form, "vlan_id")
+    try:
+        if vlan_id:
+            await client.update_vlan(int(vlan_id), payload)
+        else:
+            await client.create_vlan(payload)
+    except Exception as exc:
+        return HTMLResponse(await _render_crud_error(request, "vlans", str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
+    return RedirectResponse(url="/vlans?saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/networks", include_in_schema=False)
+async def networks_page(request: Request, saved: int = 0, error: str | None = None, edit: int | None = None):
+    client = request.app.state.netbox_client
+    prefixes: list[dict[str, Any]] = []
+    edit_prefix: dict[str, Any] | None = None
+    page_error = error
+    try:
+        if client is not None:
+            params: dict[str, Any] = {"limit": 50}
+            q = _query_value(request, "q")
+            if q:
+                params["q"] = q
+            prefixes = await client.list_prefixes(params=params)
+            if edit is not None:
+                edit_prefix = await client.get_prefix(edit)
+    except Exception as exc:
+        page_error = str(exc)
+    rows = []
+    for prefix in prefixes:
+        rows.append(
+            f"""
+            <tr>
+              <td><strong>{escape(_normalize_text(prefix.get('prefix')) or '—')}</strong></td>
+              <td>{escape(_normalize_text(prefix.get('description')) or '—')}</td>
+              <td>{escape(_relation_label(prefix.get('status')))}</td>
+              <td>{escape(_relation_label(prefix.get('site')))}</td>
+              <td>{escape(_relation_label(prefix.get('vlan')))}</td>
+              <td><a href="/networks?edit={escape(_related_id(prefix.get('id')))}">Editar</a></td>
+            </tr>
+            """
+        )
+    banner = "<div class='hero'><small>Salvo</small><strong>Rede atualizada com sucesso.</strong></div>" if saved else ""
+    if page_error:
+        banner = f"<div class='hero'><small>Erro</small><strong>{escape(page_error)}</strong></div>"
+    body = f"""
+    <div class="panels" style="grid-template-columns: 1fr 1.2fr;">
+      {_prefix_form(edit_prefix)}
+      <div class="panel">
+        <h2>Redes e prefixes</h2>
+        <p>Blocos IP cadastrados no IPAM do NetBox.</p>
+        <table>
+          <thead><tr><th>Prefixo</th><th>Descrição</th><th>Status</th><th>Site</th><th>VLAN</th><th></th></tr></thead>
+          <tbody>{''.join(rows) if rows else _render_table_empty('Nenhuma rede encontrada.', 6)}</tbody>
+        </table>
+      </div>
+    </div>
+    """
+    return HTMLResponse(
+        _render_management_page(
+            title="Redes | infra-sync-api",
+            active="networks",
+            heading="Redes",
+            subtitle="Criar, editar e revisar blocos IP e prefixes.",
+            actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatório</a>',
+            body=body,
+            banner=banner,
+        )
+    )
+
+
+@app.post("/networks/save", include_in_schema=False)
+async def save_network_page(request: Request):
+    form = await _read_form(request)
+    client = await _get_netbox_client_or_error(request)
+    payload: dict[str, Any] = {}
+    for key in ("prefix", "status", "description"):
+        value = _form_value(form, key)
+        if value:
+            payload[key] = value
+    site_id = _form_value(form, "site_id")
+    if site_id:
+        try:
+            payload["site"] = int(site_id)
+        except ValueError:
+            return HTMLResponse(await _render_crud_error(request, "networks", "site_id precisa ser um inteiro válido"), status_code=status.HTTP_400_BAD_REQUEST)
+    vlan_id = _form_value(form, "vlan_id")
+    if vlan_id:
+        try:
+            payload["vlan"] = int(vlan_id)
+        except ValueError:
+            return HTMLResponse(await _render_crud_error(request, "networks", "vlan_id precisa ser um inteiro válido"), status_code=status.HTTP_400_BAD_REQUEST)
+    prefix_id = _form_value(form, "prefix_id")
+    try:
+        if prefix_id:
+            await client.update_prefix(int(prefix_id), payload)
+        else:
+            await client.create_prefix(payload)
+    except Exception as exc:
+        return HTMLResponse(await _render_crud_error(request, "networks", str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
+    return RedirectResponse(url="/networks?saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/api/alerts")
+async def api_alerts(request: Request):
+    client: ZabbixClient | None = request.app.state.zabbix_client
+    if client is None:
+        return {"alerts": [], "count": 0}
+    try:
+        alerts = await client.list_problems(limit=50)
+        return {"alerts": alerts, "count": len(alerts)}
+    except Exception as exc:
+        return {"alerts": [], "count": 0, "error": str(exc)}
+
+
+@app.get("/alerts", include_in_schema=False)
+async def alerts_page(request: Request):
+    return HTMLResponse(_render_alerts_page(await api_alerts(request)))
+
+
+@app.get("/reports", include_in_schema=False)
+async def reports_page(request: Request):
+    snapshot = await _collect_snapshot(request)
+    return HTMLResponse(_render_reports_page(snapshot))
+
+
+def _render_alerts_page(payload: dict[str, Any]) -> str:
+    alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
+    error_message = _normalize_text(payload.get("error"))
+    rows = []
+    for alert in alerts:
+        hosts = alert.get("hosts") if isinstance(alert.get("hosts"), list) else []
+        host_name = _relation_label(hosts[0]) if hosts else "—"
+        rows.append(
+            f"""
+            <tr>
+              <td>{escape(_normalize_text(alert.get('name')) or '—')}</td>
+              <td>{escape(_normalize_text(alert.get('severity')) or '—')}</td>
+              <td>{escape(_normalize_text(host_name))}</td>
+              <td>{escape(_normalize_text(alert.get('clock')) or '—')}</td>
+            </tr>
+            """
+        )
+    banner = f"<div class='hero'><small>Erro</small><strong>{escape(error_message)}</strong><div class='sub' style='margin: 6px 0 0;'>O Zabbix respondeu sem permissão suficiente para problem.get. O painel segue operando com o inventário e demais telas.</div></div>" if error_message else ""
+    body = f"""
+    {banner}
+    <div class="panel">
+      <h2>Alertas ativos</h2>
+      <p>Atualiza automaticamente pelo Zabbix em carregamentos de página e via API.</p>
+    <table>
+        <thead><tr><th>Problema</th><th>Severidade</th><th>Host</th><th>Clock</th></tr></thead>
+        <tbody id="alerts-body">{''.join(rows) if rows else _render_table_empty('Nenhum alerta aberto no momento.', 4)}</tbody>
+      </table>
+    </div>
+    <script>
+      function escapeHtml(value) {{
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }}
+      async function refreshAlerts() {{
+        try {{
+          const response = await fetch('/api/alerts');
+          const data = await response.json();
+          const rows = (data.alerts || []).map((alert) => {{
+            const host = (alert.hosts && alert.hosts[0] && (alert.hosts[0].name || alert.hosts[0].host || alert.hosts[0].hostid)) || '—';
+            return `<tr><td>${{escapeHtml(alert.name || '—')}}</td><td>${{escapeHtml(alert.severity || '—')}}</td><td>${{escapeHtml(host)}}</td><td>${{escapeHtml(alert.clock || '—')}}</td></tr>`;
+          }}).join('');
+          document.getElementById('alerts-body').innerHTML = rows || '<tr><td colspan="4">Nenhum alerta aberto no momento.</td></tr>';
+        }} catch (error) {{}}
+      }}
+      setInterval(refreshAlerts, 15000);
+    </script>
+    """
+    return _render_management_page(
+        title="Alertas | infra-sync-api",
+        active="alerts",
+        heading="Alertas em tempo real",
+        subtitle="Problemas e eventos abertos no Zabbix.",
+        actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatório</a>',
+        body=body,
+    )
+
+
+def _render_reports_page(snapshot: dict[str, Any]) -> str:
+    alerts = snapshot.get("alerts") if isinstance(snapshot.get("alerts"), list) else []
+    alert_rows = []
+    for alert in alerts[:10]:
+        hosts = alert.get("hosts") if isinstance(alert.get("hosts"), list) else []
+        host_name = _relation_label(hosts[0]) if hosts else "—"
+        alert_rows.append(
+            f"<tr><td>{escape(_normalize_text(alert.get('name')) or '—')}</td><td>{escape(_normalize_text(host_name))}</td><td>{escape(_normalize_text(alert.get('severity')) or '—')}</td></tr>"
+        )
+    body = f"""
+    <style>
+      @media print {{
+        .topbar, .actions, .sidebar, .foot a {{ display: none !important; }}
+        .content {{ padding: 0; }}
+        .panel {{ break-inside: avoid; }}
+      }}
+    </style>
+    <div class="panel">
+      <h2>Relatório executivo</h2>
+      <p>Resumo operacional pronto para impressão ou PDF do navegador.</p>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 14px;">
+        <button class="btn primary" type="button" onclick="window.print()">Imprimir</button>
+        <a class="btn" href="/alerts">Ver alertas</a>
+        <a class="btn" href="/devices">Ver devices</a>
+      </div>
+      <table>
+        <thead><tr><th>Métrica</th><th>Valor</th></tr></thead>
+        <tbody>
+          {''.join(f'<tr><td>{escape(card["label"])}</td><td>{escape(str(card["value"]))}</td></tr>' for card in snapshot["cards"])}
+        </tbody>
+      </table>
+    </div>
+    <div class="panel" style="margin-top:14px;">
+      <h2>Alertas recentes</h2>
+      <table>
+        <thead><tr><th>Problema</th><th>Host</th><th>Severidade</th></tr></thead>
+        <tbody>{''.join(alert_rows) if alert_rows else _render_table_empty('Nenhum alerta aberto.', 3)}</tbody>
+      </table>
+    </div>
+    """
+    return _render_management_page(
+        title="Relatórios | infra-sync-api",
+        active="reports",
+        heading="Relatórios",
+        subtitle="Resumo executivo para imprimir, salvar em PDF ou compartilhar.",
+        actions='<button class="btn primary" type="button" onclick="window.print()">Imprimir</button><a class="btn" href="/">Dashboard</a>',
+        body=body,
+    )
+
+
+async def _render_crud_error(request: Request, active: str, message: str) -> str:
+    title_map = {"devices": "Devices", "vlans": "VLANs", "networks": "Redes"}
+    return _render_management_page(
+        title=f"{title_map.get(active, 'Operação')} | infra-sync-api",
+        active=active,
+        heading=title_map.get(active, "Operação"),
+        subtitle="Houve um problema ao salvar os dados.",
+        actions='<a class="btn" href="/">Dashboard</a>',
+        body=f"<div class='hero'><small>Erro</small><strong>{escape(message)}</strong></div>",
+    )

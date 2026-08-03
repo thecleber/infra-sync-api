@@ -244,6 +244,42 @@ class ZabbixClient:
             return len(result)
         return 0
 
+    async def list_problems(self, limit: int = 50) -> list[dict[str, Any]]:
+        result = await self._rpc(
+            "problem.get",
+            {
+                "output": "extend",
+                "selectHosts": ["hostid", "host", "name"],
+                "selectTags": "extend",
+                "selectAcknowledges": "extend",
+                "sortfield": ["clock", "eventid"],
+                "sortorder": "DESC",
+                "limit": limit,
+            },
+        )
+        if isinstance(result, list):
+            return [item for item in result if isinstance(item, dict)]
+        return []
+
+    async def count_problems(self) -> int:
+        result = await self._rpc(
+            "problem.get",
+            {
+                "output": ["eventid"],
+                "countOutput": True,
+            },
+        )
+        if isinstance(result, int):
+            return result
+        if isinstance(result, str):
+            try:
+                return int(result)
+            except ValueError:
+                return 0
+        if isinstance(result, list):
+            return len(result)
+        return 0
+
     async def get_host_snapshot(self, hostid: str) -> ZabbixHostSnapshot:
         result = await self._rpc(
             "host.get",

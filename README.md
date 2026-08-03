@@ -8,6 +8,9 @@ O projeto entrega:
 - pagina de configuracao para URLs e tokens;
 - snapshot operacional com contadores do inventario;
 - endpoints de sincronizacao para automacao.
+- paginas para devices, VLANs, redes, alertas e relatórios;
+- consulta de alertas do Zabbix em tempo real;
+- formulários para criar e editar devices, VLANs e prefixes no NetBox.
 
 ## Estrutura
 
@@ -58,6 +61,15 @@ O sistema tambem salva configuracoes editaveis em `data/integrations.json`, via 
 - `POST /settings` -> salva a configuracao local e recarrega os conectores.
 - `GET /api/config` -> configuracao mascarada.
 - `GET /api/overview` -> snapshot operacional.
+- `GET /devices` -> lista e edita devices.
+- `POST /devices/save` -> cria ou atualiza um device.
+- `GET /vlans` -> lista e edita VLANs.
+- `POST /vlans/save` -> cria ou atualiza uma VLAN.
+- `GET /networks` -> lista e edita prefixes/redes.
+- `POST /networks/save` -> cria ou atualiza um prefix.
+- `GET /alerts` -> painel de alertas em tempo real.
+- `GET /api/alerts` -> JSON com os problemas abertos no Zabbix.
+- `GET /reports` -> relatório imprimível.
 - `GET /health`
 - `GET /version`
 - `POST /sync/device`
@@ -70,6 +82,9 @@ O sistema tambem salva configuracoes editaveis em `data/integrations.json`, via 
 - status do NetBox, Zabbix, GLPI e n8n;
 - contagem de devices, IPs, VLANs, interfaces, prefixes, sites, racks e hosts do Zabbix;
 - painel para editar URLs e tokens sem parar a aplicacao;
+- cadastro e edição manual de devices, VLANs e redes dentro da própria interface;
+- painel de alertas do Zabbix com atualização periódica;
+- relatório imprimível com os principais indicadores;
 - rotas de sync para alimentar o inventario central.
 
 ## Exemplos
@@ -178,4 +193,3 @@ docker compose restart infra-sync-api
 - O dashboard exibe os conectores e os contadores do ambiente quando eles estao configurados.
 - A pagina `/settings` permite trocar tokens e URLs sem reiniciar o sistema.
 - Requisicoes fora das redes autorizadas recebem `403`.
-
