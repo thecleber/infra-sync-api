@@ -91,6 +91,16 @@ def _mock_management_clients(monkeypatch):
         "vlan": {"id": 201, "vid": 10, "name": "CORP"},
         "description": "main network",
     }))
+    monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(return_value=[{
+        "id": 501,
+        "name": "ge-0/0/1",
+        "description": "uplink core",
+        "enabled": True,
+        "type": {"value": "1000base-t"},
+        "mode": {"value": "tagged"},
+        "untagged_vlan": {"id": 201, "vid": 10, "name": "CORP"},
+        "mac_address": "00:11:22:33:44:55",
+    }]))
 
 
 def test_request_validation_and_blocklist():
@@ -243,6 +253,7 @@ def test_management_pages_render(monkeypatch):
 
     with TestClient(app) as client:
         devices = client.get("/devices", follow_redirects=False)
+        device_detail = client.get("/devices/view/101", follow_redirects=False)
         vlans = client.get("/vlans", follow_redirects=False)
         networks = client.get("/networks", follow_redirects=False)
         alerts = client.get("/alerts", follow_redirects=False)
@@ -253,6 +264,10 @@ def test_management_pages_render(monkeypatch):
     assert "Devices cadastrados" in devices.text
     assert "Leitura SNMP" in devices.text
     assert "Campos personalizados" in devices.text
+    assert device_detail.status_code == 200
+    assert "Detalhe do device" in device_detail.text
+    assert "Interfaces" in device_detail.text
+    assert "Rota e vínculos" in device_detail.text
     assert vlans.status_code == 200
     assert "VLANs cadastradas" in vlans.text
     assert networks.status_code == 200

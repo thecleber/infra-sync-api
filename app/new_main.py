@@ -2440,8 +2440,12 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             <button class="btn primary" type="submit">Varredura SNMP</button>
           </div>
         </form>
-          <table>
-            <thead>
+      </div>
+      <div id="results" class="panel">
+        <h2>Resultados</h2>
+        <p>{escape(str(len(devices)))} dispositivo(s) encontrados na ultima varredura.</p>
+        <form method="post" action="/discovery/save">
+          <input type="hidden" name="network" value="{escape(state.get("network") or "")}" />
           <table>
             <thead>
               <tr>
@@ -2460,6 +2464,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
               {''.join(rows) if rows else '<tr><td colspan="9">Nenhum dispositivo na ultima varredura.</td></tr>'}
             </tbody>
           </table>
+          <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
             <button class="btn primary" type="submit">Salvar classificacao</button>
             <a class="btn" href="/discovery">Recarregar</a>
           </div>
@@ -2709,6 +2714,7 @@ def _device_form(device: dict[str, Any] | None = None) -> str:
           <div class="field"><label>Site ID</label><input name="site_id" type="text" value="{escape(_related_id(device.get('site')))}" /></div>
           <div class="field"><label>Role ID</label><input name="role_id" type="text" value="{escape(_related_id(device.get('role')))}" /></div>
           <div class="field"><label>Device Type ID</label><input name="device_type_id" type="text" value="{escape(_related_id(device.get('device_type')))}" /></div>
+          <div class="field"><label>Rack ID</label><input name="rack_id" type="text" value="{escape(_related_id(device.get('rack')))}" /></div>
           <div class="field"><label>Primary IP4 ID</label><input name="primary_ip4_id" type="text" value="{escape(_related_id(device.get('primary_ip4')))}" /></div>
           <div class="field"><label>Serial</label><input name="serial" type="text" value="{escape(_normalize_text(device.get('serial')))}" /></div>
         </div>
@@ -2729,6 +2735,116 @@ def _device_form(device: dict[str, Any] | None = None) -> str:
       </form>
     </div>
     """
+
+
+def _render_device_detail_page(
+    device: dict[str, Any],
+    interfaces: list[dict[str, Any]],
+    prefixes: list[dict[str, Any]],
+    topology_state: dict[str, Any] | None,
+    *,
+    saved: bool = False,
+    error: str | None = None,
+) -> str:
+    device_id = _related_id(device.get("id"))
+    prefix_lookup = {str(prefix.get("id")): prefix for prefix in prefixes if isinstance(prefix, dict)}
+    topology_rows = []
+    for entry in _network_topology_entries(topology_state):
+        if str(entry.get("origin_device_id")) != device_id and str(entry.get("next_device_id")) != device_id:
+            continue
+        prefix = prefix_lookup.get(str(entry.get("prefix_id")))
+        topology_rows.append(
+            f"""
+            <tr>
+              <td>{escape(_normalize_text(prefix.get('prefix')) if isinstance(prefix, dict) else '—')}</td>
+              <td>{escape(_normalize_text(entry.get('network_kind')) or ('VLAN' if prefix and _related_id(prefix.get('vlan')) else 'Prefixo'))}</td>
+              <td>{escape(_normalize_text(entry.get('origin_interface')) or '—')}</td>
+              <td>{escape(_normalize_text(entry.get('next_interface')) or '—')}</td>
+              <td>{escape(_normalize_text(entry.get('route_notes')) or '—')}</td>
+            </tr>
+            """
+        )
+    interface_rows = []
+    for interface in interfaces:
+        if not isinstance(interface, dict):
+            continue
+        interface_rows.append(
+            f"""
+            <tr>
+              <td><strong>{escape(_normalize_text(interface.get('name')) or '—')}</strong></td>
+              <td>{escape(_normalize_text(interface.get('description')) or '—')}</td>
+              <td>{escape(_relation_label(interface.get('enabled')) if isinstance(interface.get('enabled'), dict) else _normalize_text(interface.get('enabled')) or '—')}</td>
+              <td>{escape(_relation_label(interface.get('type')))}</td>
+              <td>{escape(_normalize_text(interface.get('mode')) or '—')}</td>
+              <td>{escape(_relation_label(interface.get('untagged_vlan')))}</td>
+              <td>{escape(_normalize_text(interface.get('mac_address')) or '—')}</td>
+            </tr>
+            """
+        )
+
+    status = _relation_label(device.get("status"))
+    site = _relation_label(device.get("site"))
+    role = _relation_label(device.get("role"))
+    rack = _relation_label(device.get("rack"))
+    device_type = _relation_label(device.get("device_type"))
+    primary_ip = _relation_label(device.get("primary_ip4"))
+    custom_fields = device.get("custom_fields") if isinstance(device.get("custom_fields"), dict) else {}
+    custom_rows = "".join(
+        f"<tr><td>{escape(str(key))}</td><td>{escape(_normalize_text(value) or '—')}</td></tr>"
+        for key, value in custom_fields.items()
+    ) or _render_table_empty("Sem campos personalizados.", 2)
+    body = f"""
+    <div class="panels" style="grid-template-columns: 1.1fr .9fr;">
+      <div class="panel">
+        <h2>{escape(_normalize_text(device.get('name')) or 'Device')}</h2>
+        <p>Visão detalhada do ativo com relações para IP, rack, VLAN, interfaces e rota.</p>
+        <div class="metrics" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
+          <article class="metric-card"><div class="metric-label">Status</div><div class="metric-value" style="font-size:24px;">{escape(status)}</div><div class="metric-note">Situação atual do device no NetBox.</div></article>
+          <article class="metric-card"><div class="metric-label">Site</div><div class="metric-value" style="font-size:24px;">{escape(site)}</div><div class="metric-note">Local físico ou unidade.</div></article>
+          <article class="metric-card"><div class="metric-label">Rack</div><div class="metric-value" style="font-size:24px;">{escape(rack)}</div><div class="metric-note">Posição no rack e sala.</div></article>
+          <article class="metric-card"><div class="metric-label">Role</div><div class="metric-value" style="font-size:24px;">{escape(role)}</div><div class="metric-note">Função operacional.</div></article>
+          <article class="metric-card"><div class="metric-label">Tipo</div><div class="metric-value" style="font-size:24px;">{escape(device_type)}</div><div class="metric-note">Modelo e classe do device.</div></article>
+          <article class="metric-card"><div class="metric-label">IP</div><div class="metric-value" style="font-size:24px;">{escape(primary_ip)}</div><div class="metric-note">IP principal associado.</div></article>
+        </div>
+        <div class="panel" style="margin-top:14px; background:#0f0f12;">
+          <h3 style="margin-top:0;">Rota e vínculos</h3>
+          <table>
+            <thead><tr><th>Prefixo</th><th>Tipo</th><th>Origem</th><th>Destino</th><th>Observação</th></tr></thead>
+            <tbody>{''.join(topology_rows) if topology_rows else _render_table_empty('Nenhuma rota vinculada a este device.', 5)}</tbody>
+          </table>
+        </div>
+        <div class="panel" style="margin-top:14px; background:#0f0f12;">
+          <h3 style="margin-top:0;">Interfaces</h3>
+          <table>
+            <thead><tr><th>Nome</th><th>Descrição</th><th>Ativa</th><th>Tipo</th><th>Modo</th><th>VLAN</th><th>MAC</th></tr></thead>
+            <tbody>{''.join(interface_rows) if interface_rows else _render_table_empty('Nenhuma interface encontrada.', 7)}</tbody>
+          </table>
+        </div>
+        <div class="panel" style="margin-top:14px; background:#0f0f12;">
+          <h3 style="margin-top:0;">Campos personalizados</h3>
+          <table>
+            <thead><tr><th>Campo</th><th>Valor</th></tr></thead>
+            <tbody>{custom_rows}</tbody>
+          </table>
+        </div>
+      </div>
+      {_device_form(device)}
+    </div>
+    """
+    banner = ""
+    if saved:
+        banner = "<div class='hero'><small>Salvo</small><strong>Device atualizado com sucesso.</strong></div>"
+    if error:
+        banner = f"<div class='hero'><small>Erro</small><strong>{escape(error)}</strong></div>"
+    return _render_management_page(
+        title=f"{escape(_normalize_text(device.get('name')) or 'Device')} | infra-sync-api",
+        active="devices",
+        heading=_normalize_text(device.get("name")) or "Device",
+        subtitle="Detalhe do device com relações, interfaces e edição centralizada.",
+        actions='<a class="btn" href="/devices">Lista de devices</a><a class="btn" href="/networks">Redes</a><a class="btn" href="/vlans">VLANs</a><a class="btn" href="/topology">Topologia</a>',
+        banner=banner,
+        body=body,
+    )
 
 
 def _vlan_form(vlan: dict[str, Any] | None = None) -> str:
@@ -2906,14 +3022,14 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
         rows.append(
             f"""
             <tr>
-              <td><strong>{escape(_normalize_text(device.get('name')) or 'â€”')}</strong></td>
+              <td><a href="/devices/view/{escape(_related_id(device.get('id')))}"><strong>{escape(_normalize_text(device.get('name')) or '?')}</strong></a></td>
               <td>{escape(_relation_label(device.get('status')))}</td>
               <td>{escape(_relation_label(device.get('site')))}</td>
               <td>{escape(_relation_label(device.get('role')))}</td>
               <td>{escape(_relation_label(device.get('device_type')))}</td>
               <td>{escape(_relation_label(device.get('primary_ip4')))}</td>
-              <td>{escape(_normalize_text(device.get('serial')) or 'â€”')}</td>
-              <td><a href="/devices?edit={escape(_related_id(device.get('id')))}">Editar</a></td>
+              <td>{escape(_normalize_text(device.get('serial')) or '?')}</td>
+              <td><a href="/devices/view/{escape(_related_id(device.get('id')))}">Detalhe</a> | <a href="/devices?edit={escape(_related_id(device.get('id')))}">Editar</a></td>
             </tr>
             """
         )
@@ -2948,6 +3064,23 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
     )
 
 
+
+@app.get("/devices/view/{device_id}", include_in_schema=False)
+async def device_detail_page(request: Request, device_id: int, saved: int = 0, error: str | None = None):
+    client = request.app.state.netbox_client
+    device: dict[str, Any] = {}
+    interfaces: list[dict[str, Any]] = []
+    prefixes: list[dict[str, Any]] = []
+    topology_state = load_network_topology()
+    page_error = error
+    try:
+        if client is not None:
+            device = await client.get_device(device_id)
+            interfaces = await client.list_interfaces(params={"device_id": device_id, "limit": 100})
+            prefixes = await client.list_prefixes(params={"limit": 100})
+    except Exception as exc:
+        page_error = str(exc)
+    return HTMLResponse(_render_device_detail_page(device, interfaces, prefixes, topology_state, saved=bool(saved), error=page_error))
 @app.post("/devices/save", include_in_schema=False)
 async def save_device_page(request: Request):
     form = await _read_form(request)
@@ -2957,7 +3090,7 @@ async def save_device_page(request: Request):
         value = _form_value(form, key)
         if value:
             payload[key] = value
-    for key in ("site_id", "role_id", "device_type_id", "primary_ip4_id"):
+    for key in ("site_id", "role_id", "device_type_id", "rack_id", "primary_ip4_id"):
         value = _form_value(form, key)
         if value:
             try:

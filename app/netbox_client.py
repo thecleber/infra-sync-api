@@ -186,6 +186,9 @@ class NetBoxClient:
             params={"device_id": device_id, "name": name},
         )
 
+    async def list_interfaces(self, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return await self.list("/api/dcim/interfaces/", params=params)
+
     async def create_interface(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.create("/api/dcim/interfaces/", payload)
 
