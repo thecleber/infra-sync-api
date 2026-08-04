@@ -2713,7 +2713,9 @@ async def _annotate_discovered_device(
         sys_name=_normalize_text(annotated.get("sys_name")) or name,
         sys_object_id=_normalize_text(annotated.get("sys_object_id")),
     )
-    device_name = _normalize_text(existing.get("name")) if isinstance(existing, dict) and existing.get("name") else name
+    device_name = _normalize_text(annotated.get("sys_name")) or (
+        _normalize_text(existing.get("name")) if isinstance(existing, dict) and existing.get("name") else name
+    )
     payload = SyncDeviceRequest(
         hostid=ip or device_name,
         hostname=device_name,
@@ -2723,6 +2725,7 @@ async def _annotate_discovered_device(
         modelo=_normalize_text(annotated.get("model")) or profile["model"] or profile["device_type"] or "Generico",
         site_id=settings.default_site_id,
         role_id=_discovery_role_id_for_group(_normalize_text(annotated.get("group")) or "hosts", settings),
+        netbox_device_id=_related_id(existing.get("id")) if isinstance(existing, dict) else None,
         zabbix_status="active",
         mac_address=_normalize_text(annotated.get("mac_address")) or None,
         comments_summary=_normalize_text(annotated.get("notes")) or "Descoberto por ARP/Nmap + SNMP",

@@ -14,6 +14,7 @@ class SyncDeviceRequest(BaseModel):
     modelo: str = Field(..., min_length=1)
     site_id: int = Field(..., gt=0)
     role_id: int = Field(..., gt=0)
+    netbox_device_id: int | None = Field(default=None, gt=0)
     zabbix_status: str | None = None
     serial: str | None = None
     mac_address: str | None = None

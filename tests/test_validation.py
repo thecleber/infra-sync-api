@@ -10,7 +10,7 @@ from app import discovery as discovery_module
 from app.discovery import DiscoveredDevice, classify_discovered_device, scan_network
 from app.models import SyncDeviceRequest
 from app.netbox_client import NetBoxClient
-from app.services import SyncOutcome
+from app.services import SyncOutcome, sync_device
 from app.zabbix_client import ZabbixClient
 
 
@@ -165,6 +165,73 @@ def test_missing_required_role_id():
             modelo="Switch Gerenciavel Generico",
             site_id=1,
         )
+
+
+@pytest.mark.anyio
+async def test_sync_device_updates_existing_device_by_id(monkeypatch):
+    client = NetBoxClient("http://netbox.local", "Bearer token", 5.0)
+    monkeypatch.setattr(NetBoxClient, "find_manufacturer_by_slug", AsyncMock(return_value={"id": 11, "name": "Intelbras"}))
+    monkeypatch.setattr(
+        NetBoxClient,
+        "find_device_types",
+        AsyncMock(return_value=[{"id": 22, "model": "SF 2400 QR+", "manufacturer": {"id": 11, "name": "Intelbras"}}]),
+    )
+    monkeypatch.setattr(
+        NetBoxClient,
+        "get_device",
+        AsyncMock(return_value={
+            "id": 101,
+            "name": "SW-OLD-NAME",
+            "status": {"value": "planned"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "device_type": {"id": 22, "model": "SF 2400 QR+", "manufacturer": {"id": 11, "name": "Intelbras"}},
+            "primary_ip4": {"id": 77, "address": "10.0.0.24/32"},
+            "comments": "",
+            "custom_fields": {},
+        }),
+    )
+    update_device_mock = AsyncMock(return_value={
+        "id": 101,
+        "name": "SW-ACCESS-LAN",
+        "status": {"value": "active"},
+        "site": {"id": 1, "name": "ECVITORIA"},
+        "role": {"id": 2, "name": "Switch"},
+        "device_type": {"id": 22, "model": "SF 2400 QR+", "manufacturer": {"id": 11, "name": "Intelbras"}},
+        "primary_ip4": {"id": 77, "address": "10.0.0.24/32"},
+        "comments": "updated from scan",
+        "custom_fields": {"zabbix_hostid": "10917"},
+    })
+    monkeypatch.setattr(NetBoxClient, "update_device", update_device_mock)
+    monkeypatch.setattr(NetBoxClient, "find_interface", AsyncMock(return_value={"id": 501, "name": "mgmt0", "mac_address": "00:11:22:33:44:55"}))
+    monkeypatch.setattr(NetBoxClient, "update_interface", AsyncMock(return_value={"id": 501, "name": "mgmt0", "mac_address": "AA:BB:CC:DD:EE:FF"}))
+    monkeypatch.setattr(NetBoxClient, "find_ip_address", AsyncMock(return_value={"id": 701, "address": "10.0.0.24/32", "assigned_object_type": "dcim.interface", "assigned_object_id": 501}))
+    monkeypatch.setattr(NetBoxClient, "update_ip_address", AsyncMock(return_value={"id": 701, "address": "10.0.0.24/32", "assigned_object_type": "dcim.interface", "assigned_object_id": 501}))
+    monkeypatch.setattr(NetBoxClient, "get_site", AsyncMock(return_value={"id": 1}))
+    monkeypatch.setattr(NetBoxClient, "get_device_role", AsyncMock(return_value={"id": 2}))
+
+    payload = SyncDeviceRequest(
+        hostid="10.0.0.24",
+        hostname="SW-ACCESS-LAN",
+        display_name="SW-ACCESS-LAN",
+        ip="10.0.0.24",
+        fabricante="Intelbras",
+        modelo="SF 2400 QR+",
+        site_id=1,
+        role_id=2,
+        netbox_device_id=101,
+        mac_address="AA:BB:CC:DD:EE:FF",
+        comments_summary="updated from scan",
+        netbox_status="active",
+    )
+
+    outcome = await sync_device(payload, client, default_site_id=1, dry_run=False)
+
+    assert outcome.success is True
+    assert outcome.action == "updated"
+    assert outcome.device_id == 101
+    assert update_device_mock.await_count >= 1
+    assert client.get_device is not None
 
 
 def test_root_renders_dashboard(monkeypatch):

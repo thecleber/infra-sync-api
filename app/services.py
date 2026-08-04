@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
@@ -110,7 +111,12 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
 
     device_type_id = device_type.get("id") if device_type else None
 
-    device = await _find_device(client, payload.hostid, device_name)
+    device = None
+    if payload.netbox_device_id:
+        with contextlib.suppress(NetBoxClientError):
+            device = await client.get_device(payload.netbox_device_id)
+    if device is None:
+        device = await _find_device(client, payload.hostid, device_name)
     created_device = False
     current_custom_fields: dict[str, Any] = {}
     if device is not None:
