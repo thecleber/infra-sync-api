@@ -2328,6 +2328,7 @@ def _device_key(ip: str) -> str:
 
 def _discovery_group_options() -> list[tuple[str, str, list[str]]]:
     return [
+        ("routers", "Roteadores", ["core", "distribution"]),
         ("switches", "Switches", ["core", "access", "wireless"]),
         ("servers", "Servidores", ["hypervisor", "physical"]),
         ("hosts", "Hosts", ["mobile", "notebook", "tablet", "desktop", "fixed"]),
@@ -2345,11 +2346,15 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         rows.append(
             f"""
             <tr>
-              <td><strong>{escape(ip or 'â€”')}</strong></td>
-              <td>{escape(str(device.get("sys_name") or 'â€”'))}</td>
-              <td style="max-width:280px;">{escape(str(device.get("sys_descr") or 'â€”'))}</td>
+              <td><strong>{escape(ip or '?')}</strong></td>
+              <td>{escape(str(device.get("sys_name") or '?'))}</td>
+              <td>{escape(str(device.get("manufacturer") or '?'))}</td>
+              <td>{escape(str(device.get("model") or '?'))}</td>
+              <td>{escape(str(device.get("device_type") or '?'))}</td>
+              <td style="max-width:280px;">{escape(str(device.get("sys_descr") or '?'))}</td>
               <td>
                 <select name="group_{key}">
+                  <option value="routers" {"selected" if device.get("group") == "routers" else ""}>Roteadores</option>
                   <option value="switches" {"selected" if device.get("group") == "switches" else ""}>Switches</option>
                   <option value="servers" {"selected" if device.get("group") == "servers" else ""}>Servidores</option>
                   <option value="hosts" {"selected" if device.get("group") == "hosts" else ""}>Hosts</option>
@@ -2435,28 +2440,26 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             <button class="btn primary" type="submit">Varredura SNMP</button>
           </div>
         </form>
-      </div>
-      <div id="results" class="panel">
-        <h2>Resultados</h2>
-        <p>{escape(str(len(devices)))} dispositivo(s) encontrados na ultima varredura.</p>
-        <form method="post" action="/discovery/save">
-          <input type="hidden" name="network" value="{escape(state.get("network") or "")}" />
+          <table>
+            <thead>
           <table>
             <thead>
               <tr>
                 <th>IP</th>
                 <th>Nome</th>
-                <th>DescriÃ§Ã£o</th>
+                <th>Fabricante</th>
+                <th>Modelo</th>
+                <th>Tipo</th>
+                <th>Descri??o</th>
                 <th>Grupo</th>
                 <th>Subgrupo</th>
                 <th>Incluir</th>
               </tr>
             </thead>
             <tbody>
-              {''.join(rows) if rows else '<tr><td colspan="6">Nenhum dispositivo na ultima varredura.</td></tr>'}
+              {''.join(rows) if rows else '<tr><td colspan="9">Nenhum dispositivo na ultima varredura.</td></tr>'}
             </tbody>
           </table>
-          <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
             <button class="btn primary" type="submit">Salvar classificacao</button>
             <a class="btn" href="/discovery">Recarregar</a>
           </div>

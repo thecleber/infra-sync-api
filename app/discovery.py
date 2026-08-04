@@ -7,6 +7,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import re
 
 from pysnmp.hlapi.v3arch.asyncio import (
     CommunityData,
@@ -24,16 +25,20 @@ DISCOVERY_GROUPS_PATH = Path("data") / "discovery_groups.json"
 
 
 SNMP_VARIABLES = (
-    ("sys_descr", ("SNMPv2-MIB", "sysDescr", 0)),
-    ("sys_name", ("SNMPv2-MIB", "sysName", 0)),
-    ("sys_object_id", ("SNMPv2-MIB", "sysObjectID", 0)),
-    ("if_number", ("IF-MIB", "ifNumber", 0)),
-    ("hr_memory_size", ("HOST-RESOURCES-MIB", "hrMemorySize", 0)),
-    ("ucd_load_1", ("UCD-SNMP-MIB", "laLoad", 1)),
+    ("sys_descr", ("1.3.6.1.2.1.1.1.0",)),
+    ("sys_name", ("1.3.6.1.2.1.1.5.0",)),
+    ("sys_object_id", ("1.3.6.1.2.1.1.2.0",)),
+    ("if_number", ("1.3.6.1.2.1.2.1.0",)),
+    ("hr_memory_size", ("1.3.6.1.2.1.25.2.2.0",)),
+    ("ucd_load_1", ("1.3.6.1.4.1.2021.10.1.3.1",)),
 )
 
 
 DISCOVERY_GROUPS: dict[str, dict[str, list[str]]] = {
+    "routers": {
+        "core": ["routeros", "ccr", "router", "gateway", "edge router", "wan"],
+        "distribution": ["distribution", "backbone"],
+    },
     "switches": {
         "core": ["core", "distribution", "backbone", "core switch"],
         "access": ["access", "edge", "switch"],
@@ -57,6 +62,9 @@ DISCOVERY_GROUPS: dict[str, dict[str, list[str]]] = {
 class DiscoveredDevice:
     ip: str
     reachable: bool
+    manufacturer: str = ""
+    model: str = ""
+    device_type: str = ""
     sys_descr: str = ""
     sys_name: str = ""
     sys_object_id: str = ""
@@ -158,10 +166,21 @@ async def _scan_single_ip(
             if not any((sys_descr, sys_name, sys_object_id, if_number, hr_memory_size, ucd_load_1)):
                 return None
 
-            group, subgroup, notes = classify_discovered_device(sys_descr=sys_descr, sys_name=sys_name, sys_object_id=sys_object_id)
+            profile = infer_device_profile(sys_descr=sys_descr, sys_name=sys_name, sys_object_id=sys_object_id)
+            group, subgroup, notes = classify_discovered_device(
+                sys_descr=sys_descr,
+                sys_name=sys_name,
+                sys_object_id=sys_object_id,
+                manufacturer=profile["manufacturer"],
+                model=profile["model"],
+                device_type=profile["device_type"],
+            )
             return DiscoveredDevice(
                 ip=ip,
                 reachable=True,
+                manufacturer=profile["manufacturer"],
+                model=profile["model"],
+                device_type=profile["device_type"],
                 sys_descr=sys_descr,
                 sys_name=sys_name,
                 sys_object_id=sys_object_id,
@@ -171,18 +190,156 @@ async def _scan_single_ip(
                 group=group,
                 subgroup=subgroup,
                 notes=notes,
-            )
+        )
         finally:
             engine.close_dispatcher()
 
 
-def classify_discovered_device(*, sys_descr: str, sys_name: str, sys_object_id: str) -> tuple[str, str, str]:
+def infer_device_profile(*, sys_descr: str, sys_name: str, sys_object_id: str) -> dict[str, str]:
     text = " ".join(part for part in (sys_descr, sys_name, sys_object_id) if part).lower()
+    enterprise = _enterprise_hint(sys_object_id)
+
+    manufacturer = enterprise.get("manufacturer") or _guess_manufacturer(text)
+    model = enterprise.get("model") or _guess_model(sys_descr, sys_name, manufacturer)
+    device_type = enterprise.get("device_type") or _guess_device_type(text, manufacturer, model)
+
+    if "printer" in device_type:
+        group, subgroup = "hosts", "fixed"
+    elif device_type == "router":
+        group, subgroup = "switches", "core"
+    elif device_type == "wireless_ap":
+        group, subgroup = "switches", "wireless"
+    elif device_type == "server_management":
+        group, subgroup = "servers", "physical"
+    elif device_type == "server":
+        group, subgroup = "servers", "physical"
+    elif device_type == "switch":
+        group = "switches"
+        subgroup = "core" if any(token in text for token in ("core", "backbone", "ccr", "distribution")) else "access"
+    elif device_type == "host":
+        group, subgroup = "hosts", "fixed"
+    else:
+        group, subgroup = "hosts", "fixed"
+
+    notes = f"Matched {group}/{subgroup} via {manufacturer or 'unknown'} {model or 'unknown'} {device_type or 'unknown'}"
+    return {
+        "manufacturer": manufacturer,
+        "model": model,
+        "device_type": device_type,
+        "group": group,
+        "subgroup": subgroup,
+        "notes": notes,
+    }
+
+
+def classify_discovered_device(
+    *,
+    sys_descr: str,
+    sys_name: str,
+    sys_object_id: str,
+    manufacturer: str = "",
+    model: str = "",
+    device_type: str = "",
+) -> tuple[str, str, str]:
+    if not (manufacturer and model and device_type):
+        profile = infer_device_profile(sys_descr=sys_descr, sys_name=sys_name, sys_object_id=sys_object_id)
+        manufacturer = manufacturer or profile["manufacturer"]
+        model = model or profile["model"]
+        device_type = device_type or profile["device_type"]
+        group = profile["group"]
+        subgroup = profile["subgroup"]
+        notes = profile["notes"]
+        return group, subgroup, notes
+
+    profile_text = " ".join(part for part in (manufacturer, model, device_type, sys_descr, sys_name, sys_object_id) if part).lower()
     for group, subgroups in DISCOVERY_GROUPS.items():
         for subgroup, keywords in subgroups.items():
-            if any(keyword in text for keyword in keywords):
-                return group, subgroup, f"Matched {group}/{subgroup}"
-    return "hosts", "fixed", "Defaulted to hosts/fixed"
+            if any(keyword in profile_text for keyword in keywords):
+                return group, subgroup, f"Matched {group}/{subgroup} via {manufacturer or 'unknown'} {model or 'unknown'} {device_type or 'unknown'}"
+    return "hosts", "fixed", f"Defaulted to hosts/fixed via {manufacturer or 'unknown'} {model or 'unknown'} {device_type or 'unknown'}"
+
+
+def _enterprise_hint(sys_object_id: str) -> dict[str, str]:
+    text = _normalize(sys_object_id)
+    match = re.search(r"(\d+(?:\.\d+)*)", text)
+    if not match:
+        return {}
+    oid = match.group(1)
+    hints = {
+        "1.3.6.1.4.1.14988": {"manufacturer": "MikroTik", "device_type": "router", "model": "CCR"},
+        "1.3.6.1.4.1.26138": {"manufacturer": "Intelbras", "device_type": "switch"},
+        "1.3.6.1.4.1.42397": {"manufacturer": "Grandstream", "device_type": "wireless_ap"},
+        "1.3.6.1.4.1.11863": {"manufacturer": "TP-Link", "device_type": "switch"},
+        "1.3.6.1.4.1.674": {"manufacturer": "Dell", "device_type": "server_management"},
+        "1.3.6.1.4.1.2435": {"manufacturer": "Brother", "device_type": "printer"},
+        "1.3.6.1.4.1.1248": {"manufacturer": "Epson", "device_type": "printer"},
+        "1.3.6.1.4.1.11": {"manufacturer": "HP", "device_type": "printer"},
+        "1.3.6.1.4.1.8072": {"manufacturer": "Linux/Net-SNMP", "device_type": "host"},
+    }
+    for prefix, profile in hints.items():
+        if oid.startswith(prefix):
+            return profile
+    return {}
+
+
+def _guess_manufacturer(text: str) -> str:
+    if any(token in text for token in ("mikrotik", "routeros", "ccr")):
+        return "MikroTik"
+    if "intelbras" in text:
+        return "Intelbras"
+    if "grandstream" in text or "gwn" in text:
+        return "Grandstream"
+    if "tp-link" in text or "tplink" in text or "sg" in text:
+        return "TP-Link"
+    if "dell" in text or "idrac" in text:
+        return "Dell"
+    if "brother" in text or text.startswith("brn"):
+        return "Brother"
+    if "epson" in text:
+        return "Epson"
+    if text.startswith("hp") or "hewlett" in text:
+        return "HP"
+    return "Generico"
+
+
+def _guess_model(sys_descr: str, sys_name: str, manufacturer: str) -> str:
+    combined = " ".join(part for part in (sys_descr, sys_name) if part).strip()
+    patterns = [
+        r"(CCR\d+[A-Z0-9+\-]*)",
+        r"(SG\d+[A-Z0-9+\-]*)",
+        r"(S\d{4}[A-Z0-9+\-]*)",
+        r"(GWN\d+[A-Z0-9+\-]*)",
+        r"(iDRAC[-A-Z0-9]*)",
+        r"(BRN\d+[A-Z0-9]*)",
+        r"(EPSON\d+[A-Z0-9]*)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, combined, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    if manufacturer and manufacturer.lower() in combined.lower():
+        return combined
+    return sys_name or sys_descr or ""
+
+
+def _guess_device_type(text: str, manufacturer: str, model: str) -> str:
+    if any(token in text for token in ("printer", "print server", "brother", "epson", "hp ethernet multi-environment")):
+        return "printer"
+    if any(token in text for token in ("routeros", "gateway", "router", "ccr")):
+        return "router"
+    if any(token in text for token in ("idrac", "ilo", "bmc", "management controller")):
+        return "server_management"
+    if any(token in text for token in ("access point", "wireless", "ap", "gwn")):
+        return "wireless_ap"
+    if any(token in text for token in ("switch", "sg", "s2", "omada", "cisco catalyst", "intelbras@switch")):
+        return "switch"
+    if any(token in text for token in ("server", "hypervisor", "proliant", "r720", "r730", "poweredge", "lenovo", "hpe")):
+        return "server"
+    return "host"
+
+
+def _normalize(value: Any) -> str:
+    return "" if value is None else str(value).strip()
 
 
 def _extract_values(result: tuple[Any, ...]) -> dict[str, str]:
@@ -217,4 +374,3 @@ def _load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 def _save_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-

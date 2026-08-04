@@ -23,26 +23,26 @@ SNMP_PROBE_STATE_PATH = Path("data") / "snmp_last_probe.json"
 
 
 SCALAR_VARIABLES = (
-    ("sys_descr", ("SNMPv2-MIB", "sysDescr", 0)),
-    ("sys_name", ("SNMPv2-MIB", "sysName", 0)),
-    ("sys_object_id", ("SNMPv2-MIB", "sysObjectID", 0)),
-    ("if_number", ("IF-MIB", "ifNumber", 0)),
-    ("hr_memory_size", ("HOST-RESOURCES-MIB", "hrMemorySize", 0)),
+    ("sys_descr", ("1.3.6.1.2.1.1.1.0",)),
+    ("sys_name", ("1.3.6.1.2.1.1.5.0",)),
+    ("sys_object_id", ("1.3.6.1.2.1.1.2.0",)),
+    ("if_number", ("1.3.6.1.2.1.2.1.0",)),
+    ("hr_memory_size", ("1.3.6.1.2.1.25.2.2.0",)),
 )
 
 
 WALK_COLUMNS = {
-    "if_name": ("IF-MIB", "ifName"),
-    "if_descr": ("IF-MIB", "ifDescr"),
-    "if_alias": ("IF-MIB", "ifAlias"),
-    "if_admin_status": ("IF-MIB", "ifAdminStatus"),
-    "if_oper_status": ("IF-MIB", "ifOperStatus"),
-    "if_speed": ("IF-MIB", "ifSpeed"),
-    "if_in_octets": ("IF-MIB", "ifInOctets"),
-    "if_out_octets": ("IF-MIB", "ifOutOctets"),
-    "if_hc_in_octets": ("IF-MIB", "ifHCInOctets"),
-    "if_hc_out_octets": ("IF-MIB", "ifHCOutOctets"),
-    "hr_processor_load": ("HOST-RESOURCES-MIB", "hrProcessorLoad"),
+    "if_name": ("1.3.6.1.2.1.31.1.1.1.1",),
+    "if_descr": ("1.3.6.1.2.1.2.2.1.2",),
+    "if_alias": ("1.3.6.1.2.1.31.1.1.1.18",),
+    "if_admin_status": ("1.3.6.1.2.1.2.2.1.7",),
+    "if_oper_status": ("1.3.6.1.2.1.2.2.1.8",),
+    "if_speed": ("1.3.6.1.2.1.2.2.1.5",),
+    "if_in_octets": ("1.3.6.1.2.1.2.2.1.10",),
+    "if_out_octets": ("1.3.6.1.2.1.2.2.1.16",),
+    "if_hc_in_octets": ("1.3.6.1.2.1.31.1.1.1.6",),
+    "if_hc_out_octets": ("1.3.6.1.2.1.31.1.1.1.10",),
+    "hr_processor_load": ("1.3.6.1.2.1.25.3.3.1.2",),
 }
 
 
