@@ -14,7 +14,19 @@ from app.zabbix_client import ZabbixClient
 
 def _mock_dashboard_clients(monkeypatch):
     monkeypatch.setattr(NetBoxClient, "health_status", AsyncMock(return_value=True))
-    monkeypatch.setattr(NetBoxClient, "count", AsyncMock(side_effect=[7, 19, 23, 11, 5, 2, 4]))
+    async def _count(path: str):
+        mapping = {
+            "/api/dcim/devices/": 7,
+            "/api/dcim/interfaces/": 19,
+            "/api/ipam/ip-addresses/": 23,
+            "/api/ipam/prefixes/": 11,
+            "/api/ipam/vlans/": 5,
+            "/api/dcim/sites/": 2,
+            "/api/dcim/racks/": 4,
+        }
+        return mapping.get(path, 0)
+
+    monkeypatch.setattr(NetBoxClient, "count", AsyncMock(side_effect=_count))
     monkeypatch.setattr(ZabbixClient, "healthcheck", AsyncMock(return_value=True))
     monkeypatch.setattr(ZabbixClient, "count_hosts", AsyncMock(return_value=14))
     monkeypatch.setattr(ZabbixClient, "count_problems", AsyncMock(return_value=3))
@@ -189,6 +201,9 @@ def test_settings_page_renders(monkeypatch):
     assert "Servidor SMTP" in response.text
     assert "Alerta sonoro" in response.text
     assert "sound_min_severity" in response.text
+    assert "Dashboard CPD" in response.text
+    assert "cpd_critical_devices" in response.text
+    assert "Servidores, roteadores e switches criticos" in response.text
 
 
 def test_discovery_classifier_switch():
@@ -232,6 +247,7 @@ def test_management_pages_render(monkeypatch):
         networks = client.get("/networks", follow_redirects=False)
         alerts = client.get("/alerts", follow_redirects=False)
         reports = client.get("/reports", follow_redirects=False)
+        cpd = client.get("/cpd", follow_redirects=False)
 
     assert devices.status_code == 200
     assert "Devices cadastrados" in devices.text
@@ -249,6 +265,10 @@ def test_management_pages_render(monkeypatch):
     assert "Enviar e-mail de alertas" in alerts.text
     assert "playAlertSound" in alerts.text
     assert "soundMinSeverity" in alerts.text
+    assert cpd.status_code == 200
+    assert "CPD / Painel de operacao" in cpd.text
+    assert "cpd-updated" in cpd.text
+    assert "Dispositivos criticos" in cpd.text
     assert reports.status_code == 200
     assert "Relatório executivo" in reports.text or "RelatÃ³rio executivo" in reports.text
 
@@ -326,6 +346,21 @@ def test_snmp_probe_post_renders_success(monkeypatch):
 
     assert response.status_code == 200
     assert "Leitura SNMP atualizada com sucesso" in response.text
+
+
+def test_cpd_dashboard_config_normalization():
+    config = new_main._normalize_cpd_dashboard_config({
+        "enabled": "yes",
+        "title": "CPD Sala NOC",
+        "critical_devices": "CORE-01",
+        "critical_services": "DNS, DHCP",
+        "critical_links": "uplink-core",
+        "highlight_severity": "9",
+    })
+
+    assert config["enabled"] is True
+    assert config["title"] == "CPD Sala NOC"
+    assert config["highlight_severity"] == 5
 
 
 def test_topology_page_renders(monkeypatch):

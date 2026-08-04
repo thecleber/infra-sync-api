@@ -70,6 +70,7 @@ O sistema tambem salva configuracoes editaveis em `data/integrations.json`, via 
 - `GET /networks` -> lista e edita prefixes/redes.
 - `POST /networks/save` -> cria ou atualiza um prefix.
 - `GET /alerts` -> painel de alertas em tempo real.
+- `GET /cpd` -> painel fixo para CPD com atualizacao visual a cada 2 segundos.
 - `POST /alerts/email/send` -> envia um resumo dos alertas atuais por e-mail.
 - `GET /api/alerts` -> JSON com os problemas abertos no Zabbix.
 - `GET /reports` -> relatÃ³rio imprimÃ­vel.
@@ -88,6 +89,7 @@ O sistema tambem salva configuracoes editaveis em `data/integrations.json`, via 
 - painel para ajustar a frequencia de atualizacao dos dados exibidos;
 - cadastro e ediÃ§Ã£o manual de devices, VLANs e redes dentro da prÃ³pria interface;
 - painel de alertas do Zabbix com atualização periódica;
+- painel CPD dedicado para monitorar servidores, roteadores, switches, links e servicos criticos em tela fixa;
 - alerta sonoro configur?vel por severidade no painel de alertas;
 - configuração de SMTP e disparo manual do resumo dos alertas por e-mail;
 - relatório imprimível com os principais indicadores;

@@ -82,6 +82,14 @@ def default_runtime(settings: Settings) -> dict[str, Any]:
             "enabled": False,
             "min_severity": 4,
         },
+        "cpd_dashboard": {
+            "enabled": True,
+            "title": "CPD - Painel de saude",
+            "critical_devices": "CORE-01, CORE-02, SW-ACCESS-01, SRV-DB-01",
+            "critical_services": "DNS, DHCP, AD, VPN",
+            "critical_links": "uplink-core, wan-link, backbone",
+            "highlight_severity": 4,
+        },
     }
 
 
@@ -183,6 +191,178 @@ def _render_alert_sound_block(config: dict[str, Any]) -> str:
     """
 
 
+def _render_cpd_block(config: dict[str, Any]) -> str:
+    enabled = "checked" if config.get("enabled") else ""
+    title = escape(_normalize_text(config.get("title")))
+    devices = escape(_normalize_text(config.get("critical_devices")))
+    services = escape(_normalize_text(config.get("critical_services")))
+    links = escape(_normalize_text(config.get("critical_links")))
+    threshold = min(5, max(0, int(config.get("highlight_severity", 4) or 4)))
+    options = "".join(
+        f'<option value="{value}" {"selected" if threshold == value else ""}>{label}</option>'
+        for value, label in (
+            (0, "0 - Sem classe"),
+            (1, "1 - Informacao"),
+            (2, "2 - Aviso"),
+            (3, "3 - Media"),
+            (4, "4 - Alta"),
+            (5, "5 - Desastre"),
+        )
+    )
+    return f"""
+        <div class="panel" id="cpd-dashboard" style="margin-bottom:14px;">
+          <h2>Dashboard CPD</h2>
+          <p>Tela fixa para sala de operacao, com foco nos servidores, roteadores, switches, links e servicos mais criticos.</p>
+          <div class="check">
+            <input type="checkbox" name="cpd_enabled" {enabled} />
+            <span>Ativar dashboard CPD</span>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label for="cpd_title">Titulo</label><input id="cpd_title" name="cpd_title" type="text" value="{title}" placeholder="CPD - Painel de saude" /></div>
+            <div class="field">
+              <label for="cpd_highlight_severity">Severidade para destaque</label>
+              <select id="cpd_highlight_severity" name="cpd_highlight_severity">
+                {options}
+              </select>
+            </div>
+          </div>
+          <div class="field"><label for="cpd_critical_devices">Servidores, roteadores e switches criticos</label><textarea id="cpd_critical_devices" name="cpd_critical_devices" placeholder="CORE-01, CORE-02, SRV-DB-01">{devices}</textarea></div>
+          <div class="field"><label for="cpd_critical_links">Links criticos</label><textarea id="cpd_critical_links" name="cpd_critical_links" placeholder="uplink-core, wan-link, backbone">{links}</textarea></div>
+          <div class="field"><label for="cpd_critical_services">Servicos criticos</label><textarea id="cpd_critical_services" name="cpd_critical_services" placeholder="DNS, DHCP, AD, VPN">{services}</textarea></div>
+          <div class="sub" style="margin-top:10px;">A tela CPD atualiza a cada 2 segundos e nao faz logout.</div>
+        </div>
+    """
+
+
+def _default_cpd_dashboard_config() -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "title": "CPD - Painel de saude",
+        "critical_devices": "CORE-01, CORE-02, SW-ACCESS-01, SRV-DB-01",
+        "critical_services": "DNS, DHCP, AD, VPN",
+        "critical_links": "uplink-core, wan-link, backbone",
+        "highlight_severity": 4,
+    }
+
+
+def _normalize_cpd_dashboard_config(raw: Any) -> dict[str, Any]:
+    config = _default_cpd_dashboard_config()
+    if not isinstance(raw, dict):
+        return config
+
+    config["enabled"] = bool(raw.get("enabled", config["enabled"]))
+    config["title"] = _normalize_text(raw.get("title")) or config["title"]
+    config["critical_devices"] = _normalize_text(raw.get("critical_devices")) or config["critical_devices"]
+    config["critical_services"] = _normalize_text(raw.get("critical_services")) or config["critical_services"]
+    config["critical_links"] = _normalize_text(raw.get("critical_links")) or config["critical_links"]
+    try:
+        severity = int(str(raw.get("highlight_severity", config["highlight_severity"])).strip())
+    except (TypeError, ValueError):
+        severity = config["highlight_severity"]
+    config["highlight_severity"] = min(5, max(0, severity))
+    return config
+
+
+def _split_dashboard_entries(value: Any) -> list[str]:
+    text = _normalize_text(value)
+    if not text:
+        return []
+    normalized = text.replace("\r", "\n").replace("\n", ",")
+    return [entry.strip() for entry in normalized.split(",") if entry.strip()]
+
+
+def _severity_rank(value: Any) -> int:
+    text = _normalize_text(value).lower()
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    mapping = {
+        "not classified": 0,
+        "sem classe": 0,
+        "information": 1,
+        "informacao": 1,
+        "info": 1,
+        "warning": 2,
+        "aviso": 2,
+        "average": 3,
+        "media": 3,
+        "high": 4,
+        "alta": 4,
+        "disaster": 5,
+        "desastre": 5,
+    }
+    return mapping.get(text, -1)
+
+
+def _alert_host_name(alert: dict[str, Any]) -> str:
+    hosts = alert.get("hosts") if isinstance(alert.get("hosts"), list) else []
+    if not hosts:
+        return ""
+    first = hosts[0]
+    if isinstance(first, dict):
+        return _normalize_text(first.get("name") or first.get("host") or first.get("hostid"))
+    return _normalize_text(first)
+
+
+def _match_alerts_for_token(alerts: list[dict[str, Any]], token: str) -> list[dict[str, Any]]:
+    token_l = _normalize_text(token).lower()
+    if not token_l:
+        return []
+    matches = []
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        alert_name = _normalize_text(alert.get("name")).lower()
+        host_name = _alert_host_name(alert).lower()
+        if token_l in alert_name or token_l in host_name:
+            matches.append(alert)
+    return matches
+
+
+def _critical_item_status(matches: list[dict[str, Any]], threshold: int, connected: bool) -> tuple[str, str, int]:
+    if not connected:
+        return "OFFLINE", "muted", -1
+    if not matches:
+        return "OK", "ok", 0
+    severity = max((_severity_rank(alert.get("severity")) for alert in matches), default=-1)
+    if severity >= threshold:
+        return "ALERTA", "bad", severity
+    return "ATENCAO", "warn", severity
+
+
+def _build_cpd_groups(snapshot: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    alerts = snapshot.get("alerts") if isinstance(snapshot.get("alerts"), list) else []
+    netbox_ok = snapshot.get("connectors", [{}])[0].get("status") == "ONLINE" if snapshot.get("connectors") else False
+    zabbix_ok = snapshot.get("connectors", [{}, {"status": "OFFLINE"}])[1].get("status") == "ONLINE" if len(snapshot.get("connectors", [])) > 1 else False
+    threshold = int(config.get("highlight_severity", 4))
+
+    def build_group(entries: list[str]) -> list[dict[str, Any]]:
+        rows = []
+        for entry in entries:
+            matches = _match_alerts_for_token(alerts, entry)
+            status, pill, severity = _critical_item_status(matches, threshold, zabbix_ok)
+            rows.append({
+                "name": entry,
+                "status": status,
+                "pill": pill,
+                "severity": severity,
+                "host": _alert_host_name(matches[0]) if matches else "",
+                "clock": _normalize_text(matches[0].get("clock")) if matches else "",
+                "alert": _normalize_text(matches[0].get("name")) if matches else "",
+            })
+        return rows
+
+    return {
+        "devices": build_group(_split_dashboard_entries(config.get("critical_devices"))),
+        "services": build_group(_split_dashboard_entries(config.get("critical_services"))),
+        "links": build_group(_split_dashboard_entries(config.get("critical_links"))),
+        "threshold": threshold,
+        "netbox_ok": netbox_ok,
+        "zabbix_ok": zabbix_ok,
+    }
+
+
 def _refresh_interval_seconds(runtime: dict[str, Any]) -> int:
     refresh = runtime.get("refresh") if isinstance(runtime, dict) else None
     config = _normalize_refresh_config(refresh)
@@ -200,7 +380,7 @@ def _load_runtime_payload(settings: Settings) -> dict[str, Any]:
         return payload
     if not isinstance(stored, dict):
         return payload
-    for key in ("sync_api_key", "refresh", "netbox", "zabbix", "glpi", "n8n", "email", "alert_sound"):
+    for key in ("sync_api_key", "refresh", "netbox", "zabbix", "glpi", "n8n", "email", "alert_sound", "cpd_dashboard"):
         if key not in stored:
             continue
         if key == "sync_api_key" and isinstance(stored[key], str):
@@ -214,6 +394,9 @@ def _load_runtime_payload(settings: Settings) -> dict[str, Any]:
             continue
         if key == "alert_sound":
             payload[key] = _normalize_alert_sound_config(stored[key])
+            continue
+        if key == "cpd_dashboard":
+            payload[key] = _normalize_cpd_dashboard_config(stored[key])
             continue
         if isinstance(stored[key], dict):
             payload[key].update({
@@ -499,6 +682,17 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
     }
 
 
+async def _collect_cpd_snapshot(request: Request) -> dict[str, Any]:
+    snapshot = await _collect_snapshot(request)
+    runtime: dict[str, Any] = request.app.state.runtime
+    config = _normalize_cpd_dashboard_config(runtime.get("cpd_dashboard"))
+    snapshot["cpd_dashboard"] = config
+    snapshot["cpd_groups"] = _build_cpd_groups(snapshot, config)
+    snapshot["cpd_updated_at"] = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC")
+    snapshot["cpd_refresh_seconds"] = 2
+    return snapshot
+
+
 def _render_shell(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="pt-BR">
@@ -683,6 +877,7 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
     refresh = _normalize_refresh_config(runtime.get("refresh"))
     email = normalize_email_config(runtime.get("email"))
     sound = _normalize_alert_sound_config(runtime.get("alert_sound"))
+    cpd = _normalize_cpd_dashboard_config(runtime.get("cpd_dashboard"))
 
     def connector_block(key: str, title: str, description: str, hint: str) -> str:
         connector = runtime[key]
@@ -873,6 +1068,14 @@ async def save_settings(request: Request):
     runtime["alert_sound"] = _normalize_alert_sound_config({
         "enabled": _form_bool(form, "sound_enabled"),
         "min_severity": _form_value(form, "sound_min_severity") or runtime.get("alert_sound", {}).get("min_severity", 4),
+    })
+    runtime["cpd_dashboard"] = _normalize_cpd_dashboard_config({
+        "enabled": _form_bool(form, "cpd_enabled"),
+        "title": _form_value(form, "cpd_title"),
+        "critical_devices": _form_value(form, "cpd_critical_devices"),
+        "critical_services": _form_value(form, "cpd_critical_services"),
+        "critical_links": _form_value(form, "cpd_critical_links"),
+        "highlight_severity": _form_value(form, "cpd_highlight_severity") or runtime.get("cpd_dashboard", {}).get("highlight_severity", 4),
     })
 
     updates = {
@@ -1579,13 +1782,14 @@ if (snapshot.refresh_enabled) {{
           <h2 class="page-title">Central de rede</h2>
           <div class="sub">Uma visao unica do ambiente, com menus separados para operacao, inventario, IPAM, telemetria, automacao e integracoes.</div>
         </div>
-        <div class="actions">
-          <a class="btn primary" href="/settings">Configurar integraÃ§Ãµes</a>
-          <a class="btn" href="/discovery">Varredura SNMP</a>
-          <a class="btn" href="/api/overview">Snapshot</a>
-          <a class="btn" href="/health">Saude</a>
-          <a class="btn" href="/docs">API</a>
-        </div>
+          <div class="actions">
+            <a class="btn primary" href="/settings">Configurar integraÃ§Ãµes</a>
+            <a class="btn" href="/cpd">CPD</a>
+            <a class="btn" href="/discovery">Varredura SNMP</a>
+            <a class="btn" href="/api/overview">Snapshot</a>
+            <a class="btn" href="/health">Saude</a>
+            <a class="btn" href="/docs">API</a>
+          </div>
       </section>
 
       <section class="hero">
@@ -1885,6 +2089,7 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
     refresh = _normalize_refresh_config(runtime.get("refresh"))
     email = normalize_email_config(runtime.get("email"))
     sound = _normalize_alert_sound_config(runtime.get("alert_sound"))
+    cpd = _normalize_cpd_dashboard_config(runtime.get("cpd_dashboard"))
 
     def connector_block(key: str, title: str, description: str, hint: str) -> str:
         connector = runtime[key]
@@ -2021,6 +2226,7 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
         </div>
         {email_block(email)}
         {_render_alert_sound_block(sound)}
+        {_render_cpd_block(cpd)}
         <div class="form-grid">
           {connector_block("netbox", "NetBox", "Inventario, IPAM, VLANs, racks e dispositivos.", "https://netbox.example.local")}
           {connector_block("zabbix", "Zabbix", "Telemetria, eventos e SNMP.", "https://zabbix.example.local/zabbix/api_jsonrpc.php")}
@@ -3073,6 +3279,17 @@ async def alerts_page(request: Request, info: str | None = None, error: str | No
     return HTMLResponse(_render_alerts_page(payload, refresh_seconds))
 
 
+@app.get("/api/cpd")
+async def api_cpd(request: Request):
+    return await _collect_cpd_snapshot(request)
+
+
+@app.get("/cpd", include_in_schema=False)
+async def cpd_page(request: Request):
+    snapshot = await api_cpd(request)
+    return HTMLResponse(_render_cpd_page(snapshot))
+
+
 @app.post("/alerts/email/send", include_in_schema=False)
 async def send_alerts_email(request: Request):
     runtime = request.app.state.runtime
@@ -3233,6 +3450,364 @@ def _render_alerts_page(payload: dict[str, Any], refresh_seconds: int) -> str:
         actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/reports">Imprimir relatÃ³rio</a>',
         body=body,
     )
+
+
+def _render_cpd_page(snapshot: dict[str, Any]) -> str:
+    config = snapshot.get("cpd_dashboard") if isinstance(snapshot.get("cpd_dashboard"), dict) else _default_cpd_dashboard_config()
+    groups = snapshot.get("cpd_groups") if isinstance(snapshot.get("cpd_groups"), dict) else {}
+    devices = groups.get("devices") if isinstance(groups.get("devices"), list) else []
+    services = groups.get("services") if isinstance(groups.get("services"), list) else []
+    links = groups.get("links") if isinstance(groups.get("links"), list) else []
+    recent_alerts = snapshot.get("alerts") if isinstance(snapshot.get("alerts"), list) else []
+
+    def render_group_rows(entries: list[dict[str, Any]], empty_message: str) -> str:
+        if not entries:
+            return f"<tr><td colspan='4'>{escape(empty_message)}</td></tr>"
+        rows = []
+        for item in entries:
+            rows.append(
+                f"""
+                <tr>
+                  <td><strong>{escape(_normalize_text(item.get('name')))}</strong></td>
+                  <td><span class="pill {escape(_normalize_text(item.get('pill')) or 'warn')}">{escape(_normalize_text(item.get('status')))}</span></td>
+                  <td>{escape(_normalize_text(item.get('alert')) or '—')}</td>
+                  <td>{escape(_normalize_text(item.get('clock')) or '—')}</td>
+                </tr>
+                """
+            )
+        return "".join(rows)
+
+    def render_alert_rows(entries: list[dict[str, Any]]) -> str:
+        if not entries:
+            return "<tr><td colspan='4'>Nenhum alerta aberto no momento.</td></tr>"
+        rows = []
+        for alert in entries[:10]:
+            hosts = alert.get("hosts") if isinstance(alert.get("hosts"), list) else []
+            host_name = _relation_label(hosts[0]) if hosts else "—"
+            rows.append(
+                f"""
+                <tr>
+                  <td>{escape(_normalize_text(alert.get('name')) or '—')}</td>
+                  <td>{escape(_normalize_text(alert.get('severity')) or '—')}</td>
+                  <td>{escape(_normalize_text(host_name))}</td>
+                  <td>{escape(_normalize_text(alert.get('clock')) or '—')}</td>
+                </tr>
+                """
+            )
+        return "".join(rows)
+
+    snapshot_json = json.dumps(snapshot, ensure_ascii=False).replace("</", "<\\/")
+    body = f"""
+    <div class="cpd-shell">
+      <section class="cpd-hero">
+        <div>
+          <div class="cpd-kicker">CPD / Painel de operacao</div>
+          <h1 id="cpd-title">{escape(_normalize_text(config.get("title")) or "CPD - Painel de saude")}</h1>
+          <p id="cpd-summary">Tela fixa para acompanhar servidores, roteadores, switches, links, servicos e alertas criticos sem alternar entre sistemas.</p>
+        </div>
+        <div class="cpd-actions">
+          <a class="cpd-btn" href="/settings">Configurar CPD</a>
+          <a class="cpd-btn" href="/alerts">Alertas</a>
+          <a class="cpd-btn" href="/reports">Relatorios</a>
+        </div>
+      </section>
+
+      <section class="cpd-metrics">
+        <article class="cpd-card">
+          <div class="cpd-label">Atualizacao</div>
+          <div class="cpd-value" id="cpd-updated">{escape(snapshot.get("cpd_updated_at", ""))}</div>
+          <div class="cpd-note">Recarrega a cada 2 segundos sem derrubar a tela.</div>
+        </article>
+        <article class="cpd-card">
+          <div class="cpd-label">Saude geral</div>
+          <div class="cpd-value" id="cpd-health">{escape(_normalize_text(snapshot.get("health")) or "—")}</div>
+          <div class="cpd-note" id="cpd-headline">{escape(_normalize_text(snapshot.get("headline")) or "—")}</div>
+        </article>
+        <article class="cpd-card">
+          <div class="cpd-label">Telemetria</div>
+          <div class="cpd-value" id="cpd-telemetry">{escape(str(snapshot.get("telemetry_score", 0)))}</div>
+          <div class="cpd-note">NetBox, Zabbix, GLPI e n8n.</div>
+        </article>
+        <article class="cpd-card">
+          <div class="cpd-label">Alertas</div>
+          <div class="cpd-value" id="cpd-alerts-count">{escape(str(len(recent_alerts)))}</div>
+          <div class="cpd-note">Problemas ativos no Zabbix.</div>
+        </article>
+      </section>
+
+      <section class="cpd-grid">
+        <article class="cpd-panel">
+          <h2>Dispositivos criticos</h2>
+          <p>Servidores, roteadores e switches monitorados com base nos eventos e na conectividade.</p>
+          <table>
+            <thead><tr><th>Nome</th><th>Status</th><th>Ultimo alerta</th><th>Horario</th></tr></thead>
+            <tbody id="cpd-devices">{render_group_rows(devices, "Nenhum device critico configurado.")}</tbody>
+          </table>
+        </article>
+        <article class="cpd-panel">
+          <h2>Links e servicos</h2>
+          <p>Visao operacional dos troncos, uplinks e servicos essenciais da rede.</p>
+          <table>
+            <thead><tr><th>Nome</th><th>Status</th><th>Ultimo alerta</th><th>Horario</th></tr></thead>
+            <tbody id="cpd-links">{render_group_rows(links, "Nenhum link critico configurado.")}{render_group_rows(services, "Nenhum servico critico configurado.")}</tbody>
+          </table>
+        </article>
+      </section>
+
+      <section class="cpd-grid cpd-grid-bottom">
+        <article class="cpd-panel">
+          <h2>Alertas recentes</h2>
+          <p>Os eventos mais importantes entram nesta lista enquanto a tela permanece aberta.</p>
+          <table>
+            <thead><tr><th>Problema</th><th>Severidade</th><th>Host</th><th>Horario</th></tr></thead>
+            <tbody id="cpd-alerts">{render_alert_rows(recent_alerts)}</tbody>
+          </table>
+        </article>
+        <article class="cpd-panel">
+          <h2>Criticos configurados</h2>
+          <p>Base de referencia usada para destacar os elementos mais sensiveis do ambiente.</p>
+          <div class="cpd-tags">
+            <span class="cpd-tag">Dispositivos: {escape(", ".join(_split_dashboard_entries(config.get("critical_devices"))) or "nenhum")}</span>
+            <span class="cpd-tag">Links: {escape(", ".join(_split_dashboard_entries(config.get("critical_links"))) or "nenhum")}</span>
+            <span class="cpd-tag">Servicos: {escape(", ".join(_split_dashboard_entries(config.get("critical_services"))) or "nenhum")}</span>
+            <span class="cpd-tag">Severidade destaque: {escape(str(config.get("highlight_severity", 4)))}</span>
+          </div>
+          <div class="cpd-footnote">A tela nao possui logout automatico e foi pensada para TV/monitor do CPD.</div>
+        </article>
+      </section>
+    </div>
+
+    <style>
+      :root {{
+        color-scheme: dark;
+      }}
+      body {{
+        margin: 0;
+        background: #070707;
+        color: #f4f4f5;
+        font-family: Inter, Segoe UI, Arial, sans-serif;
+      }}
+      .cpd-shell {{
+        min-height: 100vh;
+        padding: 22px;
+        background:
+          linear-gradient(180deg, rgba(185,28,28,.16), rgba(0,0,0,0) 240px),
+          radial-gradient(circle at top left, rgba(185,28,28,.16), transparent 36%),
+          #070707;
+      }}
+      .cpd-hero {{
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        align-items: flex-start;
+        margin-bottom: 18px;
+      }}
+      .cpd-kicker {{
+        text-transform: uppercase;
+        font-size: 12px;
+        letter-spacing: .08em;
+        color: #fca5a5;
+        font-weight: 800;
+      }}
+      #cpd-title {{
+        margin: 6px 0 0;
+        font-size: 34px;
+        line-height: 1.05;
+      }}
+      #cpd-summary {{
+        margin: 10px 0 0;
+        max-width: 980px;
+        color: #d6d3d1;
+        line-height: 1.45;
+      }}
+      .cpd-actions {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: flex-end;
+      }}
+      .cpd-btn {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 42px;
+        padding: 10px 14px;
+        border-radius: 10px;
+        background: #111111;
+        border: 1px solid rgba(255,255,255,.1);
+        color: #fff;
+        text-decoration: none;
+        font-weight: 700;
+      }}
+      .cpd-metrics {{
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+      }}
+      .cpd-card, .cpd-panel {{
+        background: rgba(15, 15, 15, .94);
+        border: 1px solid rgba(255,255,255,.08);
+        border-radius: 14px;
+        box-shadow: 0 16px 32px rgba(0,0,0,.34);
+      }}
+      .cpd-card {{
+        padding: 16px;
+        border-top: 4px solid #b91c1c;
+      }}
+      .cpd-label {{
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+        font-size: 11px;
+        font-weight: 800;
+      }}
+      .cpd-value {{
+        margin-top: 10px;
+        font-size: 30px;
+        font-weight: 900;
+      }}
+      .cpd-note {{
+        margin-top: 8px;
+        color: #d4d4d8;
+        line-height: 1.35;
+      }}
+      .cpd-grid {{
+        display: grid;
+        grid-template-columns: 1.25fr .95fr;
+        gap: 14px;
+        margin-bottom: 14px;
+      }}
+      .cpd-panel {{
+        padding: 18px;
+      }}
+      .cpd-panel h2 {{
+        margin: 0 0 8px;
+        font-size: 18px;
+      }}
+      .cpd-panel p {{
+        margin: 0 0 14px;
+        color: #a1a1aa;
+        line-height: 1.45;
+      }}
+      table {{
+        width: 100%;
+        border-collapse: collapse;
+      }}
+      th, td {{
+        text-align: left;
+        padding: 11px 10px;
+        border-bottom: 1px solid rgba(255,255,255,.08);
+        font-size: 14px;
+        vertical-align: top;
+      }}
+      th {{
+        color: #a1a1aa;
+        text-transform: uppercase;
+        letter-spacing: .06em;
+        font-size: 12px;
+      }}
+      .pill {{
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 800;
+      }}
+      .ok {{ background: rgba(34,197,94,.18); color: #86efac; }}
+      .warn {{ background: rgba(250,204,21,.16); color: #fde68a; }}
+      .bad {{ background: rgba(239,68,68,.18); color: #fca5a5; }}
+      .muted {{ background: rgba(255,255,255,.06); color: #d4d4d8; }}
+      .cpd-tags {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }}
+      .cpd-tag {{
+        display: inline-flex;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(255,255,255,.05);
+        border: 1px solid rgba(255,255,255,.08);
+        color: #f4f4f5;
+        line-height: 1.3;
+      }}
+      .cpd-footnote {{
+        margin-top: 14px;
+        color: #a1a1aa;
+      }}
+      @media (max-width: 1120px) {{
+        .cpd-metrics, .cpd-grid {{
+          grid-template-columns: 1fr 1fr;
+        }}
+      }}
+      @media (max-width: 760px) {{
+        .cpd-hero, .cpd-grid, .cpd-metrics {{
+          grid-template-columns: 1fr;
+          display: grid;
+        }}
+        .cpd-actions {{
+          justify-content: flex-start;
+        }}
+      }}
+    </style>
+
+    <script>
+      const cpdSnapshot = {snapshot_json};
+      function escapeHtml(value) {{
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }}
+      function renderRows(items) {{
+        if (!items || !items.length) {{
+          return '<tr><td colspan="4">Nenhum item configurado.</td></tr>';
+        }}
+        return items.map((item) => `
+          <tr>
+            <td><strong>${{escapeHtml(item.name || '—')}}</strong></td>
+            <td><span class="pill ${{escapeHtml(item.pill || 'warn')}}">${{escapeHtml(item.status || '—')}}</span></td>
+            <td>${{escapeHtml(item.alert || '—')}}</td>
+            <td>${{escapeHtml(item.clock || '—')}}</td>
+          </tr>
+        `).join('');
+      }}
+      async function refreshCpd() {{
+        try {{
+          const response = await fetch('/api/cpd', {{ cache: 'no-store' }});
+          const data = await response.json();
+          const groups = data.cpd_groups || {{}};
+          document.getElementById('cpd-title').textContent = data.cpd_dashboard?.title || 'CPD - Painel de saude';
+          document.getElementById('cpd-updated').textContent = data.cpd_updated_at || '—';
+          document.getElementById('cpd-health').textContent = data.health || '—';
+          document.getElementById('cpd-headline').textContent = data.headline || '—';
+          document.getElementById('cpd-telemetry').textContent = String(data.telemetry_score ?? 0);
+          document.getElementById('cpd-alerts-count').textContent = String((data.alerts || []).length);
+          document.getElementById('cpd-devices').innerHTML = renderRows(groups.devices || []);
+          document.getElementById('cpd-links').innerHTML = renderRows([...(groups.links || []), ...(groups.services || [])]);
+          document.getElementById('cpd-alerts').innerHTML = renderRows((data.alerts || []).slice(0, 10).map((alert) => {{
+            const host = (alert.hosts && alert.hosts[0] && (alert.hosts[0].name || alert.hosts[0].host || alert.hosts[0].hostid)) || '—';
+            return {{
+              name: alert.name || '—',
+              status: alert.severity || '—',
+              pill: 'warn',
+              alert: host,
+              clock: alert.clock || '—',
+            }};
+          }}));
+        }} catch (error) {{
+          console.error('CPD refresh failed', error);
+        }}
+      }}
+      refreshCpd();
+      setInterval(refreshCpd, 2000);
+    </script>
+    """
+    return _render_shell(f"{_normalize_text(config.get('title')) or 'CPD - Painel de saude'} | infra-sync-api", body)
 
 
 @app.get("/snmp", include_in_schema=False)
