@@ -2600,6 +2600,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
     progress_message = str(progress.get("message") or "Pronto para iniciar")
     progress_total = int(progress.get("total_hosts") or 0)
     progress_processed = int(progress.get("processed_hosts") or 0)
+    progress_alive = int(progress.get("alive_hosts") or 0)
     progress_found = int(progress.get("found_devices") or 0)
     progress_percentage = int(progress.get("percentage") or 0)
     progress_width = max(0, min(100, progress_percentage))
@@ -2617,6 +2618,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       const progressLabel = document.getElementById('discovery-progress-label');
       const progressPercent = document.getElementById('discovery-progress-percent');
       const progressCount = document.getElementById('discovery-progress-count');
+      const progressAlive = document.getElementById('discovery-progress-alive');
       const progressFound = document.getElementById('discovery-progress-found');
       let progressTimer = null;
 
@@ -2627,6 +2629,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         progressPercent.textContent = `${percentage}%`;
         progressMessage.textContent = String(data?.message || 'Pronto para iniciar');
         progressCount.textContent = `${Number(data?.processed_hosts || 0)} / ${Number(data?.total_hosts || 0)} hosts`;
+        progressAlive.textContent = `${Number(data?.alive_hosts || 0)} hosts vivos`;
         progressFound.textContent = `${Number(data?.found_devices || 0)} devices encontrados`;
         progressLabel.textContent = status === 'running'
           ? 'Varredura em andamento'
@@ -2667,7 +2670,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         }
         discoveryButton.disabled = true;
         discoveryButton.textContent = 'Executando...';
-        renderProgress({ status: 'running', message: 'Iniciando varredura...', percentage: 0, processed_hosts: 0, total_hosts: 0, found_devices: 0 });
+        renderProgress({ status: 'running', message: 'Iniciando varredura...', percentage: 0, processed_hosts: 0, total_hosts: 0, alive_hosts: 0, found_devices: 0 });
         progressTimer = setInterval(refreshProgress, 1000);
         await refreshProgress();
 
@@ -2809,12 +2812,13 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         </div>
         <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px; color:#cbd5e1;">
           <span id="discovery-progress-count">{progress_processed} / {progress_total} hosts</span>
+          <span id="discovery-progress-alive">{progress_alive} hosts vivos</span>
           <span id="discovery-progress-found">{progress_found} devices encontrados</span>
         </div>
       </div>
       <div id="results" class="panel">
         <h2>Resultados</h2>
-        <p>{escape(str(len(devices)))} dispositivo(s) encontrados na ultima varredura.</p>
+        <p>{escape(str(len(devices)))} itens encontrados no inventario (ARP/Nmap + SNMP).</p>
         <form method="post" action="/discovery/save">
           <input type="hidden" name="network" value="{escape(state.get("network") or "")}" />
           <table>

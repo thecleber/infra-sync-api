@@ -244,6 +244,42 @@ def test_discovery_classifier_switch():
     assert "Matched" in notes
 
 
+def test_nmap_grepable_output_parser_and_inventory_merge():
+    live_hosts = discovery_module._parse_nmap_grepable_output(
+        """
+Host: 10.0.0.1 (core-switch)	Status: Up
+Host: 10.0.0.2 ()	Status: Up
+Host: 10.0.0.3 Status: Down
+        """.strip()
+    )
+    snmp_devices = [
+        DiscoveredDevice(
+            ip="10.0.0.1",
+            reachable=True,
+            manufacturer="Intelbras",
+            model="SF 2400 QR+",
+            device_type="switch",
+            sys_descr="Switch Gerenciavel Generico",
+            sys_name="SW-ACCESS-LAN",
+            sys_object_id="1.3.6.1.4.1.26138",
+            if_number="24",
+            hr_memory_size="1024",
+            ucd_load_1="2.5",
+            group="switches",
+            subgroup="access",
+            notes="SNMP ok",
+        )
+    ]
+    merged = discovery_module._merge_inventory(live_hosts, snmp_devices)
+
+    assert len(live_hosts) == 2
+    assert merged[0].ip == "10.0.0.1"
+    assert merged[0].group == "switches"
+    assert merged[1].ip == "10.0.0.2"
+    assert merged[1].group == "hosts"
+    assert merged[1].notes == "Descoberto via ARP/Nmap"
+
+
 @pytest.mark.parametrize(
     "sys_descr, sys_name, expected_group, expected_subgroup",
     [
@@ -334,9 +370,11 @@ def test_discovery_page_renders(monkeypatch):
             "scan_id": "scan-1",
             "network": "10.0.0.0/24",
             "status": "running",
+            "phase": "snmp_scan",
             "message": "5 de 254 hosts processados",
             "total_hosts": 254,
             "processed_hosts": 5,
+            "alive_hosts": 227,
             "found_devices": 2,
             "percentage": 2,
             "started_at": "2026-08-04T00:00:00Z",
@@ -376,6 +414,7 @@ def test_discovery_page_renders(monkeypatch):
     assert "Varredura SNMP" in response.text
     assert "Progresso da varredura" in response.text
     assert "5 de 254 hosts processados" in response.text
+    assert "227 hosts vivos" in response.text
     assert "Impressoras" in response.text
     assert "APs" in response.text
     assert "Cameras" in response.text
@@ -394,9 +433,11 @@ def test_discovery_progress_endpoint(monkeypatch):
             "scan_id": "scan-1",
             "network": "10.0.0.0/24",
             "status": "running",
+            "phase": "snmp_scan",
             "message": "10 de 254 hosts processados",
             "total_hosts": 254,
             "processed_hosts": 10,
+            "alive_hosts": 227,
             "found_devices": 4,
             "percentage": 4,
             "started_at": "2026-08-04T00:00:00Z",

@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import shutil
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -146,13 +147,31 @@ async def scan_network(
         "scan_id": scan_id,
         "network": str(net),
         "status": "running",
-        "message": "Varredura em andamento",
+        "phase": "host_discovery",
+        "message": "Descobrindo hosts vivos via ARP/Nmap",
         "total_hosts": total_hosts,
         "processed_hosts": 0,
+        "alive_hosts": 0,
         "found_devices": 0,
         "percentage": 0,
         "started_at": scan_id,
         "updated_at": scan_id,
+    })
+
+    live_hosts = await _discover_live_hosts_with_nmap(net)
+    save_scan_progress({
+        **load_scan_progress(),
+        "scan_id": scan_id,
+        "network": str(net),
+        "status": "running",
+        "phase": "snmp_scan",
+        "message": f"{len(live_hosts)} hosts vivos localizados por ARP/Nmap",
+        "total_hosts": total_hosts,
+        "processed_hosts": 0,
+        "alive_hosts": len(live_hosts),
+        "found_devices": 0,
+        "percentage": 15 if total_hosts else 100,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     })
 
     semaphore = asyncio.Semaphore(concurrency)
@@ -161,7 +180,7 @@ async def scan_network(
         for ip in hosts
     ]
 
-    devices = []
+    snmp_devices: list[DiscoveredDevice] = []
     processed_hosts = 0
     try:
         for task in asyncio.as_completed(tasks):
@@ -172,16 +191,18 @@ async def scan_network(
                 result = None
             processed_hosts += 1
             if result is not None:
-                devices.append(result)
+                snmp_devices.append(result)
             save_scan_progress({
                 **load_scan_progress(),
                 "scan_id": scan_id,
                 "network": str(net),
                 "status": "running",
+                "phase": "snmp_scan",
                 "message": f"{processed_hosts} de {total_hosts} hosts processados",
                 "total_hosts": total_hosts,
                 "processed_hosts": processed_hosts,
-                "found_devices": len(devices),
+                "alive_hosts": len(live_hosts),
+                "found_devices": len(snmp_devices),
                 "percentage": int((processed_hosts / total_hosts) * 100) if total_hosts else 100,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "last_ip": result.ip if result is not None else "",
@@ -192,21 +213,26 @@ async def scan_network(
             "scan_id": scan_id,
             "network": str(net),
             "status": "failed",
+            "phase": "snmp_scan",
             "message": str(exc),
             "total_hosts": total_hosts,
             "processed_hosts": processed_hosts,
-            "found_devices": len(devices),
+            "alive_hosts": len(live_hosts),
+            "found_devices": len(snmp_devices),
             "percentage": int((processed_hosts / total_hosts) * 100) if total_hosts else 100,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
         raise
 
+    combined_devices = _merge_inventory(live_hosts, snmp_devices)
     payload = {
         "network": str(net),
-        "count": len(devices),
+        "count": len(combined_devices),
+        "alive_hosts": len(live_hosts),
+        "snmp_devices": len(snmp_devices),
         "scanned_at": datetime.now(timezone.utc).isoformat(),
-        "devices": [device.as_dict() for device in devices],
+        "devices": [device.as_dict() for device in combined_devices],
     }
     save_last_scan(payload)
     save_scan_progress({
@@ -214,10 +240,12 @@ async def scan_network(
         "scan_id": scan_id,
         "network": str(net),
         "status": "completed",
+        "phase": "complete",
         "message": "Varredura concluida",
         "total_hosts": total_hosts,
         "processed_hosts": total_hosts,
-        "found_devices": len(devices),
+        "alive_hosts": len(live_hosts),
+        "found_devices": len(snmp_devices),
         "percentage": 100 if total_hosts else 0,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -294,6 +322,97 @@ async def _scan_single_ip(
         finally:
             if engine is not None:
                 engine.close_dispatcher()
+
+
+async def _discover_live_hosts_with_nmap(net: ipaddress.IPv4Network) -> list[dict[str, str]]:
+    if shutil.which("nmap") is None:
+        LOGGER.debug("nmap not available; skipping ARP/Nmap host discovery")
+        return []
+
+    command = [
+        "nmap",
+        "-sn",
+        "-n",
+        "-PR",
+        "-oG",
+        "-",
+        str(net),
+    ]
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+    except FileNotFoundError:
+        return []
+
+    if process.returncode != 0:
+        LOGGER.debug("nmap host discovery failed: %s", stderr.decode("utf-8", errors="replace").strip())
+        return []
+
+    return _parse_nmap_grepable_output(stdout.decode("utf-8", errors="replace"))
+
+
+def _parse_nmap_grepable_output(output: str) -> list[dict[str, str]]:
+    discovered: list[dict[str, str]] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line.startswith("Host:") or "Status: Up" not in line:
+            continue
+        match = re.search(r"Host:\s+(\d+\.\d+\.\d+\.\d+)\s*(?:\((.*?)\))?.*Status:\s+Up", line)
+        if not match:
+            continue
+        ip = match.group(1)
+        hostname = (match.group(2) or "").strip()
+        discovered.append({"ip": ip, "sys_name": hostname, "source": "nmap"})
+    return discovered
+
+
+def _merge_inventory(live_hosts: list[dict[str, str]], snmp_devices: list[DiscoveredDevice]) -> list[DiscoveredDevice]:
+    inventory: dict[str, DiscoveredDevice] = {}
+
+    for host in live_hosts:
+        ip = _normalize(host.get("ip"))
+        if not ip:
+            continue
+        inventory[ip] = DiscoveredDevice(
+            ip=ip,
+            reachable=True,
+            sys_name=_normalize(host.get("sys_name")),
+            device_type="host",
+            group="hosts",
+            subgroup="fixed",
+            include=True,
+            notes="Descoberto via ARP/Nmap",
+        )
+
+    for device in snmp_devices:
+        existing = inventory.get(device.ip)
+        if existing is None:
+            inventory[device.ip] = device
+            continue
+        inventory[device.ip] = DiscoveredDevice(
+            ip=device.ip,
+            reachable=True,
+            manufacturer=device.manufacturer or existing.manufacturer,
+            model=device.model or existing.model,
+            device_type=device.device_type or existing.device_type,
+            sys_descr=device.sys_descr or existing.sys_descr,
+            sys_name=device.sys_name or existing.sys_name,
+            sys_object_id=device.sys_object_id or existing.sys_object_id,
+            if_number=device.if_number or existing.if_number,
+            hr_memory_size=device.hr_memory_size or existing.hr_memory_size,
+            ucd_load_1=device.ucd_load_1 or existing.ucd_load_1,
+            group=device.group or existing.group,
+            subgroup=device.subgroup or existing.subgroup,
+            include=device.include,
+            notes=f"{existing.notes}; SNMP ok".strip("; "),
+        )
+
+    return sorted(inventory.values(), key=lambda item: ipaddress.ip_address(item.ip))
 
 
 def infer_device_profile(*, sys_descr: str, sys_name: str, sys_object_id: str) -> dict[str, str]:
@@ -480,9 +599,11 @@ def _default_scan_progress_state() -> dict[str, Any]:
         "scan_id": "",
         "network": "",
         "status": "idle",
+        "phase": "idle",
         "message": "",
         "total_hosts": 0,
         "processed_hosts": 0,
+        "alive_hosts": 0,
         "found_devices": 0,
         "percentage": 0,
         "started_at": "",
