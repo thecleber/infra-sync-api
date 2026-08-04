@@ -245,6 +245,17 @@ def test_discovery_classifier_switch():
     assert "Matched" in notes
 
 
+def test_discovery_status_badges_use_distinct_colors():
+    novo_badge = new_main._render_status_badge("Novo")
+    criado_badge = new_main._render_status_badge("Criado")
+    atualizado_badge = new_main._render_status_badge("Atualizado")
+
+    assert "#f59e0b" in novo_badge
+    assert "#db2777" in criado_badge
+    assert "#7c3aed" in atualizado_badge
+    assert novo_badge != criado_badge
+
+
 def test_nmap_grepable_output_parser_and_inventory_merge():
     live_hosts = discovery_module._parse_nmap_grepable_output(
         """

@@ -3125,8 +3125,10 @@ def _render_status_badge(label: str, title: str = "") -> str:
         color = "#16a34a"
     elif normalized in {"atualizado"}:
         color = "#7c3aed"
-    elif normalized in {"criado", "novo"}:
+    elif normalized in {"novo"}:
         color = "#f59e0b"
+    elif normalized in {"criado"}:
+        color = "#db2777"
     elif normalized in {"erro", "falha"}:
         color = "#dc2626"
     elif normalized in {"netbox indisponivel", "netbox indisponível"}:
