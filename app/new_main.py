@@ -2543,6 +2543,7 @@ async def discovery_save(request: Request):
     devices = state.get("devices") if isinstance(state.get("devices"), list) else []
     settings: Settings = request.app.state.settings
     saved_devices: list[dict[str, Any]] = []
+    operation = _normalize_text(form.get("operation")).lower() or "save"
 
     for device in devices:
         if not isinstance(device, dict):
@@ -2550,6 +2551,9 @@ async def discovery_save(request: Request):
         ip = str(device.get("ip", "")).strip()
         key = _device_key(ip)
         include = form.get(f"include_{key}") in {"on", "true", "True", "1", "checked", "yes"}
+        existing_device_id = _related_id(device.get("netbox_device_id"))
+        if operation == "update" and not existing_device_id and _normalize_text(device.get("system_status")) != "Cadastrado":
+            include = False
         classified_group, classified_subgroup, notes = classify_discovered_device(
             sys_descr=str(device.get("sys_descr") or ""),
             sys_name=str(device.get("sys_name") or ""),
@@ -2710,7 +2714,9 @@ async def _annotate_discovered_device(
     status, message = _discovery_device_status(annotated, existing)
     annotated["system_status"] = status
     annotated["system_message"] = message
-    annotated["netbox_device_id"] = _related_id(existing.get("id")) if isinstance(existing, dict) else None
+    annotated["netbox_device_id"] = (
+        _related_id(existing.get("id")) if isinstance(existing, dict) else None
+    ) or _related_id(annotated.get("netbox_device_id"))
     annotated["netbox_device_name"] = _normalize_text(existing.get("name")) if isinstance(existing, dict) else ""
     existing_mac = await _discover_device_mac(client, existing.get("id")) if isinstance(existing, dict) else ""
     annotated["mac_address"] = existing_mac or _normalize_mac_text(annotated.get("mac_address"))
@@ -2741,7 +2747,8 @@ async def _annotate_discovered_device(
         modelo=_normalize_text(annotated.get("model")) or profile["model"] or profile["device_type"] or "Generico",
         site_id=settings.default_site_id,
         role_id=_discovery_role_id_for_group(_normalize_text(annotated.get("group")) or "hosts", settings),
-        netbox_device_id=_related_id(existing.get("id")) if isinstance(existing, dict) else None,
+        netbox_device_id=_related_id(annotated.get("netbox_device_id"))
+        or (_related_id(existing.get("id")) if isinstance(existing, dict) else None),
         zabbix_status="active",
         mac_address=_normalize_mac_text(annotated.get("mac_address")) or None,
         comments_summary=_normalize_text(annotated.get("notes")) or "Descoberto por ARP/Nmap + SNMP",
@@ -2820,6 +2827,9 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       const discoverySaveModalTitle = document.getElementById('discovery-save-modal-title');
       const discoverySaveModalText = document.getElementById('discovery-save-modal-text');
       const discoverySaveModalOk = document.getElementById('discovery-save-modal-ok');
+      const discoverySaveOperation = document.getElementById('discovery-operation');
+      const discoverySaveButton = document.getElementById('discovery-save-button');
+      const discoveryUpdateButton = document.getElementById('discovery-update-button');
       const progressBar = document.getElementById('discovery-progress-bar');
       const progressMessage = document.getElementById('discovery-progress-message');
       const progressLabel = document.getElementById('discovery-progress-label');
@@ -3083,7 +3093,9 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         if (saveBusy) {
           return;
         }
-        openSaveOverlay('Salvando classificacao...');
+        const operation = String(discoverySaveOperation?.value || 'save');
+        const isUpdate = operation === 'update';
+        openSaveOverlay(isUpdate ? 'Atualizando dados dos devices salvos...' : 'Salvando classificacao...');
         try {
           const formData = new URLSearchParams(new FormData(discoverySaveForm));
           const response = await fetch(discoverySaveForm.action, {
@@ -3099,7 +3111,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             document.close();
             return;
           }
-          showSaveSuccess('Classificacao salva com sucesso.');
+          showSaveSuccess(isUpdate ? 'Atualizacao concluida com sucesso.' : 'Classificacao salva com sucesso.');
         } catch (error) {
           console.error('Falha ao salvar classificacao', error);
           closeSaveOverlay();
@@ -3114,10 +3126,24 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       if (discoverySaveForm) {
         discoverySaveForm.addEventListener('submit', submitDiscoverySave);
       }
+      if (discoverySaveButton) {
+        discoverySaveButton.addEventListener('click', () => {
+          if (discoverySaveOperation) {
+            discoverySaveOperation.value = 'save';
+          }
+        });
+      }
+      if (discoveryUpdateButton) {
+        discoveryUpdateButton.addEventListener('click', () => {
+          if (discoverySaveOperation) {
+            discoverySaveOperation.value = 'update';
+          }
+        });
+      }
       if (discoverySaveModalOk) {
         discoverySaveModalOk.addEventListener('click', () => {
           closeSaveOverlay();
-          window.location.href = '/discovery?saved=1';
+          window.location.reload();
         });
       }
       if (discoveryScanModalOk) {
@@ -3153,6 +3179,16 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
               <td>{escape(str(device.get("device_type") or '?'))}</td>
               <td>{escape(str(device.get("model") or '?'))}</td>
               <td style="max-width:280px;">{escape(str(device.get("sys_descr") or '?'))}</td>
+              <td>
+                <select name="group_{key}" style="min-width:140px;">
+                  {_discovery_group_select_options(str(device.get("group") or "hosts"))}
+                </select>
+              </td>
+              <td>
+                <select name="subgroup_{key}" style="min-width:140px;">
+                  {_discovery_subgroup_select_options(str(device.get("group") or "hosts"), str(device.get("subgroup") or "fixed"))}
+                </select>
+              </td>
               <td>{_render_status_badge(str(device.get("system_status") or "Novo"), str(device.get("system_message") or ""))}</td>
               <td>
                 <label class="check" style="margin:0;">
@@ -3287,6 +3323,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
               </div>
             </div>
           </div>
+          <input type="hidden" id="discovery-operation" name="operation" value="save" />
           <input type="hidden" name="network" value="{escape(state.get("network") or "")}" />
           <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
             <label class="check" style="margin:0;">
@@ -3303,16 +3340,19 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
                 <th>Tipo</th>
                 <th>Modelo</th>
                 <th>Descrição</th>
+                <th>Grupo</th>
+                <th>Subgrupo</th>
                 <th>Status sistema</th>
                 <th>Incluir</th>
               </tr>
             </thead>
             <tbody>
-              {''.join(rows) if rows else '<tr><td colspan="8">Nenhum dispositivo na ultima varredura.</td></tr>'}
+              {''.join(rows) if rows else '<tr><td colspan="10">Nenhum dispositivo na ultima varredura.</td></tr>'}
             </tbody>
           </table>
           <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
-            <button class="btn primary" type="submit">Salvar classificacao</button>
+            <button id="discovery-save-button" class="btn primary" type="submit">Salvar classificacao</button>
+            <button id="discovery-update-button" class="btn" type="submit">Atualizar dados</button>
             <a class="btn" href="/discovery">Recarregar</a>
           </div>
         </form>

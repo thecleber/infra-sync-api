@@ -502,6 +502,8 @@ def test_discovery_page_renders(monkeypatch):
     assert "Status sistema" in response.text
     assert "Marcar / desmarcar todos" in response.text
     assert "MAC" in response.text
+    assert "Grupo" in response.text
+    assert "Subgrupo" in response.text
     assert "discovery-scan-overlay" in response.text
     assert "discovery-scan-modal" in response.text
     assert "Varredura SNMP em andamento" in response.text
@@ -514,6 +516,7 @@ def test_discovery_page_renders(monkeypatch):
     assert "5 de 254 hosts processados" in response.text
     assert "227 hosts vivos" in response.text
     assert "Salvar classificacao" in response.text
+    assert "Atualizar dados" in response.text
     assert "Incluir" in response.text
 
 
@@ -658,6 +661,89 @@ def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
     assert saved_payloads["scan"]["devices"][0]["system_status"] == "Atualizado"
     assert saved_payloads["scan"]["devices"][1]["system_status"] == "Criado"
     assert saved_payloads["scan"]["devices"][0]["mac_address"] == "AA:BB:CC:DD:EE:FF"
+
+
+def test_discovery_update_only_targets_saved_devices(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+
+    synced_payloads = []
+
+    async def fake_sync_device(payload, client, default_site_id, dry_run=False):
+        synced_payloads.append(payload)
+        return SyncOutcome(
+            success=True,
+            action="updated",
+            device_id=payload.netbox_device_id or 101,
+            device_name=payload.hostname,
+            manufacturer_id=1,
+            device_type_id=2,
+            interface_id=3,
+            ip_address_id=4,
+            message="Synchronization completed successfully.",
+        )
+
+    monkeypatch.setattr(
+        new_main,
+        "load_last_scan",
+        lambda: {
+            "network": "10.0.0.0/24",
+            "scanned_at": "2026-08-04T00:00:00Z",
+            "devices": [
+                {
+                    "ip": "10.0.0.18",
+                    "sys_name": "Atendimento SMV",
+                    "manufacturer": "Intelbras",
+                    "model": "S2328G-A",
+                    "device_type": "switch",
+                    "sys_descr": "INTELBRAS Platform Software",
+                    "group": "switches",
+                    "subgroup": "core",
+                    "include": True,
+                    "netbox_device_id": 321,
+                    "system_status": "Cadastrado",
+                    "sys_object_id": "1.3.6.1.4.1.26138",
+                },
+                {
+                    "ip": "10.0.0.23",
+                    "sys_name": "SW-24-FUTEBOL-PROF",
+                    "manufacturer": "TP-Link",
+                    "model": "SG 5204 MR",
+                    "device_type": "switch",
+                    "sys_descr": "SG 5204 MR L2+ Gigabit Ethernet Switch",
+                    "group": "switches",
+                    "subgroup": "access",
+                    "include": True,
+                    "system_status": "Novo",
+                    "sys_object_id": "1.3.6.1.4.1.11863",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(new_main, "sync_device", AsyncMock(side_effect=fake_sync_device))
+    monkeypatch.setattr(new_main, "save_group_selections", lambda payload: None)
+    monkeypatch.setattr(new_main, "save_last_scan", lambda payload: None)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/discovery/save",
+            data={
+                "operation": "update",
+                "include_10_0_0_18": "on",
+                "include_10_0_0_23": "on",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200
+    assert "Classificacao gravada com sucesso" in response.text or "Atualizacao concluida com sucesso" in response.text
+    assert len(synced_payloads) == 1
+    assert synced_payloads[0].netbox_device_id == 321
+    assert synced_payloads[0].hostname == "Atendimento SMV"
 
 
 def test_management_pages_render(monkeypatch):
