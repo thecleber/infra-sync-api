@@ -1485,6 +1485,9 @@ def _render_shell(title: str, body: str, extra_script: str = "") -> str:
     .detail-meta .metric-card {{
       min-height: 108px;
     }}
+    .check input[type="checkbox"] {{
+      accent-color: var(--accent);
+    }}
     .glpi-frame {{
       display: grid;
       grid-template-columns: 260px minmax(0, 1fr) 360px;
@@ -3118,14 +3121,16 @@ def _status_value(value: Any, default: str = "active") -> str:
 
 def _render_status_badge(label: str, title: str = "") -> str:
     normalized = _normalize_text(label).lower()
-    if normalized in {"já cadastrado", "ja cadastrado", "atualizado"}:
+    if normalized in {"já cadastrado", "ja cadastrado"}:
         color = "#16a34a"
+    elif normalized in {"atualizado"}:
+        color = "#7c3aed"
     elif normalized in {"criado", "novo"}:
-        color = "#2563eb"
+        color = "#f59e0b"
     elif normalized in {"erro", "falha"}:
         color = "#dc2626"
     elif normalized in {"netbox indisponivel", "netbox indisponível"}:
-        color = "#f59e0b"
+        color = "#ea580c"
     else:
         color = "#475569"
     title_attr = f' title="{escape(title)}"' if title else ""
