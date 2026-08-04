@@ -35,6 +35,7 @@ WALK_COLUMNS = {
     "if_name": ("1.3.6.1.2.1.31.1.1.1.1",),
     "if_descr": ("1.3.6.1.2.1.2.2.1.2",),
     "if_alias": ("1.3.6.1.2.1.31.1.1.1.18",),
+    "if_phys_address": ("1.3.6.1.2.1.2.2.1.6",),
     "if_admin_status": ("1.3.6.1.2.1.2.2.1.7",),
     "if_oper_status": ("1.3.6.1.2.1.2.2.1.8",),
     "if_speed": ("1.3.6.1.2.1.2.2.1.5",),
@@ -63,6 +64,7 @@ class SnmpPortSnapshot:
     name: str = ""
     description: str = ""
     alias: str = ""
+    mac_address: str = ""
     admin_status: str = ""
     oper_status: str = ""
     speed_bps: str = ""
@@ -177,7 +179,7 @@ async def _fetch_ports(
     max_ports: int,
 ) -> list[SnmpPortSnapshot]:
     columns = {}
-    for key in ("if_name", "if_descr", "if_alias", "if_admin_status", "if_oper_status", "if_speed", "if_in_octets", "if_out_octets", "if_hc_in_octets", "if_hc_out_octets"):
+    for key in ("if_name", "if_descr", "if_alias", "if_phys_address", "if_admin_status", "if_oper_status", "if_speed", "if_in_octets", "if_out_octets", "if_hc_in_octets", "if_hc_out_octets"):
         try:
             columns[key] = await _fetch_column(ip, community, WALK_COLUMNS[key], timeout=timeout, retries=retries, max_rows=max_ports)
         except Exception:
@@ -202,6 +204,7 @@ async def _fetch_ports(
             name=_lookup_column(columns["if_name"], index),
             description=_lookup_column(columns["if_descr"], index),
             alias=_lookup_column(columns["if_alias"], index),
+            mac_address=_normalize_mac(_lookup_column(columns["if_phys_address"], index)),
             admin_status=_human_status(_lookup_column(columns["if_admin_status"], index)),
             oper_status=_human_status(_lookup_column(columns["if_oper_status"], index)),
             speed_bps=_human_bandwidth(_lookup_column(columns["if_speed"], index)),
@@ -321,6 +324,19 @@ def _clean_text(value: Any) -> str:
     cleaned = str(value).strip()
     if cleaned.startswith("No Such") or "No more variables" in cleaned:
         return ""
+    return cleaned
+
+
+def _normalize_mac(value: str) -> str:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    if lowered in {"00:00:00:00:00:00", "000000000000"}:
+        return ""
+    hex_only = "".join(ch for ch in cleaned if ch.isalnum())
+    if len(hex_only) == 12:
+        return ":".join(hex_only[i:i + 2] for i in range(0, 12, 2)).upper()
     return cleaned
 
 

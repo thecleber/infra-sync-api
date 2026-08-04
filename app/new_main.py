@@ -3139,6 +3139,19 @@ def _render_status_badge(label: str, title: str = "") -> str:
     return f'<span style="display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; background:{color}; color:#fff; font-size:12px; font-weight:700;"{title_attr}>{escape(label)}</span>'
 
 
+def _render_port_status_badge(label: str) -> str:
+    normalized = _normalize_text(label).lower()
+    if normalized == "up":
+        color = "#16a34a"
+    elif normalized in {"down", "lowerlayerdown"}:
+        color = "#dc2626"
+    elif normalized in {"testing", "dormant", "unknown", "notpresent"}:
+        color = "#f59e0b"
+    else:
+        color = "#475569"
+    return f'<span style="display:inline-flex; align-items:center; padding:3px 8px; border-radius:999px; background:{color}; color:#fff; font-size:12px; font-weight:700;">{escape(label or "—")}</span>'
+
+
 def _related_id(value: Any) -> str:
     if isinstance(value, dict):
         text = value.get("id")
@@ -4982,6 +4995,10 @@ async def snmp_probe_page(request: Request):
 def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | None = None) -> str:
     last_probe = state.get("last_probe") if isinstance(state.get("last_probe"), dict) else None
     ports = last_probe.get("ports") if last_probe and isinstance(last_probe.get("ports"), list) else []
+    active_ports = len([port for port in ports if isinstance(port, dict) and _normalize_text(port.get("oper_status")).lower() == "up"])
+    down_ports = len([port for port in ports if isinstance(port, dict) and _normalize_text(port.get("oper_status")).lower() == "down"])
+    ports_with_mac = len([port for port in ports if isinstance(port, dict) and _normalize_text(port.get("mac_address"))])
+    first_mac = next((str(port.get("mac_address")) for port in ports if isinstance(port, dict) and _normalize_text(port.get("mac_address"))), "—")
     banner = ""
     if saved:
         banner = "<div class='hero'><small>Salvo</small><strong>Leitura SNMP atualizada com sucesso.</strong></div>"
@@ -4995,6 +5012,8 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
           <article class="metric-card"><div class="metric-label">Interfaces</div><div class="metric-value">{escape(_normalize_text(last_probe.get("if_number")) or '—')}</div><div class="metric-note">Portas/links vistos pelo SNMP.</div></article>
           <article class="metric-card"><div class="metric-label">Memória</div><div class="metric-value">{escape(_normalize_text(last_probe.get("hr_memory_size")) or '—')}</div><div class="metric-note">Total reportado pelo agente.</div></article>
           <article class="metric-card"><div class="metric-label">CPU média</div><div class="metric-value">{escape(_normalize_text(last_probe.get("processor_load_average")) or '—')}</div><div class="metric-note">Média dos processadores coletados.</div></article>
+          <article class="metric-card"><div class="metric-label">MAC</div><div class="metric-value" style="font-size:22px">{escape(first_mac)}</div><div class="metric-note">{ports_with_mac} interface(s) com endereço físico.</div></article>
+          <article class="metric-card"><div class="metric-label">Portas ativas</div><div class="metric-value">{active_ports}</div><div class="metric-note">{down_ports} portas inativas ou down.</div></article>
         </div>
         """
     rows = []
@@ -5008,8 +5027,9 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
               <td>{escape(_normalize_text(port.get('name')) or '—')}</td>
               <td>{escape(_normalize_text(port.get('description')) or '—')}</td>
               <td>{escape(_normalize_text(port.get('alias')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('admin_status')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('oper_status')) or '—')}</td>
+              <td>{_render_port_status_badge(_normalize_text(port.get('admin_status')) or '—')}</td>
+              <td>{_render_port_status_badge(_normalize_text(port.get('oper_status')) or '—')}</td>
+              <td>{escape(_normalize_text(port.get('mac_address')) or '—')}</td>
               <td>{escape(_normalize_text(port.get('speed_bps')) or '—')}</td>
               <td>{escape(_normalize_text(port.get('in_octets')) or '—')}</td>
               <td>{escape(_normalize_text(port.get('out_octets')) or '—')}</td>
@@ -5044,10 +5064,10 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
       <table>
         <thead>
           <tr>
-            <th>Índice</th><th>Nome</th><th>Descrição</th><th>Alias</th><th>Admin</th><th>Oper</th><th>Speed</th><th>Entrada</th><th>Saída</th><th>Rate In</th><th>Rate Out</th>
+            <th>Índice</th><th>Nome</th><th>Descrição</th><th>Alias</th><th>Admin</th><th>Oper</th><th>MAC</th><th>Speed</th><th>Entrada</th><th>Saída</th><th>Rate In</th><th>Rate Out</th>
           </tr>
         </thead>
-        <tbody>{''.join(rows) if rows else _render_table_empty('Nenhuma porta coletada ainda.', 11)}</tbody>
+        <tbody>{''.join(rows) if rows else _render_table_empty('Nenhuma porta coletada ainda.', 12)}</tbody>
       </table>
     </div>
     """

@@ -674,7 +674,18 @@ def test_snmp_page_renders(monkeypatch):
                 "if_number": "24",
                 "hr_memory_size": "1024",
                 "processor_load_average": "12.5",
-                "ports": [],
+                "ports": [
+                    {
+                        "index": "1",
+                        "name": "Gi0/1",
+                        "description": "uplink core",
+                        "alias": "uplink",
+                        "admin_status": "up",
+                        "oper_status": "up",
+                        "mac_address": "aa:bb:cc:dd:ee:ff",
+                        "speed_bps": "1.00 Gbps",
+                    }
+                ],
             },
         },
     )
@@ -686,6 +697,8 @@ def test_snmp_page_renders(monkeypatch):
     assert "Consulta SNMP" in response.text
     assert "Portas" in response.text
     assert "SW-ACCESS-LAN" in response.text
+    assert "aa:bb:cc:dd:ee:ff" in response.text or "AA:BB:CC:DD:EE:FF" in response.text
+    assert "MAC" in response.text
 
 
 def test_snmp_probe_post_renders_success(monkeypatch):
