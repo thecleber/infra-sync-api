@@ -234,6 +234,12 @@ async def test_sync_device_updates_existing_device_by_id(monkeypatch):
     assert client.get_device is not None
 
 
+def test_mac_normalization_is_consistent():
+    assert new_main._normalize_mac_text("0X808554007B92") == "80:85:54:00:7B:92"
+    assert new_main._normalize_mac_text("000E1E9A73D0") == "00:0E:1E:9A:73:D0"
+    assert new_main._normalize_mac_text("00:0e:1e:9a:73:d0") == "00:0E:1E:9A:73:D0"
+
+
 def test_root_renders_dashboard(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")

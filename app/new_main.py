@@ -97,6 +97,22 @@ def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_mac_text(value: Any) -> str:
+    cleaned = _normalize_text(value)
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    if lowered.startswith("0x"):
+        cleaned = cleaned[2:]
+        lowered = cleaned.lower()
+    if lowered in {"00:00:00:00:00:00", "000000000000", "ff:ff:ff:ff:ff:ff"}:
+        return ""
+    hex_only = "".join(ch for ch in cleaned if ch.isalnum())
+    if len(hex_only) == 12:
+        return ":".join(hex_only[i:i + 2] for i in range(0, 12, 2)).upper()
+    return cleaned.upper()
+
+
 def _normalize_url(value: str) -> str:
     cleaned = value.strip().rstrip("/")
     if cleaned and not cleaned.startswith(("http://", "https://")):
@@ -2639,9 +2655,9 @@ async def _discover_device_mac(client: NetBoxClient | None, device_id: Any) -> s
     for interface in interfaces:
         if not isinstance(interface, dict):
             continue
-        mac_address = _normalize_text(interface.get("mac_address"))
+        mac_address = _normalize_mac_text(interface.get("mac_address"))
         if mac_address:
-            return mac_address.upper()
+            return mac_address
     return ""
 
 
@@ -2697,7 +2713,7 @@ async def _annotate_discovered_device(
     annotated["netbox_device_id"] = _related_id(existing.get("id")) if isinstance(existing, dict) else None
     annotated["netbox_device_name"] = _normalize_text(existing.get("name")) if isinstance(existing, dict) else ""
     existing_mac = await _discover_device_mac(client, existing.get("id")) if isinstance(existing, dict) else ""
-    annotated["mac_address"] = existing_mac or _normalize_text(annotated.get("mac_address"))
+    annotated["mac_address"] = existing_mac or _normalize_mac_text(annotated.get("mac_address"))
 
     if not sync_with_netbox:
         return annotated
@@ -2727,7 +2743,7 @@ async def _annotate_discovered_device(
         role_id=_discovery_role_id_for_group(_normalize_text(annotated.get("group")) or "hosts", settings),
         netbox_device_id=_related_id(existing.get("id")) if isinstance(existing, dict) else None,
         zabbix_status="active",
-        mac_address=_normalize_text(annotated.get("mac_address")) or None,
+        mac_address=_normalize_mac_text(annotated.get("mac_address")) or None,
         comments_summary=_normalize_text(annotated.get("notes")) or "Descoberto por ARP/Nmap + SNMP",
         netbox_status="active",
     )
@@ -3745,7 +3761,7 @@ def _render_device_detail_page(
               <td>{_display(_normalize_text(interface.get('mode')) or '—')}</td>
               <td>{_display_relation(interface.get('untagged_vlan'))}</td>
               <td>{_display_relation(interface.get('tagged_vlans'))}</td>
-              <td>{_display(interface.get('mac_address'))}</td>
+              <td>{_display(_normalize_mac_text(interface.get('mac_address')) or '—')}</td>
             </tr>
             '''
         )
@@ -5215,8 +5231,8 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
     ports = last_probe.get("ports") if last_probe and isinstance(last_probe.get("ports"), list) else []
     active_ports = len([port for port in ports if isinstance(port, dict) and _normalize_text(port.get("oper_status")).lower() == "up"])
     down_ports = len([port for port in ports if isinstance(port, dict) and _normalize_text(port.get("oper_status")).lower() == "down"])
-    ports_with_mac = len([port for port in ports if isinstance(port, dict) and _normalize_text(port.get("mac_address"))])
-    first_mac = next((str(port.get("mac_address")) for port in ports if isinstance(port, dict) and _normalize_text(port.get("mac_address"))), "—")
+    ports_with_mac = len([port for port in ports if isinstance(port, dict) and _normalize_mac_text(port.get("mac_address"))])
+    first_mac = next((_normalize_mac_text(port.get("mac_address")) for port in ports if isinstance(port, dict) and _normalize_mac_text(port.get("mac_address"))), "—")
     banner = ""
     if saved:
         banner = "<div class='hero'><small>Salvo</small><strong>Leitura SNMP atualizada com sucesso.</strong></div>"
@@ -5247,7 +5263,7 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
               <td>{escape(_normalize_text(port.get('alias')) or '—')}</td>
               <td>{_render_port_status_badge(_normalize_text(port.get('admin_status')) or '—')}</td>
               <td>{_render_port_status_badge(_normalize_text(port.get('oper_status')) or '—')}</td>
-              <td>{escape(_normalize_text(port.get('mac_address')) or '—')}</td>
+              <td>{escape(_normalize_mac_text(port.get('mac_address')) or '—')}</td>
               <td>{escape(_normalize_text(port.get('speed_bps')) or '—')}</td>
               <td>{escape(_normalize_text(port.get('in_octets')) or '—')}</td>
               <td>{escape(_normalize_text(port.get('out_octets')) or '—')}</td>

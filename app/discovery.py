@@ -649,6 +649,9 @@ def _normalize_mac(value: Any) -> str:
     if not cleaned:
         return ""
     lowered = cleaned.lower()
+    if lowered.startswith("0x"):
+        cleaned = cleaned[2:]
+        lowered = cleaned.lower()
     if lowered in {"00:00:00:00:00:00", "000000000000", "ff:ff:ff:ff:ff:ff"}:
         return ""
     hex_only = "".join(ch for ch in cleaned if ch.isalnum())
