@@ -244,6 +244,27 @@ def test_discovery_classifier_switch():
     assert "Matched" in notes
 
 
+@pytest.mark.parametrize(
+    "sys_descr, sys_name, expected_group, expected_subgroup",
+    [
+        ("HP LaserJet Pro printer", "PRN-01", "printers", "office"),
+        ("Grandstream GWN access point", "AP-01", "aps", "indoor"),
+        ("Hikvision IP camera", "CAM-01", "cameras", "ip"),
+        ("Intelbras DVR recorder", "REC-01", "recorders", "dvr"),
+    ],
+)
+def test_discovery_classifier_additional_groups(sys_descr, sys_name, expected_group, expected_subgroup):
+    group, subgroup, notes = classify_discovered_device(
+        sys_descr=sys_descr,
+        sys_name=sys_name,
+        sys_object_id="1.3.6.1.4.1.1",
+    )
+
+    assert group == expected_group
+    assert subgroup == expected_subgroup
+    assert "Matched" in notes
+
+
 @pytest.mark.anyio
 async def test_discovery_scan_handles_partial_snmp_failure(monkeypatch):
     async def fake_scan_single_ip(ip: str, community: str, **kwargs):
@@ -291,6 +312,28 @@ def test_discovery_page_renders(monkeypatch):
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
     monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
     get_settings.cache_clear()
+    monkeypatch.setattr(
+        new_main,
+        "load_last_scan",
+        lambda: {
+            "network": "10.0.0.0/24",
+            "scanned_at": "2026-08-04T00:00:00Z",
+            "devices": [
+                {
+                    "ip": "10.0.0.24",
+                    "sys_name": "AP-01",
+                    "manufacturer": "Grandstream",
+                    "model": "GWN7630",
+                    "device_type": "wireless_ap",
+                    "sys_descr": "Grandstream GWN access point",
+                    "group": "aps",
+                    "subgroup": "indoor",
+                    "include": True,
+                    "sys_object_id": "1.3.6.1.4.1.42397",
+                }
+            ],
+        },
+    )
 
     with TestClient(app) as client:
         response = client.get("/discovery", follow_redirects=False)
@@ -299,6 +342,10 @@ def test_discovery_page_renders(monkeypatch):
     assert "Descoberta SNMP" in response.text
     assert "Varredura SNMP" in response.text
     assert 'value="4096"' in response.text
+    assert "Impressoras" in response.text
+    assert "APs" in response.text
+    assert "Cameras" in response.text
+    assert "Gravadores" in response.text
 
 
 def test_discovery_save_renders_success_and_persists_selection(monkeypatch):

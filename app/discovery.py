@@ -46,6 +46,22 @@ DISCOVERY_GROUPS: dict[str, dict[str, list[str]]] = {
         "access": ["access", "edge", "switch"],
         "wireless": ["ap", "access point", "wireless"],
     },
+    "printers": {
+        "office": ["printer", "print server", "brother", "epson", "laserjet", "deskjet"],
+        "label": ["label printer", "zebra", "thermal", "etiqueta"],
+    },
+    "aps": {
+        "indoor": ["access point", "ap", "wireless", "wifi"],
+        "outdoor": ["outdoor ap", "extreme ap", "ubiquiti", "cpe"],
+    },
+    "cameras": {
+        "ip": ["camera", "cctv", "ip cam", "ip camera", "hikvision", "dahua", "intelbras vhd"],
+        "ptz": ["ptz", "speed dome", "dome camera", "bullet camera"],
+    },
+    "recorders": {
+        "nvr": ["nvr", "network video recorder"],
+        "dvr": ["dvr", "digital video recorder"],
+    },
     "servers": {
         "hypervisor": ["vmware", "esxi", "hyper-v", "proxmox", "hypervisor"],
         "physical": ["server", "rack server", "blade", "hpe proliant", "dell", "lenovo"],
@@ -217,12 +233,17 @@ def infer_device_profile(*, sys_descr: str, sys_name: str, sys_object_id: str) -
     model = enterprise.get("model") or _guess_model(sys_descr, sys_name, manufacturer)
     device_type = enterprise.get("device_type") or _guess_device_type(text, manufacturer, model)
 
-    if "printer" in device_type:
-        group, subgroup = "hosts", "fixed"
+    if device_type == "printer":
+        group, subgroup = "printers", "office"
+    elif device_type == "camera":
+        group, subgroup = "cameras", "ip"
+    elif device_type == "recorder":
+        recorder_subgroup = "dvr" if "dvr" in text else "nvr"
+        group, subgroup = "recorders", recorder_subgroup
+    elif device_type == "wireless_ap":
+        group, subgroup = "aps", "indoor"
     elif device_type == "router":
         group, subgroup = "switches", "core"
-    elif device_type == "wireless_ap":
-        group, subgroup = "switches", "wireless"
     elif device_type == "server_management":
         group, subgroup = "servers", "physical"
     elif device_type == "server":
@@ -303,6 +324,10 @@ def _guess_manufacturer(text: str) -> str:
         return "Intelbras"
     if "grandstream" in text or "gwn" in text:
         return "Grandstream"
+    if "hikvision" in text:
+        return "Hikvision"
+    if "dahua" in text:
+        return "Dahua"
     if "tp-link" in text or "tplink" in text or "sg" in text:
         return "TP-Link"
     if "dell" in text or "idrac" in text:
@@ -337,8 +362,12 @@ def _guess_model(sys_descr: str, sys_name: str, manufacturer: str) -> str:
 
 
 def _guess_device_type(text: str, manufacturer: str, model: str) -> str:
-    if any(token in text for token in ("printer", "print server", "brother", "epson", "hp ethernet multi-environment")):
+    if any(token in text for token in ("printer", "print server", "brother", "epson", "hp ethernet multi-environment", "laserjet", "deskjet")):
         return "printer"
+    if any(token in text for token in ("camera", "cctv", "hikvision", "dahua", "intelbras vhd", "ip cam")):
+        return "camera"
+    if any(token in text for token in ("nvr", "network video recorder", "dvr", "digital video recorder", "xvr")):
+        return "recorder"
     if any(token in text for token in ("routeros", "gateway", "router", "ccr")):
         return "router"
     if any(token in text for token in ("idrac", "ilo", "bmc", "management controller")):

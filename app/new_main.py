@@ -2557,9 +2557,34 @@ def _discovery_group_options() -> list[tuple[str, str, list[str]]]:
     return [
         ("routers", "Roteadores", ["core", "distribution"]),
         ("switches", "Switches", ["core", "access", "wireless"]),
+        ("printers", "Impressoras", ["office", "label"]),
+        ("aps", "APs", ["indoor", "outdoor"]),
+        ("cameras", "Cameras", ["ip", "ptz"]),
+        ("recorders", "Gravadores", ["nvr", "dvr"]),
         ("servers", "Servidores", ["hypervisor", "physical"]),
         ("hosts", "Hosts", ["mobile", "notebook", "tablet", "desktop", "fixed"]),
     ]
+
+
+def _discovery_group_select_options(selected_group: str) -> str:
+    selected_value = _normalize_text(selected_group)
+    return "".join(
+        f'<option value="{escape(group_key)}" {"selected" if selected_value == group_key else ""}>{escape(label)}</option>'
+        for group_key, label, _ in _discovery_group_options()
+    )
+
+
+def _discovery_subgroup_select_options(selected_group: str, selected_subgroup: str) -> str:
+    selected_group_value = _normalize_text(selected_group)
+    selected_subgroup_value = _normalize_text(selected_subgroup)
+    options_by_group = {group_key: subgroups for group_key, _, subgroups in _discovery_group_options()}
+    subgroups = options_by_group.get(selected_group_value, [])
+    if not subgroups:
+        subgroups = ["fixed"]
+    return "".join(
+        f'<option value="{escape(subgroup)}" {"selected" if selected_subgroup_value == subgroup else ""}>{escape(subgroup)}</option>'
+        for subgroup in subgroups
+    )
 
 
 def _render_discovery_page(state: dict[str, Any], error: str | None = None, saved: bool = False) -> str:
@@ -2581,24 +2606,12 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
               <td style="max-width:280px;">{escape(str(device.get("sys_descr") or '?'))}</td>
               <td>
                 <select name="group_{key}">
-                  <option value="routers" {"selected" if device.get("group") == "routers" else ""}>Roteadores</option>
-                  <option value="switches" {"selected" if device.get("group") == "switches" else ""}>Switches</option>
-                  <option value="servers" {"selected" if device.get("group") == "servers" else ""}>Servidores</option>
-                  <option value="hosts" {"selected" if device.get("group") == "hosts" else ""}>Hosts</option>
+                  {_discovery_group_select_options(str(device.get("group") or "hosts"))}
                 </select>
               </td>
               <td>
                 <select name="subgroup_{key}">
-                  <option value="core" {"selected" if device.get("subgroup") == "core" else ""}>core</option>
-                  <option value="access" {"selected" if device.get("subgroup") == "access" else ""}>access</option>
-                  <option value="wireless" {"selected" if device.get("subgroup") == "wireless" else ""}>wireless</option>
-                  <option value="hypervisor" {"selected" if device.get("subgroup") == "hypervisor" else ""}>hypervisor</option>
-                  <option value="physical" {"selected" if device.get("subgroup") == "physical" else ""}>physical</option>
-                  <option value="mobile" {"selected" if device.get("subgroup") == "mobile" else ""}>mobile</option>
-                  <option value="notebook" {"selected" if device.get("subgroup") == "notebook" else ""}>notebook</option>
-                  <option value="tablet" {"selected" if device.get("subgroup") == "tablet" else ""}>tablet</option>
-                  <option value="desktop" {"selected" if device.get("subgroup") == "desktop" else ""}>desktop</option>
-                  <option value="fixed" {"selected" if device.get("subgroup") == "fixed" else ""}>fixed</option>
+                  {_discovery_subgroup_select_options(str(device.get("group") or "hosts"), str(device.get("subgroup") or "fixed"))}
                 </select>
               </td>
               <td>
