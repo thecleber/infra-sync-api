@@ -663,6 +663,95 @@ def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
     assert saved_payloads["scan"]["devices"][0]["mac_address"] == "AA:BB:CC:DD:EE:FF"
 
 
+def test_discovery_save_prefers_scanned_mac_for_existing_devices(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+
+    saved_payloads = {}
+    synced_payloads = []
+
+    async def fake_find_devices_by_ip(ip_value: str):
+        if ip_value == "10.0.0.18":
+            return [{"id": 321, "name": "Atendimento SMV"}]
+        return []
+
+    async def fake_find_devices_by_name(name: str):
+        if name == "Atendimento SMV":
+            return [{"id": 321, "name": "Atendimento SMV"}]
+        return []
+
+    async def fake_list_interfaces(params=None):
+        if params and str(params.get("device_id")) == "321":
+            return [{"id": 67, "name": "mgmt0", "mac_address": "00:11:22:33:44:55"}]
+        return []
+
+    async def fake_sync_device(payload, client, default_site_id, dry_run=False):
+        synced_payloads.append(payload)
+        return SyncOutcome(
+            success=True,
+            action="updated",
+            device_id=321,
+            device_name=payload.hostname,
+            manufacturer_id=1,
+            device_type_id=2,
+            interface_id=67,
+            ip_address_id=4,
+            message="Synchronization completed successfully.",
+        )
+
+    monkeypatch.setattr(
+        new_main,
+        "load_last_scan",
+        lambda: {
+            "network": "10.0.0.0/24",
+            "scanned_at": "2026-08-04T00:00:00Z",
+            "devices": [
+                {
+                    "ip": "10.0.0.18",
+                    "sys_name": "Atendimento SMV",
+                    "manufacturer": "Intelbras",
+                    "model": "S2328G-A",
+                    "device_type": "switch",
+                    "sys_descr": "INTELBRAS Platform Software",
+                    "group": "switches",
+                    "subgroup": "access",
+                    "include": True,
+                    "netbox_device_id": 321,
+                    "system_status": "Cadastrado",
+                    "sys_object_id": "1.3.6.1.4.1.26138",
+                    "mac_address": "AA:BB:CC:DD:EE:FF",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(NetBoxClient, "find_devices_by_ip", AsyncMock(side_effect=fake_find_devices_by_ip))
+    monkeypatch.setattr(NetBoxClient, "find_devices_by_name", AsyncMock(side_effect=fake_find_devices_by_name))
+    monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(side_effect=fake_list_interfaces))
+    monkeypatch.setattr(new_main, "sync_device", AsyncMock(side_effect=fake_sync_device))
+    monkeypatch.setattr(new_main, "save_group_selections", lambda payload: saved_payloads.__setitem__("groups", payload))
+    monkeypatch.setattr(new_main, "save_last_scan", lambda payload: saved_payloads.__setitem__("scan", payload))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/discovery/save",
+            data={
+                "include_10_0_0_18": "on",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200
+    assert len(synced_payloads) == 1
+    assert synced_payloads[0].netbox_device_id == 321
+    assert synced_payloads[0].mac_address == "AA:BB:CC:DD:EE:FF"
+    assert saved_payloads["scan"]["devices"][0]["discovered_mac_address"] == "AA:BB:CC:DD:EE:FF"
+    assert saved_payloads["scan"]["devices"][0]["netbox_mac_address"] == "00:11:22:33:44:55"
+
+
 def test_discovery_update_only_targets_saved_devices(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
