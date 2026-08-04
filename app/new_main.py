@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from . import __version__
 from .config import Settings, get_settings
 from .email_notifications import EmailNotificationError, normalize_email_config, send_alert_email
-from .discovery import classify_discovered_device, load_last_scan, load_scan_progress, save_group_selections, save_last_scan, scan_network
+from .discovery import classify_discovered_device, infer_device_profile, load_last_scan, load_scan_progress, save_group_selections, save_last_scan, scan_network
 from .models import SyncDeviceRequest, ZabbixHostSyncRequest
 from .netbox_client import NetBoxClient, NetBoxClientError
 from .snmp_probe import load_last_probe, probe_device as probe_snmp_device
@@ -2504,6 +2504,12 @@ async def discovery_scan(request: Request):
     max_hosts = int(form.get("max_hosts", "4096") or "4096")
     try:
         payload = await scan_network(network, community, timeout=timeout, retries=retries, max_hosts=max_hosts)
+        payload["devices"] = await _annotate_discovered_devices(
+            request,
+            payload.get("devices") if isinstance(payload.get("devices"), list) else [],
+            sync_with_netbox=False,
+        )
+        save_last_scan(payload)
         return HTMLResponse(_render_discovery_page(payload, saved=True))
     except Exception as exc:
         state = load_last_scan()
@@ -2516,6 +2522,7 @@ async def discovery_save(request: Request):
     form = await _read_form(request)
     state = load_last_scan()
     devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    settings: Settings = request.app.state.settings
     saved_devices: list[dict[str, Any]] = []
 
     for device in devices:
@@ -2531,16 +2538,23 @@ async def discovery_save(request: Request):
             sys_name=str(device.get("sys_name") or ""),
             sys_object_id=str(device.get("sys_object_id") or ""),
         )
+        enriched_device = {
+            **device,
+            "include": include,
+            "group": group,
+            "subgroup": subgroup,
+            "suggested_group": classified_group,
+            "suggested_subgroup": classified_subgroup,
+            "notes": notes,
+        }
+        enriched_device = await _annotate_discovered_device(
+            request,
+            enriched_device,
+            sync_with_netbox=include,
+            settings=settings,
+        )
         saved_devices.append(
-            {
-                **device,
-                "include": include,
-                "group": group,
-                "subgroup": subgroup,
-                "suggested_group": classified_group,
-                "suggested_subgroup": classified_subgroup,
-                "notes": notes,
-            }
+            enriched_device
         )
 
     payload = {
@@ -2591,6 +2605,140 @@ def _discovery_subgroup_select_options(selected_group: str, selected_subgroup: s
         f'<option value="{escape(subgroup)}" {"selected" if selected_subgroup_value == subgroup else ""}>{escape(subgroup)}</option>'
         for subgroup in subgroups
     )
+
+
+def _discovery_device_label(device: dict[str, Any]) -> str:
+    name = _normalize_text(device.get("sys_name"))
+    if name:
+        return name
+    ip = _normalize_text(device.get("ip"))
+    if ip:
+        return f"SCAN-{ip.replace('.', '-')}"
+    return "SCAN-UNKNOWN"
+
+
+def _discovery_role_id_for_group(group: str, settings: Settings) -> int:
+    if group == "aps":
+        return settings.default_access_point_role_id
+    return settings.default_role_id
+
+
+async def _lookup_discovery_netbox_device(client: NetBoxClient | None, ip: str, name: str) -> dict[str, Any] | None:
+    if client is None:
+        return None
+    if ip:
+        try:
+            matches = await client.find_devices_by_ip(ip)
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                return matches[0]
+        except Exception:
+            pass
+    if name:
+        try:
+            matches = await client.find_devices_by_name(name)
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                return matches[0]
+        except Exception:
+            pass
+    return None
+
+
+def _discovery_device_status(device: dict[str, Any], existing: dict[str, Any] | None) -> tuple[str, str]:
+    if existing is not None:
+        name = _normalize_text(existing.get("name")) or _normalize_text(existing.get("display_name")) or _discovery_device_label(device)
+        return "Já cadastrado", f"Encontrado no inventário como {name}"
+    if device.get("include") is False:
+        return "Novo", "Ainda não cadastrado no inventário"
+    return "Novo", "Pronto para criar no inventário"
+
+
+async def _annotate_discovered_device(
+    request: Request,
+    device: dict[str, Any],
+    *,
+    sync_with_netbox: bool,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    annotated = dict(device)
+    client = request.app.state.netbox_client
+    settings = settings or request.app.state.settings
+    ip = _normalize_text(annotated.get("ip"))
+    name = _discovery_device_label(annotated)
+    existing = await _lookup_discovery_netbox_device(client, ip, name)
+    status, message = _discovery_device_status(annotated, existing)
+    annotated["system_status"] = status
+    annotated["system_message"] = message
+    annotated["netbox_device_id"] = _related_id(existing.get("id")) if isinstance(existing, dict) else None
+    annotated["netbox_device_name"] = _normalize_text(existing.get("name")) if isinstance(existing, dict) else ""
+
+    if not sync_with_netbox:
+        return annotated
+    if client is None:
+        annotated["system_status"] = "NetBox indisponivel"
+        annotated["system_message"] = "Conector NetBox não configurado"
+        return annotated
+    if not annotated.get("include", True):
+        return annotated
+
+    profile = infer_device_profile(
+        sys_descr=_normalize_text(annotated.get("sys_descr")),
+        sys_name=_normalize_text(annotated.get("sys_name")) or name,
+        sys_object_id=_normalize_text(annotated.get("sys_object_id")),
+    )
+    device_name = _normalize_text(existing.get("name")) if isinstance(existing, dict) and existing.get("name") else name
+    payload = SyncDeviceRequest(
+        hostid=ip or device_name,
+        hostname=device_name,
+        display_name=device_name,
+        ip=ip,
+        fabricante=_normalize_text(annotated.get("manufacturer")) or profile["manufacturer"] or "GENERIC",
+        modelo=_normalize_text(annotated.get("model")) or profile["model"] or profile["device_type"] or "Generico",
+        site_id=settings.default_site_id,
+        role_id=_discovery_role_id_for_group(_normalize_text(annotated.get("group")) or "hosts", settings),
+        zabbix_status="active",
+        comments_summary=_normalize_text(annotated.get("notes")) or "Descoberto por ARP/Nmap + SNMP",
+        netbox_status="active",
+    )
+    try:
+        outcome = await sync_device(payload, client, settings.default_site_id, dry_run=False)
+    except Exception as exc:
+        annotated["system_status"] = "Erro"
+        annotated["system_message"] = str(exc)
+        return annotated
+
+    annotated["netbox_device_id"] = outcome.device_id
+    annotated["system_action"] = outcome.action
+    annotated["system_status"] = "Criado" if outcome.created_device else "Atualizado"
+    annotated["system_message"] = outcome.message
+    if outcome.warnings:
+        annotated["system_warnings"] = outcome.warnings
+    return annotated
+
+
+async def _annotate_discovered_devices(
+    request: Request,
+    devices: list[dict[str, Any]],
+    *,
+    sync_with_netbox: bool,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    annotated_devices: list[dict[str, Any]] = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        annotated_devices.append(
+            await _annotate_discovered_device(
+                request,
+                device,
+                sync_with_netbox=sync_with_netbox,
+                settings=settings,
+            )
+        )
+    return annotated_devices
 
 
 def _render_discovery_page(state: dict[str, Any], error: str | None = None, saved: bool = False) -> str:
@@ -2750,6 +2898,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             <tr>
               <td><strong>{escape(ip or '?')}</strong></td>
               <td>{escape(str(device.get("sys_name") or '?'))}</td>
+              <td>{_render_status_badge(str(device.get("system_status") or "Novo"), str(device.get("system_message") or ""))}</td>
               <td>{escape(str(device.get("manufacturer") or '?'))}</td>
               <td>{escape(str(device.get("model") or '?'))}</td>
               <td>{escape(str(device.get("device_type") or '?'))}</td>
@@ -2857,6 +3006,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
               <tr>
                 <th>IP</th>
                 <th>Nome</th>
+                <th>Status sistema</th>
                 <th>Fabricante</th>
                 <th>Modelo</th>
                 <th>Tipo</th>
@@ -2867,7 +3017,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
               </tr>
             </thead>
             <tbody>
-              {''.join(rows) if rows else '<tr><td colspan="9">Nenhum dispositivo na ultima varredura.</td></tr>'}
+              {''.join(rows) if rows else '<tr><td colspan="10">Nenhum dispositivo na ultima varredura.</td></tr>'}
             </tbody>
           </table>
           <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
@@ -2927,6 +3077,22 @@ def _status_value(value: Any, default: str = "active") -> str:
         return default
     text = _normalize_text(value)
     return text or default
+
+
+def _render_status_badge(label: str, title: str = "") -> str:
+    normalized = _normalize_text(label).lower()
+    if normalized in {"já cadastrado", "ja cadastrado", "atualizado"}:
+        color = "#16a34a"
+    elif normalized in {"criado", "novo"}:
+        color = "#2563eb"
+    elif normalized in {"erro", "falha"}:
+        color = "#dc2626"
+    elif normalized in {"netbox indisponivel", "netbox indisponível"}:
+        color = "#f59e0b"
+    else:
+        color = "#475569"
+    title_attr = f' title="{escape(title)}"' if title else ""
+    return f'<span style="display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; background:{color}; color:#fff; font-size:12px; font-weight:700;"{title_attr}>{escape(label)}</span>'
 
 
 def _related_id(value: Any) -> str:

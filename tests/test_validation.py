@@ -10,6 +10,7 @@ from app import discovery as discovery_module
 from app.discovery import DiscoveredDevice, classify_discovered_device, scan_network
 from app.models import SyncDeviceRequest
 from app.netbox_client import NetBoxClient
+from app.services import SyncOutcome
 from app.zabbix_client import ZabbixClient
 
 
@@ -413,6 +414,7 @@ def test_discovery_page_renders(monkeypatch):
     assert "Descoberta SNMP" in response.text
     assert "Varredura SNMP" in response.text
     assert "Progresso da varredura" in response.text
+    assert "Status sistema" in response.text
     assert "5 de 254 hosts processados" in response.text
     assert "227 hosts vivos" in response.text
     assert "Impressoras" in response.text
@@ -464,6 +466,42 @@ def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
     get_settings.cache_clear()
 
     saved_payloads = {}
+    async def fake_find_devices_by_ip(ip_value: str):
+        if ip_value == "10.0.0.24":
+            return [{"id": 101, "name": "SW-ACCESS-LAN"}]
+        return []
+
+    async def fake_find_devices_by_name(name: str):
+        if name == "AP-01":
+            return []
+        return []
+
+    async def fake_sync_device(payload, client, default_site_id, dry_run=False):
+        if payload.ip == "10.0.0.24/32":
+            return SyncOutcome(
+                success=True,
+                action="updated",
+                device_id=101,
+                device_name="SW-ACCESS-LAN",
+                manufacturer_id=1,
+                device_type_id=2,
+                interface_id=3,
+                ip_address_id=4,
+                message="Synchronization completed successfully.",
+            )
+        return SyncOutcome(
+            success=True,
+            action="created",
+            device_id=202,
+            device_name="AP-01",
+            manufacturer_id=1,
+            device_type_id=2,
+            interface_id=3,
+            ip_address_id=4,
+            created_device=True,
+            message="Synchronization completed successfully.",
+        )
+
     monkeypatch.setattr(
         new_main,
         "load_last_scan",
@@ -482,10 +520,25 @@ def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
                     "subgroup": "access",
                     "include": True,
                     "sys_object_id": "1.3.6.1.4.1.26138",
+                },
+                {
+                    "ip": "10.0.0.25",
+                    "sys_name": "AP-01",
+                    "manufacturer": "Grandstream",
+                    "model": "GWN7630",
+                    "device_type": "wireless_ap",
+                    "sys_descr": "Grandstream GWN access point",
+                    "group": "aps",
+                    "subgroup": "indoor",
+                    "include": True,
+                    "sys_object_id": "1.3.6.1.4.1.42397",
                 }
             ],
         },
     )
+    monkeypatch.setattr(NetBoxClient, "find_devices_by_ip", AsyncMock(side_effect=fake_find_devices_by_ip))
+    monkeypatch.setattr(NetBoxClient, "find_devices_by_name", AsyncMock(side_effect=fake_find_devices_by_name))
+    monkeypatch.setattr(new_main, "sync_device", AsyncMock(side_effect=fake_sync_device))
     monkeypatch.setattr(new_main, "save_group_selections", lambda payload: saved_payloads.__setitem__("groups", payload))
     monkeypatch.setattr(new_main, "save_last_scan", lambda payload: saved_payloads.__setitem__("scan", payload))
 
@@ -496,14 +549,18 @@ def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
                 "include_10_0_0_24": "on",
                 "group_10_0_0_24": "switches",
                 "subgroup_10_0_0_24": "access",
+                "include_10_0_0_25": "on",
+                "group_10_0_0_25": "aps",
+                "subgroup_10_0_0_25": "indoor",
             },
             follow_redirects=False,
         )
 
     assert response.status_code == 200
     assert "Classificacao gravada com sucesso" in response.text
-    assert saved_payloads["groups"]["count"] == 1
-    assert saved_payloads["scan"]["devices"][0]["include"] is True
+    assert saved_payloads["groups"]["count"] == 2
+    assert saved_payloads["scan"]["devices"][0]["system_status"] == "Atualizado"
+    assert saved_payloads["scan"]["devices"][1]["system_status"] == "Criado"
 
 
 def test_management_pages_render(monkeypatch):
