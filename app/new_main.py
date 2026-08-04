@@ -2621,16 +2621,40 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       const progressAlive = document.getElementById('discovery-progress-alive');
       const progressFound = document.getElementById('discovery-progress-found');
       let progressTimer = null;
+      let activeScanId = '';
+      let lastPercentage = 0;
+      let lastProcessed = 0;
+      let lastAlive = 0;
+      let lastFound = 0;
+
+      function resetProgressMemory(scanId) {
+        activeScanId = scanId || '';
+        lastPercentage = 0;
+        lastProcessed = 0;
+        lastAlive = 0;
+        lastFound = 0;
+      }
 
       function renderProgress(data) {
         const status = String(data?.status || 'idle');
+        const scanId = String(data?.scan_id || '');
+        if (scanId && scanId !== activeScanId) {
+          resetProgressMemory(scanId);
+        }
         const percentage = Math.max(0, Math.min(100, Number(data?.percentage || 0)));
-        progressBar.style.width = `${percentage}%`;
-        progressPercent.textContent = `${percentage}%`;
+        const processed = Math.max(0, Number(data?.processed_hosts || 0));
+        const alive = Math.max(0, Number(data?.alive_hosts || 0));
+        const found = Math.max(0, Number(data?.found_devices || 0));
+        const safePercentage = scanId && scanId === activeScanId ? Math.max(lastPercentage, percentage) : percentage;
+        const safeProcessed = scanId && scanId === activeScanId ? Math.max(lastProcessed, processed) : processed;
+        const safeAlive = scanId && scanId === activeScanId ? Math.max(lastAlive, alive) : alive;
+        const safeFound = scanId && scanId === activeScanId ? Math.max(lastFound, found) : found;
+        progressBar.style.width = `${safePercentage}%`;
+        progressPercent.textContent = `${safePercentage}%`;
         progressMessage.textContent = String(data?.message || 'Pronto para iniciar');
-        progressCount.textContent = `${Number(data?.processed_hosts || 0)} / ${Number(data?.total_hosts || 0)} hosts`;
-        progressAlive.textContent = `${Number(data?.alive_hosts || 0)} hosts vivos`;
-        progressFound.textContent = `${Number(data?.found_devices || 0)} devices encontrados`;
+        progressCount.textContent = `${safeProcessed} / ${Number(data?.total_hosts || 0)} hosts`;
+        progressAlive.textContent = `${safeAlive} hosts vivos`;
+        progressFound.textContent = `${safeFound} devices encontrados`;
         progressLabel.textContent = status === 'running'
           ? 'Varredura em andamento'
           : status === 'completed'
@@ -2641,6 +2665,12 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         progressBar.style.background = status === 'failed'
           ? 'linear-gradient(90deg, #991b1b, #ef4444)'
           : 'linear-gradient(90deg, #b91c1c, #ef4444)';
+        if (scanId) {
+          lastPercentage = safePercentage;
+          lastProcessed = safeProcessed;
+          lastAlive = safeAlive;
+          lastFound = safeFound;
+        }
       }
 
       async function refreshProgress() {
@@ -2670,6 +2700,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         }
         discoveryButton.disabled = true;
         discoveryButton.textContent = 'Executando...';
+        resetProgressMemory('');
         renderProgress({ status: 'running', message: 'Iniciando varredura...', percentage: 0, processed_hosts: 0, total_hosts: 0, alive_hosts: 0, found_devices: 0 });
         progressTimer = setInterval(refreshProgress, 1000);
         await refreshProgress();

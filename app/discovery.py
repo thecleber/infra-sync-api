@@ -26,6 +26,7 @@ DISCOVERY_STATE_PATH = Path("data") / "discovery_last_scan.json"
 DISCOVERY_GROUPS_PATH = Path("data") / "discovery_groups.json"
 DISCOVERY_PROGRESS_PATH = Path("data") / "discovery_scan_progress.json"
 LOGGER = logging.getLogger(__name__)
+_SCAN_PROGRESS_LOCK = asyncio.Lock()
 
 
 SNMP_VARIABLES = (
@@ -121,7 +122,8 @@ def load_scan_progress() -> dict[str, Any]:
 
 
 def save_scan_progress(payload: dict[str, Any]) -> None:
-    _save_json(DISCOVERY_PROGRESS_PATH, payload)
+    previous = load_scan_progress()
+    _save_json(DISCOVERY_PROGRESS_PATH, _merge_progress_state(previous, payload))
 
 
 async def scan_network(
@@ -133,124 +135,115 @@ async def scan_network(
     max_hosts: int = 4096,
     concurrency: int = 32,
 ) -> dict[str, Any]:
-    net = ipaddress.ip_network(network.strip(), strict=False)
-    if net.version != 4:
-        raise ValueError("Only IPv4 networks are supported for discovery")
-    if not net.is_private:
-        raise ValueError("Discovery is restricted to private IPv4 networks")
+    async with _SCAN_PROGRESS_LOCK:
+        net = ipaddress.ip_network(network.strip(), strict=False)
+        if net.version != 4:
+            raise ValueError("Only IPv4 networks are supported for discovery")
+        if not net.is_private:
+            raise ValueError("Discovery is restricted to private IPv4 networks")
 
-    hosts = [str(ip) for ip in net.hosts()]
-    total_hosts = len(hosts)
-    scan_id = datetime.now(timezone.utc).isoformat()
-    save_scan_progress({
-        **_default_scan_progress_state(),
-        "scan_id": scan_id,
-        "network": str(net),
-        "status": "running",
-        "phase": "host_discovery",
-        "message": "Descobrindo hosts vivos via ARP/Nmap",
-        "total_hosts": total_hosts,
-        "processed_hosts": 0,
-        "alive_hosts": 0,
-        "found_devices": 0,
-        "percentage": 0,
-        "started_at": scan_id,
-        "updated_at": scan_id,
-    })
+        hosts = [str(ip) for ip in net.hosts()]
+        total_hosts = len(hosts)
+        scan_id = datetime.now(timezone.utc).isoformat()
+        progress_state = {
+            **_default_scan_progress_state(),
+            "scan_id": scan_id,
+            "network": str(net),
+            "status": "running",
+            "phase": "host_discovery",
+            "message": "Descobrindo hosts vivos via ARP/Nmap",
+            "total_hosts": total_hosts,
+            "processed_hosts": 0,
+            "alive_hosts": 0,
+            "found_devices": 0,
+            "percentage": 0,
+            "started_at": scan_id,
+            "updated_at": scan_id,
+        }
+        save_scan_progress(progress_state)
 
-    live_hosts = await _discover_live_hosts_with_nmap(net)
-    save_scan_progress({
-        **load_scan_progress(),
-        "scan_id": scan_id,
-        "network": str(net),
-        "status": "running",
-        "phase": "snmp_scan",
-        "message": f"{len(live_hosts)} hosts vivos localizados por ARP/Nmap",
-        "total_hosts": total_hosts,
-        "processed_hosts": 0,
-        "alive_hosts": len(live_hosts),
-        "found_devices": 0,
-        "percentage": 15 if total_hosts else 100,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    })
+        live_hosts = await _discover_live_hosts_with_nmap(net)
+        progress_state = {
+            **progress_state,
+            "phase": "snmp_scan",
+            "message": f"{len(live_hosts)} hosts vivos localizados por ARP/Nmap",
+            "alive_hosts": len(live_hosts),
+            "percentage": 15 if total_hosts else 100,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        save_scan_progress(progress_state)
 
-    semaphore = asyncio.Semaphore(concurrency)
-    tasks = [
-        asyncio.create_task(_scan_single_ip(ip, community, timeout=timeout, retries=retries, semaphore=semaphore))
-        for ip in hosts
-    ]
+        semaphore = asyncio.Semaphore(concurrency)
+        tasks = [
+            asyncio.create_task(_scan_single_ip(ip, community, timeout=timeout, retries=retries, semaphore=semaphore))
+            for ip in hosts
+        ]
 
-    snmp_devices: list[DiscoveredDevice] = []
-    processed_hosts = 0
-    try:
-        for task in asyncio.as_completed(tasks):
-            try:
-                result = await task
-            except Exception as exc:
-                LOGGER.debug("SNMP discovery task failed: %s", exc)
-                result = None
-            processed_hosts += 1
-            if result is not None:
-                snmp_devices.append(result)
-            save_scan_progress({
-                **load_scan_progress(),
-                "scan_id": scan_id,
-                "network": str(net),
-                "status": "running",
+        snmp_devices: list[DiscoveredDevice] = []
+        processed_hosts = 0
+        try:
+            for task in asyncio.as_completed(tasks):
+                try:
+                    result = await task
+                except Exception as exc:
+                    LOGGER.debug("SNMP discovery task failed: %s", exc)
+                    result = None
+                processed_hosts += 1
+                if result is not None:
+                    snmp_devices.append(result)
+                progress_state = {
+                    **progress_state,
+                    "status": "running",
+                    "phase": "snmp_scan",
+                    "message": f"{processed_hosts} de {total_hosts} hosts processados",
+                    "processed_hosts": processed_hosts,
+                    "alive_hosts": len(live_hosts),
+                    "found_devices": len(snmp_devices),
+                    "percentage": int((processed_hosts / total_hosts) * 100) if total_hosts else 100,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "last_ip": result.ip if result is not None else "",
+                }
+                save_scan_progress(progress_state)
+        except Exception as exc:
+            progress_state = {
+                **progress_state,
+                "status": "failed",
                 "phase": "snmp_scan",
-                "message": f"{processed_hosts} de {total_hosts} hosts processados",
-                "total_hosts": total_hosts,
+                "message": str(exc),
                 "processed_hosts": processed_hosts,
                 "alive_hosts": len(live_hosts),
                 "found_devices": len(snmp_devices),
                 "percentage": int((processed_hosts / total_hosts) * 100) if total_hosts else 100,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                "last_ip": result.ip if result is not None else "",
-            })
-    except Exception as exc:
-        save_scan_progress({
-            **load_scan_progress(),
-            "scan_id": scan_id,
+            }
+            save_scan_progress(progress_state)
+            raise
+
+        combined_devices = _merge_inventory(live_hosts, snmp_devices)
+        payload = {
             "network": str(net),
-            "status": "failed",
-            "phase": "snmp_scan",
-            "message": str(exc),
-            "total_hosts": total_hosts,
-            "processed_hosts": processed_hosts,
+            "count": len(combined_devices),
+            "alive_hosts": len(live_hosts),
+            "snmp_devices": len(snmp_devices),
+            "scanned_at": datetime.now(timezone.utc).isoformat(),
+            "devices": [device.as_dict() for device in combined_devices],
+        }
+        save_last_scan(payload)
+        progress_state = {
+            **progress_state,
+            "status": "completed",
+            "phase": "complete",
+            "message": "Varredura concluida",
+            "processed_hosts": total_hosts,
             "alive_hosts": len(live_hosts),
             "found_devices": len(snmp_devices),
-            "percentage": int((processed_hosts / total_hosts) * 100) if total_hosts else 100,
+            "percentage": 100 if total_hosts else 0,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        })
-        raise
-
-    combined_devices = _merge_inventory(live_hosts, snmp_devices)
-    payload = {
-        "network": str(net),
-        "count": len(combined_devices),
-        "alive_hosts": len(live_hosts),
-        "snmp_devices": len(snmp_devices),
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
-        "devices": [device.as_dict() for device in combined_devices],
-    }
-    save_last_scan(payload)
-    save_scan_progress({
-        **load_scan_progress(),
-        "scan_id": scan_id,
-        "network": str(net),
-        "status": "completed",
-        "phase": "complete",
-        "message": "Varredura concluida",
-        "total_hosts": total_hosts,
-        "processed_hosts": total_hosts,
-        "alive_hosts": len(live_hosts),
-        "found_devices": len(snmp_devices),
-        "percentage": 100 if total_hosts else 0,
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    })
-    return payload
+        }
+        save_scan_progress(progress_state)
+        return payload
 
 
 async def _scan_single_ip(
@@ -625,4 +618,15 @@ def _load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 def _save_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _merge_progress_state(previous: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    merged = {**_default_scan_progress_state(), **previous, **payload}
+    if previous.get("scan_id") and previous.get("scan_id") == payload.get("scan_id"):
+        for key in ("processed_hosts", "alive_hosts", "found_devices", "percentage"):
+            merged[key] = max(int(previous.get(key) or 0), int(merged.get(key) or 0))
+        merged["total_hosts"] = max(int(previous.get("total_hosts") or 0), int(merged.get("total_hosts") or 0))
+    return merged
