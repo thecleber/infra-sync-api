@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from . import __version__
 from .config import Settings, get_settings
 from .email_notifications import EmailNotificationError, normalize_email_config, send_alert_email
-from .discovery import classify_discovered_device, load_last_scan, save_group_selections, save_last_scan, scan_network
+from .discovery import classify_discovered_device, load_last_scan, load_scan_progress, save_group_selections, save_last_scan, scan_network
 from .models import SyncDeviceRequest, ZabbixHostSyncRequest
 from .netbox_client import NetBoxClient, NetBoxClientError
 from .snmp_probe import load_last_probe, probe_device as probe_snmp_device
@@ -2485,7 +2485,13 @@ async def _read_form(request: Request) -> dict[str, str]:
 @app.get("/discovery", include_in_schema=False)
 async def discovery_page(request: Request, saved: int = 0, error: str | None = None):
     state = load_last_scan()
+    state["progress"] = load_scan_progress()
     return HTMLResponse(_render_discovery_page(state, error=error, saved=bool(saved)))
+
+
+@app.get("/discovery/progress", include_in_schema=False)
+async def discovery_progress():
+    return JSONResponse(load_scan_progress())
 
 
 @app.post("/discovery/scan", include_in_schema=False)
@@ -2589,6 +2595,116 @@ def _discovery_subgroup_select_options(selected_group: str, selected_subgroup: s
 
 def _render_discovery_page(state: dict[str, Any], error: str | None = None, saved: bool = False) -> str:
     devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    progress = state.get("progress") if isinstance(state.get("progress"), dict) else {}
+    progress_status = str(progress.get("status") or "idle")
+    progress_message = str(progress.get("message") or "Pronto para iniciar")
+    progress_total = int(progress.get("total_hosts") or 0)
+    progress_processed = int(progress.get("processed_hosts") or 0)
+    progress_found = int(progress.get("found_devices") or 0)
+    progress_percentage = int(progress.get("percentage") or 0)
+    progress_width = max(0, min(100, progress_percentage))
+    progress_label = {
+        "running": "Varredura em andamento",
+        "completed": "Varredura concluida",
+        "failed": "Falha na varredura",
+    }.get(progress_status, "Pronto para iniciar")
+    progress_script = """
+    <script>
+      const discoveryForm = document.getElementById('discovery-scan-form');
+      const discoveryButton = document.getElementById('discovery-scan-button');
+      const progressBar = document.getElementById('discovery-progress-bar');
+      const progressMessage = document.getElementById('discovery-progress-message');
+      const progressLabel = document.getElementById('discovery-progress-label');
+      const progressPercent = document.getElementById('discovery-progress-percent');
+      const progressCount = document.getElementById('discovery-progress-count');
+      const progressFound = document.getElementById('discovery-progress-found');
+      let progressTimer = null;
+
+      function renderProgress(data) {
+        const status = String(data?.status || 'idle');
+        const percentage = Math.max(0, Math.min(100, Number(data?.percentage || 0)));
+        progressBar.style.width = `${percentage}%`;
+        progressPercent.textContent = `${percentage}%`;
+        progressMessage.textContent = String(data?.message || 'Pronto para iniciar');
+        progressCount.textContent = `${Number(data?.processed_hosts || 0)} / ${Number(data?.total_hosts || 0)} hosts`;
+        progressFound.textContent = `${Number(data?.found_devices || 0)} devices encontrados`;
+        progressLabel.textContent = status === 'running'
+          ? 'Varredura em andamento'
+          : status === 'completed'
+            ? 'Varredura concluida'
+            : status === 'failed'
+              ? 'Falha na varredura'
+              : 'Pronto para iniciar';
+        progressBar.style.background = status === 'failed'
+          ? 'linear-gradient(90deg, #991b1b, #ef4444)'
+          : 'linear-gradient(90deg, #b91c1c, #ef4444)';
+      }
+
+      async function refreshProgress() {
+        try {
+          const response = await fetch('/discovery/progress', { cache: 'no-store' });
+          if (!response.ok) {
+            return;
+          }
+          const data = await response.json();
+          renderProgress(data);
+          if (data.status !== 'running' && progressTimer) {
+            clearInterval(progressTimer);
+            progressTimer = null;
+            discoveryButton.disabled = false;
+            discoveryButton.textContent = 'Varredura SNMP';
+          }
+        } catch (error) {
+          console.error('Falha ao ler progresso da varredura', error);
+        }
+      }
+
+      async function submitDiscoveryScan(event) {
+        event.preventDefault();
+        if (progressTimer) {
+          clearInterval(progressTimer);
+          progressTimer = null;
+        }
+        discoveryButton.disabled = true;
+        discoveryButton.textContent = 'Executando...';
+        renderProgress({ status: 'running', message: 'Iniciando varredura...', percentage: 0, processed_hosts: 0, total_hosts: 0, found_devices: 0 });
+        progressTimer = setInterval(refreshProgress, 1000);
+        await refreshProgress();
+
+        try {
+          const formData = new URLSearchParams(new FormData(discoveryForm));
+          const response = await fetch(discoveryForm.action, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: formData.toString(),
+          });
+          const html = await response.text();
+          if (!response.ok) {
+            document.open();
+            document.write(html);
+            document.close();
+            return;
+          }
+          await refreshProgress();
+          window.location.reload();
+        } catch (error) {
+          console.error('Falha ao executar varredura', error);
+        } finally {
+          if (progressTimer) {
+            clearInterval(progressTimer);
+            progressTimer = null;
+          }
+          discoveryButton.disabled = false;
+          discoveryButton.textContent = 'Varredura SNMP';
+        }
+      }
+
+      if (discoveryForm) {
+        discoveryForm.addEventListener('submit', submitDiscoveryScan);
+      }
+      refreshProgress();
+    </script>
+    """
     rows = []
     for device in devices:
         if not isinstance(device, dict):
@@ -2657,7 +2773,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       <div class="panel" style="margin-bottom:14px;">
         <h2>Executar varredura</h2>
         <p>Use uma rede privada como 10.0.0.0/24. O sistema consulta SNMP e monta uma lista de dispositivos com sugestao de grupo.</p>
-        <form method="post" action="/discovery/scan">
+        <form id="discovery-scan-form" method="post" action="/discovery/scan">
           <div class="form-grid">
             <div class="field">
               <label for="network">Rede</label>
@@ -2675,15 +2791,26 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
               <label for="retries">Retries</label>
               <input id="retries" name="retries" type="text" value="0" />
             </div>
-            <div class="field">
-              <label for="max_hosts">Limite de hosts</label>
-              <input id="max_hosts" name="max_hosts" type="text" value="4096" />
-            </div>
           </div>
           <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
-            <button class="btn primary" type="submit">Varredura SNMP</button>
+            <button class="btn primary" id="discovery-scan-button" type="submit">Varredura SNMP</button>
           </div>
         </form>
+      </div>
+      <div class="panel" style="margin-bottom:14px;">
+        <h2>Progresso da varredura</h2>
+        <p id="discovery-progress-message">{escape(progress_message)}</p>
+        <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:8px;">
+          <strong id="discovery-progress-label">{escape(progress_label)}</strong>
+          <span id="discovery-progress-percent">{escape(str(progress_width))}%</span>
+        </div>
+        <div style="height:16px; border-radius:999px; background:#1f2937; overflow:hidden; border:1px solid rgba(255,255,255,0.08);">
+          <div id="discovery-progress-bar" style="height:100%; width:{progress_width}%; background:linear-gradient(90deg, #b91c1c, #ef4444); transition:width .25s ease;"></div>
+        </div>
+        <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px; color:#cbd5e1;">
+          <span id="discovery-progress-count">{progress_processed} / {progress_total} hosts</span>
+          <span id="discovery-progress-found">{progress_found} devices encontrados</span>
+        </div>
       </div>
       <div id="results" class="panel">
         <h2>Resultados</h2>
@@ -2719,6 +2846,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         <div>O resultado fica salvo em disco para revisao posterior.</div>
       </div>
     </section>
+    {progress_script}
     """
     return _render_shell("Descoberta SNMP | infra-sync-api", body)
 

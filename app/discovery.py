@@ -23,6 +23,7 @@ from pysnmp.hlapi.v3arch.asyncio import (
 
 DISCOVERY_STATE_PATH = Path("data") / "discovery_last_scan.json"
 DISCOVERY_GROUPS_PATH = Path("data") / "discovery_groups.json"
+DISCOVERY_PROGRESS_PATH = Path("data") / "discovery_scan_progress.json"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -114,6 +115,14 @@ def save_group_selections(payload: dict[str, Any]) -> None:
     _save_json(DISCOVERY_GROUPS_PATH, payload)
 
 
+def load_scan_progress() -> dict[str, Any]:
+    return _load_json(DISCOVERY_PROGRESS_PATH, default=_default_scan_progress_state())
+
+
+def save_scan_progress(payload: dict[str, Any]) -> None:
+    _save_json(DISCOVERY_PROGRESS_PATH, payload)
+
+
 async def scan_network(
     network: str,
     community: str,
@@ -128,22 +137,71 @@ async def scan_network(
         raise ValueError("Only IPv4 networks are supported for discovery")
     if not net.is_private:
         raise ValueError("Discovery is restricted to private IPv4 networks")
-    if net.num_addresses > max_hosts:
-        raise ValueError(f"Network too large. Limit is {max_hosts} addresses.")
+
+    hosts = [str(ip) for ip in net.hosts()]
+    total_hosts = len(hosts)
+    scan_id = datetime.now(timezone.utc).isoformat()
+    save_scan_progress({
+        **_default_scan_progress_state(),
+        "scan_id": scan_id,
+        "network": str(net),
+        "status": "running",
+        "message": "Varredura em andamento",
+        "total_hosts": total_hosts,
+        "processed_hosts": 0,
+        "found_devices": 0,
+        "percentage": 0,
+        "started_at": scan_id,
+        "updated_at": scan_id,
+    })
 
     semaphore = asyncio.Semaphore(concurrency)
-    tasks = []
-    for ip in net.hosts():
-        tasks.append(asyncio.create_task(_scan_single_ip(str(ip), community, timeout=timeout, retries=retries, semaphore=semaphore)))
+    tasks = [
+        asyncio.create_task(_scan_single_ip(ip, community, timeout=timeout, retries=retries, semaphore=semaphore))
+        for ip in hosts
+    ]
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
     devices = []
-    for result in results:
-        if isinstance(result, Exception):
-            LOGGER.debug("SNMP discovery task failed: %s", result)
-            continue
-        if result is not None:
-            devices.append(result)
+    processed_hosts = 0
+    try:
+        for task in asyncio.as_completed(tasks):
+            try:
+                result = await task
+            except Exception as exc:
+                LOGGER.debug("SNMP discovery task failed: %s", exc)
+                result = None
+            processed_hosts += 1
+            if result is not None:
+                devices.append(result)
+            save_scan_progress({
+                **load_scan_progress(),
+                "scan_id": scan_id,
+                "network": str(net),
+                "status": "running",
+                "message": f"{processed_hosts} de {total_hosts} hosts processados",
+                "total_hosts": total_hosts,
+                "processed_hosts": processed_hosts,
+                "found_devices": len(devices),
+                "percentage": int((processed_hosts / total_hosts) * 100) if total_hosts else 100,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "last_ip": result.ip if result is not None else "",
+            })
+    except Exception as exc:
+        save_scan_progress({
+            **load_scan_progress(),
+            "scan_id": scan_id,
+            "network": str(net),
+            "status": "failed",
+            "message": str(exc),
+            "total_hosts": total_hosts,
+            "processed_hosts": processed_hosts,
+            "found_devices": len(devices),
+            "percentage": int((processed_hosts / total_hosts) * 100) if total_hosts else 100,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        raise
+
     payload = {
         "network": str(net),
         "count": len(devices),
@@ -151,6 +209,19 @@ async def scan_network(
         "devices": [device.as_dict() for device in devices],
     }
     save_last_scan(payload)
+    save_scan_progress({
+        **load_scan_progress(),
+        "scan_id": scan_id,
+        "network": str(net),
+        "status": "completed",
+        "message": "Varredura concluida",
+        "total_hosts": total_hosts,
+        "processed_hosts": total_hosts,
+        "found_devices": len(devices),
+        "percentage": 100 if total_hosts else 0,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
     return payload
 
 
@@ -401,6 +472,23 @@ def _default_scan_state() -> dict[str, Any]:
         "count": 0,
         "scanned_at": "",
         "devices": [],
+    }
+
+
+def _default_scan_progress_state() -> dict[str, Any]:
+    return {
+        "scan_id": "",
+        "network": "",
+        "status": "idle",
+        "message": "",
+        "total_hosts": 0,
+        "processed_hosts": 0,
+        "found_devices": 0,
+        "percentage": 0,
+        "started_at": "",
+        "updated_at": "",
+        "finished_at": "",
+        "last_ip": "",
     }
 
 

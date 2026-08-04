@@ -307,11 +307,44 @@ async def test_discovery_scan_allows_common_private_subnet(monkeypatch):
     assert payload["count"] == 0
 
 
+@pytest.mark.anyio
+async def test_discovery_scan_ignores_max_hosts_limit(monkeypatch):
+    async def fake_scan_single_ip(ip: str, community: str, **kwargs):
+        return None
+
+    monkeypatch.setattr(discovery_module, "_scan_single_ip", fake_scan_single_ip, raising=True)
+    monkeypatch.setattr(discovery_module, "save_last_scan", lambda payload: None, raising=True)
+    monkeypatch.setattr(discovery_module, "save_scan_progress", lambda payload: None, raising=True)
+    monkeypatch.setattr(discovery_module, "load_scan_progress", discovery_module._default_scan_progress_state, raising=True)
+    payload = await scan_network("10.0.0.0/24", "public", timeout=0.1, retries=0, max_hosts=1, concurrency=4)
+
+    assert payload["network"] == "10.0.0.0/24"
+    assert payload["count"] == 0
+
+
 def test_discovery_page_renders(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
     monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
     get_settings.cache_clear()
+    monkeypatch.setattr(
+        new_main,
+        "load_scan_progress",
+        lambda: {
+            "scan_id": "scan-1",
+            "network": "10.0.0.0/24",
+            "status": "running",
+            "message": "5 de 254 hosts processados",
+            "total_hosts": 254,
+            "processed_hosts": 5,
+            "found_devices": 2,
+            "percentage": 2,
+            "started_at": "2026-08-04T00:00:00Z",
+            "updated_at": "2026-08-04T00:00:10Z",
+            "finished_at": "",
+            "last_ip": "10.0.0.5",
+        },
+    )
     monkeypatch.setattr(
         new_main,
         "load_last_scan",
@@ -341,11 +374,44 @@ def test_discovery_page_renders(monkeypatch):
     assert response.status_code == 200
     assert "Descoberta SNMP" in response.text
     assert "Varredura SNMP" in response.text
-    assert 'value="4096"' in response.text
+    assert "Progresso da varredura" in response.text
+    assert "5 de 254 hosts processados" in response.text
     assert "Impressoras" in response.text
     assert "APs" in response.text
     assert "Cameras" in response.text
     assert "Gravadores" in response.text
+
+
+def test_discovery_progress_endpoint(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        new_main,
+        "load_scan_progress",
+        lambda: {
+            "scan_id": "scan-1",
+            "network": "10.0.0.0/24",
+            "status": "running",
+            "message": "10 de 254 hosts processados",
+            "total_hosts": 254,
+            "processed_hosts": 10,
+            "found_devices": 4,
+            "percentage": 4,
+            "started_at": "2026-08-04T00:00:00Z",
+            "updated_at": "2026-08-04T00:00:10Z",
+            "finished_at": "",
+            "last_ip": "10.0.0.10",
+        },
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/discovery/progress", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "running"
+    assert response.json()["processed_hosts"] == 10
 
 
 def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
