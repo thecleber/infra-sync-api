@@ -409,6 +409,7 @@ def test_discovery_page_renders(monkeypatch):
                     "model": "GWN7630",
                     "device_type": "wireless_ap",
                     "sys_descr": "Grandstream GWN access point",
+                    "mac_address": "AA:BB:CC:DD:EE:FF",
                     "group": "aps",
                     "subgroup": "indoor",
                     "include": True,
@@ -427,12 +428,11 @@ def test_discovery_page_renders(monkeypatch):
     assert "Progresso da varredura" in response.text
     assert "Status sistema" in response.text
     assert "Marcar / desmarcar todos" in response.text
+    assert "MAC" in response.text
     assert "5 de 254 hosts processados" in response.text
     assert "227 hosts vivos" in response.text
-    assert "Impressoras" in response.text
-    assert "APs" in response.text
-    assert "Cameras" in response.text
-    assert "Gravadores" in response.text
+    assert "Salvar classificacao" in response.text
+    assert "Incluir" in response.text
 
 
 def test_discovery_progress_endpoint(monkeypatch):
@@ -486,6 +486,11 @@ def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
     async def fake_find_devices_by_name(name: str):
         if name == "AP-01":
             return []
+        return []
+
+    async def fake_list_interfaces(params=None):
+        if params and str(params.get("device_id")) == "101":
+            return [{"id": 501, "name": "eth0", "mac_address": "AA:BB:CC:DD:EE:FF"}]
         return []
 
     async def fake_sync_device(payload, client, default_site_id, dry_run=False):
@@ -550,6 +555,7 @@ def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
     )
     monkeypatch.setattr(NetBoxClient, "find_devices_by_ip", AsyncMock(side_effect=fake_find_devices_by_ip))
     monkeypatch.setattr(NetBoxClient, "find_devices_by_name", AsyncMock(side_effect=fake_find_devices_by_name))
+    monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(side_effect=fake_list_interfaces))
     monkeypatch.setattr(new_main, "sync_device", AsyncMock(side_effect=fake_sync_device))
     monkeypatch.setattr(new_main, "save_group_selections", lambda payload: saved_payloads.__setitem__("groups", payload))
     monkeypatch.setattr(new_main, "save_last_scan", lambda payload: saved_payloads.__setitem__("scan", payload))
@@ -559,11 +565,7 @@ def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
             "/discovery/save",
             data={
                 "include_10_0_0_24": "on",
-                "group_10_0_0_24": "switches",
-                "subgroup_10_0_0_24": "access",
                 "include_10_0_0_25": "on",
-                "group_10_0_0_25": "aps",
-                "subgroup_10_0_0_25": "indoor",
             },
             follow_redirects=False,
         )
@@ -573,6 +575,7 @@ def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
     assert saved_payloads["groups"]["count"] == 2
     assert saved_payloads["scan"]["devices"][0]["system_status"] == "Atualizado"
     assert saved_payloads["scan"]["devices"][1]["system_status"] == "Criado"
+    assert saved_payloads["scan"]["devices"][0]["mac_address"] == "AA:BB:CC:DD:EE:FF"
 
 
 def test_management_pages_render(monkeypatch):

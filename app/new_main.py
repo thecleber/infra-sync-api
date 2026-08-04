@@ -2534,13 +2534,13 @@ async def discovery_save(request: Request):
         ip = str(device.get("ip", "")).strip()
         key = _device_key(ip)
         include = form.get(f"include_{key}") in {"on", "true", "True", "1", "checked", "yes"}
-        group = form.get(f"group_{key}") or str(device.get("group") or "hosts")
-        subgroup = form.get(f"subgroup_{key}") or str(device.get("subgroup") or "fixed")
         classified_group, classified_subgroup, notes = classify_discovered_device(
             sys_descr=str(device.get("sys_descr") or ""),
             sys_name=str(device.get("sys_name") or ""),
             sys_object_id=str(device.get("sys_object_id") or ""),
         )
+        group = form.get(f"group_{key}") or str(device.get("suggested_group") or classified_group or device.get("group") or "hosts")
+        subgroup = form.get(f"subgroup_{key}") or str(device.get("suggested_subgroup") or classified_subgroup or device.get("subgroup") or "fixed")
         enriched_device = {
             **device,
             "include": include,
@@ -2626,6 +2626,25 @@ def _discovery_role_id_for_group(group: str, settings: Settings) -> int:
     return settings.default_role_id
 
 
+async def _discover_device_mac(client: NetBoxClient | None, device_id: Any) -> str:
+    if client is None:
+        return ""
+    related_id = _related_id(device_id)
+    if not related_id:
+        return ""
+    try:
+        interfaces = await client.list_interfaces(params={"device_id": related_id, "limit": 100})
+    except Exception:
+        return ""
+    for interface in interfaces:
+        if not isinstance(interface, dict):
+            continue
+        mac_address = _normalize_text(interface.get("mac_address"))
+        if mac_address:
+            return mac_address.upper()
+    return ""
+
+
 async def _lookup_discovery_netbox_device(client: NetBoxClient | None, ip: str, name: str) -> dict[str, Any] | None:
     if client is None:
         return None
@@ -2677,6 +2696,7 @@ async def _annotate_discovered_device(
     annotated["system_message"] = message
     annotated["netbox_device_id"] = _related_id(existing.get("id")) if isinstance(existing, dict) else None
     annotated["netbox_device_name"] = _normalize_text(existing.get("name")) if isinstance(existing, dict) else ""
+    annotated["mac_address"] = await _discover_device_mac(client, existing.get("id")) if isinstance(existing, dict) else _normalize_text(annotated.get("mac_address"))
 
     if not sync_with_netbox:
         return annotated
@@ -2931,22 +2951,12 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             f"""
             <tr>
               <td><strong>{escape(ip or '?')}</strong></td>
+              <td>{escape(str(device.get("mac_address") or '—'))}</td>
               <td>{escape(str(device.get("sys_name") or '?'))}</td>
-              <td>{_render_status_badge(str(device.get("system_status") or "Novo"), str(device.get("system_message") or ""))}</td>
-              <td>{escape(str(device.get("manufacturer") or '?'))}</td>
-              <td>{escape(str(device.get("model") or '?'))}</td>
               <td>{escape(str(device.get("device_type") or '?'))}</td>
+              <td>{escape(str(device.get("model") or '?'))}</td>
               <td style="max-width:280px;">{escape(str(device.get("sys_descr") or '?'))}</td>
-              <td>
-                <select name="group_{key}">
-                  {_discovery_group_select_options(str(device.get("group") or "hosts"))}
-                </select>
-              </td>
-              <td>
-                <select name="subgroup_{key}">
-                  {_discovery_subgroup_select_options(str(device.get("group") or "hosts"), str(device.get("subgroup") or "fixed"))}
-                </select>
-              </td>
+              <td>{_render_status_badge(str(device.get("system_status") or "Novo"), str(device.get("system_message") or ""))}</td>
               <td>
                 <label class="check" style="margin:0;">
                   <input type="checkbox" name="include_{key}" {"checked" if device.get("include", True) else ""} />
@@ -3032,7 +3042,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       </div>
       <div id="results" class="panel">
         <h2>Resultados</h2>
-        <p>{escape(str(len(devices)))} itens encontrados no inventario (ARP/Nmap + SNMP).</p>
+        <p>{escape(str(len(devices)))} itens encontrados para enriquecer o inventario (ARP/Nmap + SNMP).</p>
         <form method="post" action="/discovery/save">
           <input type="hidden" name="network" value="{escape(state.get("network") or "")}" />
           <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
@@ -3045,19 +3055,17 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             <thead>
               <tr>
                 <th>IP</th>
+                <th>MAC</th>
                 <th>Nome</th>
-                <th>Status sistema</th>
-                <th>Fabricante</th>
-                <th>Modelo</th>
                 <th>Tipo</th>
-                <th>Descri??o</th>
-                <th>Grupo</th>
-                <th>Subgrupo</th>
+                <th>Modelo</th>
+                <th>Descrição</th>
+                <th>Status sistema</th>
                 <th>Incluir</th>
               </tr>
             </thead>
             <tbody>
-              {''.join(rows) if rows else '<tr><td colspan="10">Nenhum dispositivo na ultima varredura.</td></tr>'}
+              {''.join(rows) if rows else '<tr><td colspan="8">Nenhum dispositivo na ultima varredura.</td></tr>'}
             </tbody>
           </table>
           <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
