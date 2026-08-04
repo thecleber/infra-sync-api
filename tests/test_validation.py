@@ -415,6 +415,7 @@ def test_discovery_page_renders(monkeypatch):
     assert "Varredura SNMP" in response.text
     assert "Progresso da varredura" in response.text
     assert "Status sistema" in response.text
+    assert "Marcar / desmarcar todos" in response.text
     assert "5 de 254 hosts processados" in response.text
     assert "227 hosts vivos" in response.text
     assert "Impressoras" in response.text

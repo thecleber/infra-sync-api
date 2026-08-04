@@ -2768,6 +2768,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       const progressCount = document.getElementById('discovery-progress-count');
       const progressAlive = document.getElementById('discovery-progress-alive');
       const progressFound = document.getElementById('discovery-progress-found');
+      const toggleAllInclude = document.getElementById('discovery-toggle-all-include');
       let progressTimer = null;
       let activeScanId = '';
       let lastPercentage = 0;
@@ -2819,6 +2820,27 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
           lastAlive = safeAlive;
           lastFound = safeFound;
         }
+      }
+
+      function getIncludeCheckboxes() {
+        return Array.from(document.querySelectorAll('input[type="checkbox"][name^="include_"]'));
+      }
+
+      function syncToggleAllState() {
+        if (!toggleAllInclude) {
+          return;
+        }
+        const checkboxes = getIncludeCheckboxes();
+        const checkedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+        toggleAllInclude.checked = checkboxes.length > 0 && checkedCount === checkboxes.length;
+        toggleAllInclude.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+      }
+
+      function setAllIncludeState(checked) {
+        getIncludeCheckboxes().forEach((checkbox) => {
+          checkbox.checked = checked;
+        });
+        syncToggleAllState();
       }
 
       async function refreshProgress() {
@@ -2884,6 +2906,15 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       if (discoveryForm) {
         discoveryForm.addEventListener('submit', submitDiscoveryScan);
       }
+      if (toggleAllInclude) {
+        toggleAllInclude.addEventListener('change', () => {
+          setAllIncludeState(toggleAllInclude.checked);
+        });
+      }
+      getIncludeCheckboxes().forEach((checkbox) => {
+        checkbox.addEventListener('change', syncToggleAllState);
+      });
+      syncToggleAllState();
       refreshProgress();
     </script>
     """
@@ -3001,6 +3032,12 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         <p>{escape(str(len(devices)))} itens encontrados no inventario (ARP/Nmap + SNMP).</p>
         <form method="post" action="/discovery/save">
           <input type="hidden" name="network" value="{escape(state.get("network") or "")}" />
+          <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
+            <label class="check" style="margin:0;">
+              <input type="checkbox" id="discovery-toggle-all-include" />
+              <span>Marcar / desmarcar todos</span>
+            </label>
+          </div>
           <table>
             <thead>
               <tr>
