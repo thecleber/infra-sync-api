@@ -507,6 +507,8 @@ def test_discovery_page_renders(monkeypatch):
     assert "Varredura SNMP em andamento" in response.text
     assert "discovery-save-form" in response.text
     assert "Salvando classificacao" in response.text
+    assert "discovery-save-modal-title" in response.text
+    assert "discovery-save-modal-spinner" in response.text
     assert "Classificacao salva com sucesso" in response.text
     assert "OK" in response.text
     assert "5 de 254 hosts processados" in response.text

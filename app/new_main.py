@@ -2816,6 +2816,8 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       const discoveryScanModalBar = document.getElementById('discovery-scan-modal-bar');
       const discoverySaveOverlay = document.getElementById('discovery-save-overlay');
       const discoverySaveModal = document.getElementById('discovery-save-modal');
+      const discoverySaveModalSpinner = document.getElementById('discovery-save-modal-spinner');
+      const discoverySaveModalTitle = document.getElementById('discovery-save-modal-title');
       const discoverySaveModalText = document.getElementById('discovery-save-modal-text');
       const discoverySaveModalOk = document.getElementById('discovery-save-modal-ok');
       const progressBar = document.getElementById('discovery-progress-bar');
@@ -2905,7 +2907,16 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
           discoverySaveOverlay.style.display = 'flex';
         }
         if (discoverySaveModal) {
-          discoverySaveModal.style.display = 'none';
+          discoverySaveModal.style.display = 'block';
+        }
+        if (discoverySaveModalSpinner) {
+          discoverySaveModalSpinner.style.display = 'inline-block';
+        }
+        if (discoverySaveModalTitle) {
+          discoverySaveModalTitle.textContent = 'Salvamento em andamento';
+        }
+        if (discoverySaveModalOk) {
+          discoverySaveModalOk.style.display = 'none';
         }
         if (discoverySaveModalText) {
           discoverySaveModalText.textContent = message || 'Salvando classificacao...';
@@ -2921,6 +2932,12 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
 
       function showSaveSuccess(message) {
         saveBusy = false;
+        if (discoverySaveModalSpinner) {
+          discoverySaveModalSpinner.style.display = 'none';
+        }
+        if (discoverySaveModalTitle) {
+          discoverySaveModalTitle.textContent = 'Salvamento concluído';
+        }
         if (discoverySaveModalText) {
           discoverySaveModalText.textContent = message || 'Classificacao salva com sucesso.';
         }
@@ -3261,8 +3278,8 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             <style>@keyframes spin {{ to {{ transform: rotate(360deg); }} }}</style>
             <div id="discovery-save-modal" style="display:none; width:min(460px, 100%); border-radius:18px; border:1px solid rgba(255,255,255,.10); background:#111317; box-shadow:0 30px 80px rgba(0,0,0,.45); padding:22px;">
               <div style="display:flex; align-items:center; gap:14px;">
-                <div style="width:18px; height:18px; border-radius:999px; border:3px solid rgba(239,68,68,.25); border-top-color:#ef4444; animation:spin 1s linear infinite;"></div>
-                <strong style="font-size:18px; color:#fff;">Salvamento em andamento</strong>
+                <div id="discovery-save-modal-spinner" style="width:18px; height:18px; border-radius:999px; border:3px solid rgba(239,68,68,.25); border-top-color:#ef4444; animation:spin 1s linear infinite;"></div>
+                <strong id="discovery-save-modal-title" style="font-size:18px; color:#fff;">Salvamento em andamento</strong>
               </div>
               <p id="discovery-save-modal-text" style="margin:14px 0 18px; color:#d1d5db; line-height:1.5;">Salvando classificacao...</p>
               <div style="display:flex; justify-content:flex-end;">
