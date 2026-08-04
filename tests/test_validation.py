@@ -278,11 +278,11 @@ def test_management_pages_render(monkeypatch):
     assert devices.status_code == 200
     assert "Devices cadastrados" in devices.text
     assert "Leitura SNMP" in devices.text
-    assert "Campos personalizados" in devices.text
     assert device_detail.status_code == 200
     assert "Detalhe do device" in device_detail.text
     assert "Interfaces" in device_detail.text
-    assert "Ativo" in device_detail.text
+    assert "Campos personalizados" in device_detail.text
+    assert "Visão geral" in device_detail.text
     assert vlans.status_code == 200
     assert "VLANs cadastradas" in vlans.text
     assert networks.status_code == 200
