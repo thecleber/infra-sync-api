@@ -5,6 +5,7 @@ import ipaddress
 import json
 import logging
 import shutil
+import subprocess
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from pysnmp.hlapi.v3arch.asyncio import (
     SnmpEngine,
     UdpTransportTarget,
     get_cmd,
+    walk_cmd,
 )
 
 
@@ -86,6 +88,7 @@ class DiscoveredDevice:
     manufacturer: str = ""
     model: str = ""
     device_type: str = ""
+    mac_address: str = ""
     sys_descr: str = ""
     sys_name: str = ""
     sys_object_id: str = ""
@@ -280,6 +283,7 @@ async def _scan_single_ip(
             if_number = values.get("if_number", "")
             hr_memory_size = values.get("hr_memory_size", "")
             ucd_load_1 = values.get("ucd_load_1", "")
+            mac_address = await _fetch_mac_address(ip, community, timeout=timeout, retries=retries)
 
             if not any((sys_descr, sys_name, sys_object_id, if_number, hr_memory_size, ucd_load_1)):
                 return None
@@ -299,6 +303,7 @@ async def _scan_single_ip(
                 manufacturer=profile["manufacturer"],
                 model=profile["model"],
                 device_type=profile["device_type"],
+                mac_address=mac_address,
                 sys_descr=sys_descr,
                 sys_name=sys_name,
                 sys_object_id=sys_object_id,
@@ -346,7 +351,15 @@ async def _discover_live_hosts_with_nmap(net: ipaddress.IPv4Network) -> list[dic
         LOGGER.debug("nmap host discovery failed: %s", stderr.decode("utf-8", errors="replace").strip())
         return []
 
-    return _parse_nmap_grepable_output(stdout.decode("utf-8", errors="replace"))
+    discovered = _parse_nmap_grepable_output(stdout.decode("utf-8", errors="replace"))
+    arp_macs = _collect_arp_cache_macs(net)
+    for host in discovered:
+        ip = _normalize(host.get("ip"))
+        if not ip:
+            continue
+        if not _normalize(host.get("mac_address")):
+            host["mac_address"] = arp_macs.get(ip, "")
+    return discovered
 
 
 def _parse_nmap_grepable_output(output: str) -> list[dict[str, str]]:
@@ -360,8 +373,38 @@ def _parse_nmap_grepable_output(output: str) -> list[dict[str, str]]:
             continue
         ip = match.group(1)
         hostname = (match.group(2) or "").strip()
-        discovered.append({"ip": ip, "sys_name": hostname, "source": "nmap"})
+        mac_match = re.search(r"MAC Address:\s+([0-9A-Fa-f:\-\.]{12,20})(?:\s+\((.*?)\))?", line)
+        mac_address = _normalize_mac(mac_match.group(1)) if mac_match else ""
+        mac_vendor = (mac_match.group(2) or "").strip() if mac_match else ""
+        discovered.append({"ip": ip, "sys_name": hostname, "source": "nmap", "mac_address": mac_address, "mac_vendor": mac_vendor})
     return discovered
+
+
+def _collect_arp_cache_macs(net: ipaddress.IPv4Network) -> dict[str, str]:
+    if shutil.which("ip") is None:
+        return {}
+    try:
+        result = subprocess.run(
+            ["ip", "neigh", "show", str(net)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return {}
+    if result.returncode != 0:
+        return {}
+    macs: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        match = re.search(r"(\d+\.\d+\.\d+\.\d+).*lladdr\s+([0-9A-Fa-f:\-\.]{12,20})", line)
+        if not match:
+            continue
+        mac = _normalize_mac(match.group(2))
+        if mac:
+            macs[match.group(1)] = mac
+    return macs
 
 
 def _merge_inventory(live_hosts: list[dict[str, str]], snmp_devices: list[DiscoveredDevice]) -> list[DiscoveredDevice]:
@@ -375,6 +418,7 @@ def _merge_inventory(live_hosts: list[dict[str, str]], snmp_devices: list[Discov
             ip=ip,
             reachable=True,
             sys_name=_normalize(host.get("sys_name")),
+            mac_address=_normalize_mac(_normalize(host.get("mac_address"))),
             device_type="host",
             group="hosts",
             subgroup="fixed",
@@ -393,6 +437,7 @@ def _merge_inventory(live_hosts: list[dict[str, str]], snmp_devices: list[Discov
             manufacturer=device.manufacturer or existing.manufacturer,
             model=device.model or existing.model,
             device_type=device.device_type or existing.device_type,
+            mac_address=_normalize_mac(device.mac_address or existing.mac_address),
             sys_descr=device.sys_descr or existing.sys_descr,
             sys_name=device.sys_name or existing.sys_name,
             sys_object_id=device.sys_object_id or existing.sys_object_id,
@@ -406,6 +451,37 @@ def _merge_inventory(live_hosts: list[dict[str, str]], snmp_devices: list[Discov
         )
 
     return sorted(inventory.values(), key=lambda item: ipaddress.ip_address(item.ip))
+
+
+async def _fetch_mac_address(ip: str, community: str, *, timeout: float, retries: int) -> str:
+    engine: SnmpEngine | None = None
+    try:
+        engine = SnmpEngine()
+        transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
+        async for error_indication, error_status, error_index, var_binds in walk_cmd(
+            engine,
+            CommunityData(community, mpModel=1),
+            transport,
+            ContextData(),
+            ObjectType(ObjectIdentity("1.3.6.1.2.1.2.2.1.6")),
+            lexicographicMode=False,
+            lookupMib=False,
+            maxRows=32,
+        ):
+            if error_indication or error_status:
+                return ""
+            for var_bind in var_binds:
+                if len(var_bind) < 2:
+                    continue
+                mac = _normalize_mac(var_bind[1].prettyPrint())
+                if mac:
+                    return mac
+        return ""
+    except Exception:
+        return ""
+    finally:
+        if engine is not None:
+            engine.close_dispatcher()
 
 
 def infer_device_profile(*, sys_descr: str, sys_name: str, sys_object_id: str) -> dict[str, str]:
@@ -566,6 +642,19 @@ def _guess_device_type(text: str, manufacturer: str, model: str) -> str:
 
 def _normalize(value: Any) -> str:
     return "" if value is None else str(value).strip()
+
+
+def _normalize_mac(value: Any) -> str:
+    cleaned = _normalize(value)
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    if lowered in {"00:00:00:00:00:00", "000000000000", "ff:ff:ff:ff:ff:ff"}:
+        return ""
+    hex_only = "".join(ch for ch in cleaned if ch.isalnum())
+    if len(hex_only) == 12:
+        return ":".join(hex_only[i:i + 2] for i in range(0, 12, 2)).upper()
+    return cleaned.upper()
 
 
 def _extract_values(result: tuple[Any, ...]) -> dict[str, str]:

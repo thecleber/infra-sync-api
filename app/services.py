@@ -227,20 +227,28 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
     interface = await client.find_interface(device["id"], "mgmt0")
     created_interface = False
     if interface is None and not dry_run:
+        interface_payload = {
+            "device": device["id"],
+            "name": "mgmt0",
+            "type": "virtual",
+            "enabled": True,
+        }
+        if payload.mac_address:
+            interface_payload["mac_address"] = payload.mac_address
         interface = await _create_or_refetch(
-            lambda: client.create_interface(
-                {
-                    "device": device["id"],
-                    "name": "mgmt0",
-                    "type": "virtual",
-                    "enabled": True,
-                }
-            ),
+            lambda: client.create_interface(interface_payload),
             lambda: client.find_interface(device["id"], "mgmt0"),
         )
         created_interface = True
     elif interface is None:
         warnings.append("Interface mgmt0 would be created.")
+    elif payload.mac_address and not dry_run:
+        current_mac = str(interface.get("mac_address") or "").strip().upper()
+        desired_mac = str(payload.mac_address).strip().upper()
+        if current_mac != desired_mac:
+            interface = await client.update_interface(interface["id"], {"mac_address": desired_mac})
+    elif payload.mac_address:
+        warnings.append("Interface mgmt0 would receive the discovered MAC address.")
 
     ip_address = await client.find_ip_address(payload.ip)
     created_ip = False

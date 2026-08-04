@@ -2696,7 +2696,8 @@ async def _annotate_discovered_device(
     annotated["system_message"] = message
     annotated["netbox_device_id"] = _related_id(existing.get("id")) if isinstance(existing, dict) else None
     annotated["netbox_device_name"] = _normalize_text(existing.get("name")) if isinstance(existing, dict) else ""
-    annotated["mac_address"] = await _discover_device_mac(client, existing.get("id")) if isinstance(existing, dict) else _normalize_text(annotated.get("mac_address"))
+    existing_mac = await _discover_device_mac(client, existing.get("id")) if isinstance(existing, dict) else ""
+    annotated["mac_address"] = existing_mac or _normalize_text(annotated.get("mac_address"))
 
     if not sync_with_netbox:
         return annotated
@@ -2723,6 +2724,7 @@ async def _annotate_discovered_device(
         site_id=settings.default_site_id,
         role_id=_discovery_role_id_for_group(_normalize_text(annotated.get("group")) or "hosts", settings),
         zabbix_status="active",
+        mac_address=_normalize_text(annotated.get("mac_address")) or None,
         comments_summary=_normalize_text(annotated.get("notes")) or "Descoberto por ARP/Nmap + SNMP",
         netbox_status="active",
     )

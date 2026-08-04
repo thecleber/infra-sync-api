@@ -16,6 +16,7 @@ class SyncDeviceRequest(BaseModel):
     role_id: int = Field(..., gt=0)
     zabbix_status: str | None = None
     serial: str | None = None
+    mac_address: str | None = None
     comments_summary: str | None = None
     netbox_status: str | None = None
 
@@ -35,7 +36,7 @@ class SyncDeviceRequest(BaseModel):
         cleaned = value.strip()
         return cleaned or None
 
-    @field_validator("serial", "comments_summary", "netbox_status", "zabbix_status")
+    @field_validator("serial", "mac_address", "comments_summary", "netbox_status", "zabbix_status")
     @classmethod
     def strip_optional_metadata(cls, value: str | None) -> str | None:
         if value is None:
