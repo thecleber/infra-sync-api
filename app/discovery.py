@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from pysnmp.hlapi.v3arch.asyncio import (
 
 DISCOVERY_STATE_PATH = Path("data") / "discovery_last_scan.json"
 DISCOVERY_GROUPS_PATH = Path("data") / "discovery_groups.json"
+LOGGER = logging.getLogger(__name__)
 
 
 SNMP_VARIABLES = (
@@ -102,7 +104,7 @@ async def scan_network(
     *,
     timeout: float = 1.0,
     retries: int = 0,
-    max_hosts: int = 1024,
+    max_hosts: int = 4096,
     concurrency: int = 32,
 ) -> dict[str, Any]:
     net = ipaddress.ip_network(network.strip(), strict=False)
@@ -118,7 +120,14 @@ async def scan_network(
     for ip in net.hosts():
         tasks.append(asyncio.create_task(_scan_single_ip(str(ip), community, timeout=timeout, retries=retries, semaphore=semaphore)))
 
-    devices = [device for device in await asyncio.gather(*tasks) if device is not None]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    devices = []
+    for result in results:
+        if isinstance(result, Exception):
+            LOGGER.debug("SNMP discovery task failed: %s", result)
+            continue
+        if result is not None:
+            devices.append(result)
     payload = {
         "network": str(net),
         "count": len(devices),
@@ -138,8 +147,9 @@ async def _scan_single_ip(
     semaphore: asyncio.Semaphore,
 ) -> DiscoveredDevice | None:
     async with semaphore:
-        engine = SnmpEngine()
+        engine: SnmpEngine | None = None
         try:
+            engine = SnmpEngine()
             transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
             var_binds = [
                 ObjectType(ObjectIdentity(*oid_parts))
@@ -191,8 +201,12 @@ async def _scan_single_ip(
                 subgroup=subgroup,
                 notes=notes,
         )
+        except Exception as exc:
+            LOGGER.debug("SNMP discovery failed for %s: %s", ip, exc)
+            return None
         finally:
-            engine.close_dispatcher()
+            if engine is not None:
+                engine.close_dispatcher()
 
 
 def infer_device_profile(*, sys_descr: str, sys_name: str, sys_object_id: str) -> dict[str, str]:

@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 from app.config import Settings, get_settings
 from app import new_main
 from app.main import app
-from app.discovery import classify_discovered_device
+from app import discovery as discovery_module
+from app.discovery import DiscoveredDevice, classify_discovered_device, scan_network
 from app.models import SyncDeviceRequest
 from app.netbox_client import NetBoxClient
 from app.zabbix_client import ZabbixClient
@@ -243,6 +244,48 @@ def test_discovery_classifier_switch():
     assert "Matched" in notes
 
 
+@pytest.mark.anyio
+async def test_discovery_scan_handles_partial_snmp_failure(monkeypatch):
+    async def fake_scan_single_ip(ip: str, community: str, **kwargs):
+        if ip.endswith(".2"):
+            raise RuntimeError("timeout")
+        return DiscoveredDevice(
+            ip=ip,
+            reachable=True,
+            manufacturer="MikroTik",
+            model="CCR",
+            device_type="router",
+            sys_descr="MikroTik CCR",
+            sys_name="CCR-01",
+            sys_object_id="1.3.6.1.4.1.14988",
+            if_number="12",
+            hr_memory_size="1024",
+            ucd_load_1="2.5",
+            group="routers",
+            subgroup="core",
+            notes="ok",
+        )
+
+    monkeypatch.setattr(discovery_module, "_scan_single_ip", fake_scan_single_ip, raising=True)
+    payload = await scan_network("10.0.0.0/30", "public", timeout=0.1, retries=0, max_hosts=4096, concurrency=2)
+
+    assert payload["network"] == "10.0.0.0/30"
+    assert payload["count"] == 1
+    assert payload["devices"][0]["ip"] == "10.0.0.1"
+
+
+@pytest.mark.anyio
+async def test_discovery_scan_allows_common_private_subnet(monkeypatch):
+    async def fake_scan_single_ip(ip: str, community: str, **kwargs):
+        return None
+
+    monkeypatch.setattr(discovery_module, "_scan_single_ip", fake_scan_single_ip, raising=True)
+    payload = await scan_network("10.0.0.0/24", "public", timeout=0.1, retries=0, max_hosts=4096, concurrency=4)
+
+    assert payload["network"] == "10.0.0.0/24"
+    assert payload["count"] == 0
+
+
 def test_discovery_page_renders(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
@@ -255,6 +298,7 @@ def test_discovery_page_renders(monkeypatch):
     assert response.status_code == 200
     assert "Descoberta SNMP" in response.text
     assert "Varredura SNMP" in response.text
+    assert 'value="4096"' in response.text
 
 
 def test_management_pages_render(monkeypatch):
