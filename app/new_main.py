@@ -415,7 +415,7 @@ def _save_runtime_payload(payload: dict[str, Any]) -> None:
 def _mask_secret(value: str) -> str:
     cleaned = _normalize_text(value)
     if not cleaned:
-        return "nÃ£o configurado"
+        return "nÃƒÆ’Ã‚Â£o configurado"
     if len(cleaned) <= 8:
         return "*" * len(cleaned)
     return f"{cleaned[:4]}...{cleaned[-4:]}"
@@ -580,10 +580,10 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
 
     connectors = []
     for key, title, note in (
-        ("netbox", "NetBox", "InventÃ¡rio, IPAM e documentaÃ§Ã£o"),
+        ("netbox", "NetBox", "InventÃƒÆ’Ã‚Â¡rio, IPAM e documentaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o"),
         ("zabbix", "Zabbix", "Telemetria, eventos e SNMP"),
-        ("glpi", "GLPI", "Chamados e histÃ³rico operacional"),
-        ("n8n", "n8n", "AutomaÃ§Ã£o segura e ajustes pequenos"),
+        ("glpi", "GLPI", "Chamados e histÃƒÆ’Ã‚Â³rico operacional"),
+        ("n8n", "n8n", "AutomaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o segura e ajustes pequenos"),
     ):
         connector = runtime[key]
         status_label, status_style = _connector_status(connector)
@@ -597,34 +597,34 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
             "name": title,
             "status": status_label,
             "status_style": status_style,
-            "url": _normalize_text(connector.get("url")) or "nÃ£o informado",
+            "url": _normalize_text(connector.get("url")) or "nÃƒÆ’Ã‚Â£o informado",
             "token": _mask_secret(_normalize_text(connector.get("token"))),
             "note": note,
         })
 
     health_status = "ok" if netbox_connected and (zabbix_client is None or zabbix_connected) else "degraded"
-    headline = "Sistema central pronto" if health_status == "ok" else "Sistema central parcialmente indisponÃ­vel"
+    headline = "Sistema central pronto" if health_status == "ok" else "Sistema central parcialmente indisponÃƒÆ’Ã‚Â­vel"
     detail = (
         f"NetBox {'online' if netbox_connected else 'offline'}"
         + (
             f", Zabbix {'online' if zabbix_connected else 'offline'}"
             if zabbix_client is not None
-            else ", Zabbix nÃ£o configurado"
+            else ", Zabbix nÃƒÆ’Ã‚Â£o configurado"
         )
         + f". Redes permitidas: {len(settings.allowed_client_networks())}."
     )
 
     inventory_cards = [
-        {"label": "Devices", "value": counts["devices"], "note": "Dispositivos no inventÃ¡rio"},
-        {"label": "IPs", "value": counts["ips"], "note": "EndereÃ§os e consumo"},
-        {"label": "VLANs", "value": counts["vlans"], "note": "SegmentaÃ§Ã£o de rede"},
+        {"label": "Devices", "value": counts["devices"], "note": "Dispositivos no inventÃƒÆ’Ã‚Â¡rio"},
+        {"label": "IPs", "value": counts["ips"], "note": "EndereÃƒÆ’Ã‚Â§os e consumo"},
+        {"label": "VLANs", "value": counts["vlans"], "note": "SegmentaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o de rede"},
         {"label": "Interfaces", "value": counts["interfaces"], "note": "Portas, uplinks e trunks"},
         {"label": "Prefixes", "value": counts["prefixes"], "note": "Blocos e pools"},
         {"label": "Sites", "value": counts["sites"], "note": "Locais e unidades"},
-        {"label": "Racks", "value": counts["racks"], "note": "Racks fÃ­sicos"},
+        {"label": "Racks", "value": counts["racks"], "note": "Racks fÃƒÆ’Ã‚Â­sicos"},
         {"label": "Zabbix hosts", "value": counts["zabbix_hosts"], "note": "Hosts monitorados"},
         {"label": "Alertas", "value": counts["zabbix_problems"], "note": "Problemas abertos no Zabbix"},
-        {"label": "Descobertos", "value": discovery_count, "note": "Dispositivos vistos na Ãºltima varredura"},
+        {"label": "Descobertos", "value": discovery_count, "note": "Dispositivos vistos na ÃƒÆ’Ã‚Âºltima varredura"},
     ]
 
     telemetry_score = 0
@@ -815,17 +815,17 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
         <section class="topbar">
           <div>
             <h1>Rede</h1>
-            <div class="sub">Painel central para NetBox, Zabbix, GLPI e n8n. A visÃ£o principal do ambiente fica aqui, com inventÃ¡rio, telemetria e automaÃ§Ã£o reunidos em um sÃ³ lugar.</div>
+            <div class="sub">Painel central para NetBox, Zabbix, GLPI e n8n. A visÃƒÆ’Ã‚Â£o principal do ambiente fica aqui, com inventÃƒÆ’Ã‚Â¡rio, telemetria e automaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o reunidos em um sÃƒÆ’Ã‚Â³ lugar.</div>
           </div>
           <div class="actions">
-            <a class="btn primary" href="/settings">Configurar integraÃ§Ãµes</a>
+            <a class="btn primary" href="/settings">Configurar integraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes</a>
             <a class="btn" href="/docs">API</a>
-            <a class="btn" href="/health">SaÃºde</a>
-            <a class="btn" href="/version">VersÃ£o</a>
+            <a class="btn" href="/health">SaÃƒÆ’Ã‚Âºde</a>
+            <a class="btn" href="/version">VersÃƒÆ’Ã‚Â£o</a>
           </div>
         </section>
         <section class="hero">
-          <small>Ãšltima checagem</small>
+          <small>ÃƒÆ’Ã…Â¡ltima checagem</small>
           <strong>{escape(snapshot["headline"])}</strong>
           <div class="sub" style="margin: 6px 0 0;">{escape(snapshot["detail"])}</div>
         </section>
@@ -833,7 +833,7 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
         <section class="panels">
           <div class="panel">
             <h2>Conectores centrais</h2>
-            <p>Os tokens e URLs ficam editÃ¡veis no prÃ³prio sistema. Assim vocÃª consegue ligar ou trocar a origem sem sair do painel.</p>
+            <p>Os tokens e URLs ficam editÃƒÆ’Ã‚Â¡veis no prÃƒÆ’Ã‚Â³prio sistema. Assim vocÃƒÆ’Ã‚Âª consegue ligar ou trocar a origem sem sair do painel.</p>
             <table>
               <thead>
                 <tr>
@@ -848,19 +848,19 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
           </div>
           <div class="panel">
             <h2>Atalhos operacionais</h2>
-            <p>Rotas e aÃ§Ãµes principais para a operaÃ§Ã£o do dia a dia.</p>
+            <p>Rotas e aÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes principais para a operaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o do dia a dia.</p>
             <table>
               <thead>
                 <tr>
-                  <th>AÃ§Ã£o</th>
+                  <th>AÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o</th>
                   <th>Destino</th>
                 </tr>
               </thead>
               <tbody>
-                <tr><td>SaÃºde da API</td><td><a href="/health">/health</a></td></tr>
-                <tr><td>DocumentaÃ§Ã£o</td><td><a href="/docs">/docs</a></td></tr>
-                <tr><td>Editar integraÃ§Ãµes</td><td><a href="/settings">/settings</a></td></tr>
-                <tr><td>VersÃ£o</td><td><a href="/version">/version</a></td></tr>
+                <tr><td>SaÃƒÆ’Ã‚Âºde da API</td><td><a href="/health">/health</a></td></tr>
+                <tr><td>DocumentaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o</td><td><a href="/docs">/docs</a></td></tr>
+                <tr><td>Editar integraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes</td><td><a href="/settings">/settings</a></td></tr>
+                <tr><td>VersÃƒÆ’Ã‚Â£o</td><td><a href="/version">/version</a></td></tr>
               </tbody>
             </table>
           </div>
@@ -945,23 +945,23 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
         """
 
     return _render_shell(
-        "ConfiguraÃ§Ãµes | infra-sync-api",
+        "ConfiguraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes | infra-sync-api",
         f"""
         <section class="topbar">
           <div>
-            <h1>ConfiguraÃ§Ãµes</h1>
-            <div class="sub">Aqui vocÃª insere e altera os tokens e URLs que alimentam o sistema central. A atualizaÃ§Ã£o vale na hora para o painel e para os conectores.</div>
+            <h1>ConfiguraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes</h1>
+            <div class="sub">Aqui vocÃƒÆ’Ã‚Âª insere e altera os tokens e URLs que alimentam o sistema central. A atualizaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o vale na hora para o painel e para os conectores.</div>
           </div>
           <div class="actions">
             <a class="btn" href="/">Dashboard</a>
             <a class="btn" href="/docs">API</a>
           </div>
         </section>
-        {"<div class='hero'><small>Salvo</small><strong>ConfiguraÃ§Ãµes atualizadas com sucesso.</strong><div class='sub' style='margin: 6px 0 0;'>As conexÃµes foram recarregadas sem sair do sistema.</div></div>" if saved else ""}
+        {"<div class='hero'><small>Salvo</small><strong>ConfiguraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes atualizadas com sucesso.</strong><div class='sub' style='margin: 6px 0 0;'>As conexÃƒÆ’Ã‚Âµes foram recarregadas sem sair do sistema.</div></div>" if saved else ""}
         <form method="post" action="/settings">
           <div class="panel" style="margin-bottom:14px;">
-            <h2>Chave de sincronizaÃ§Ã£o</h2>
-            <p>Essa chave protege os endpoints de sync. Se vocÃª trocar aqui, os processos que usam API key precisam ser atualizados tambÃ©m.</p>
+            <h2>Chave de sincronizaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o</h2>
+            <p>Essa chave protege os endpoints de sync. Se vocÃƒÆ’Ã‚Âª trocar aqui, os processos que usam API key precisam ser atualizados tambÃƒÆ’Ã‚Â©m.</p>
             <div class="form-grid">
               <div class="field">
                 <label for="sync_api_key">SYNC API key</label>
@@ -971,18 +971,18 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
             </div>
           </div>
           <div class="form-grid">
-            {connector_block("netbox", "NetBox", "InventÃ¡rio, IPAM, VLANs, racks e dispositivos.", "https://netbox.example.local")}
+            {connector_block("netbox", "NetBox", "InventÃƒÆ’Ã‚Â¡rio, IPAM, VLANs, racks e dispositivos.", "https://netbox.example.local")}
             {connector_block("zabbix", "Zabbix", "Telemetria, eventos e SNMP.", "https://zabbix.example.local/zabbix/api_jsonrpc.php")}
-            {connector_block("glpi", "GLPI", "Chamados e histÃ³rico de atendimento.", "https://glpi.example.local/apirest.php")}
-            {connector_block("n8n", "n8n", "AutomaÃ§Ã£o e pequenas correÃ§Ãµes controladas.", "https://n8n.example.local")}
+            {connector_block("glpi", "GLPI", "Chamados e histÃƒÆ’Ã‚Â³rico de atendimento.", "https://glpi.example.local/apirest.php")}
+            {connector_block("n8n", "n8n", "AutomaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o e pequenas correÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes controladas.", "https://n8n.example.local")}
           </div>
           <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
-            <button class="btn primary" type="submit">Salvar configuraÃ§Ãµes</button>
+            <button class="btn primary" type="submit">Salvar configuraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes</button>
             <a class="btn" href="/">Voltar ao dashboard</a>
           </div>
         </form>
         <div class="foot">
-          <div>Os valores vazios mantÃªm o que jÃ¡ estÃ¡ salvo.</div>
+          <div>Os valores vazios mantÃƒÆ’Ã‚Âªm o que jÃƒÆ’Ã‚Â¡ estÃƒÆ’Ã‚Â¡ salvo.</div>
           <div>Arquivo local: {escape(str(RUNTIME_CONFIG_PATH))}</div>
         </div>
         """,
@@ -1423,6 +1423,68 @@ def _render_shell(title: str, body: str, extra_script: str = "") -> str:
       color: var(--muted);
       line-height: 1.45;
     }}
+    .inventory-kind-menu {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }}
+    .inventory-kind-item {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-2);
+      text-decoration: none;
+      color: var(--ink);
+    }}
+    .inventory-kind-item span {{
+      font-weight: 700;
+      line-height: 1.3;
+    }}
+    .inventory-kind-item strong {{
+      min-width: 28px;
+      text-align: right;
+      font-size: 14px;
+    }}
+    .inventory-kind-item.active {{
+      border-color: rgba(212, 0, 26, .7);
+      box-shadow: inset 3px 0 0 var(--accent);
+      background: rgba(212, 0, 26, .08);
+    }}
+    .detail-nav {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }}
+    .detail-nav a {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 11px 12px;
+      text-decoration: none;
+      background: var(--panel-2);
+      color: var(--ink);
+      font-weight: 700;
+    }}
+    .detail-nav small {{
+      color: var(--muted);
+      font-weight: 700;
+    }}
+    .detail-meta {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }}
+    .detail-meta .metric-card {{
+      min-height: 108px;
+    }}
     table {{
       width: 100%;
       border-collapse: collapse;
@@ -1783,7 +1845,7 @@ if (snapshot.refresh_enabled) {{
           <div class="sub">Uma visao unica do ambiente, com menus separados para operacao, inventario, IPAM, telemetria, automacao e integracoes.</div>
         </div>
           <div class="actions">
-            <a class="btn primary" href="/settings">Configurar integraÃ§Ãµes</a>
+            <a class="btn primary" href="/settings">Configurar integraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes</a>
             <a class="btn" href="/cpd">CPD</a>
             <a class="btn" href="/discovery">Varredura SNMP</a>
             <a class="btn" href="/api/overview">Snapshot</a>
@@ -1960,20 +2022,20 @@ if (snapshot.refresh_enabled) {{
         <div class="section-grid">
           <div class="panel">
             <h2>Devices</h2>
-            <p>Cadastro e ediÃ§Ã£o de equipamentos do inventÃ¡rio central.</p>
+            <p>Cadastro e ediÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o de equipamentos do inventÃƒÆ’Ã‚Â¡rio central.</p>
             <table>
-              <thead><tr><th>AÃ§Ã£o</th><th>Destino</th></tr></thead>
+              <thead><tr><th>AÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o</th><th>Destino</th></tr></thead>
               <tbody>
                 <tr><td>Listar devices</td><td><a href="/devices">/devices</a></td></tr>
-                <tr><td>Imprimir relatÃ³rio</td><td><a href="/reports">/reports</a></td></tr>
+                <tr><td>Imprimir relatÃƒÆ’Ã‚Â³rio</td><td><a href="/reports">/reports</a></td></tr>
               </tbody>
             </table>
           </div>
           <div class="panel">
             <h2>Resumo</h2>
-            <p>Dados atuais do inventÃ¡rio para apoiar a operaÃ§Ã£o.</p>
+            <p>Dados atuais do inventÃƒÆ’Ã‚Â¡rio para apoiar a operaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o.</p>
             <table>
-              <thead><tr><th>MÃ©trica</th><th>Valor</th></tr></thead>
+              <thead><tr><th>MÃƒÆ’Ã‚Â©trica</th><th>Valor</th></tr></thead>
               <tbody>
                 <tr><td>Devices</td><td>{escape(str(snapshot["cards"][0]["value"]))}</td></tr>
                 <tr><td>Interfaces</td><td>{escape(str(snapshot["cards"][3]["value"]))}</td></tr>
@@ -1988,12 +2050,12 @@ if (snapshot.refresh_enabled) {{
         <div class="section-grid">
           <div class="panel">
             <h2>VLANs</h2>
-            <p>CriaÃ§Ã£o e ediÃ§Ã£o de VLANs com acesso direto ao NetBox.</p>
+            <p>CriaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o e ediÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o de VLANs com acesso direto ao NetBox.</p>
             <a class="btn primary" href="/vlans">Abrir VLANs</a>
           </div>
           <div class="panel">
             <h2>Consumo</h2>
-            <p>VisÃ£o rÃ¡pida da segmentaÃ§Ã£o de rede.</p>
+            <p>VisÃƒÆ’Ã‚Â£o rÃƒÆ’Ã‚Â¡pida da segmentaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o de rede.</p>
             <table>
               <thead><tr><th>Indicador</th><th>Valor</th></tr></thead>
               <tbody>
@@ -2014,7 +2076,7 @@ if (snapshot.refresh_enabled) {{
           </div>
           <div class="panel">
             <h2>Blocos IP</h2>
-            <p>Consumo do espaÃ§o de endereÃ§amento do ambiente.</p>
+            <p>Consumo do espaÃƒÆ’Ã‚Â§o de endereÃƒÆ’Ã‚Â§amento do ambiente.</p>
             <table>
               <thead><tr><th>Indicador</th><th>Valor</th></tr></thead>
               <tbody>
@@ -2042,7 +2104,7 @@ if (snapshot.refresh_enabled) {{
               <thead><tr><th>Problema</th><th>Host</th></tr></thead>
               <tbody>
                 {''.join(
-                    f'<tr><td>{escape(_normalize_text(alert.get("name")) or "â€”")}</td><td>{escape(_relation_label((alert.get("hosts") or [{}])[0]) if isinstance(alert.get("hosts"), list) and alert.get("hosts") else "â€”")}</td></tr>'
+                    f'<tr><td>{escape(_normalize_text(alert.get("name")) or "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â")}</td><td>{escape(_relation_label((alert.get("hosts") or [{}])[0]) if isinstance(alert.get("hosts"), list) and alert.get("hosts") else "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â")}</td></tr>'
                     for alert in (snapshot["alerts"][:5] if isinstance(snapshot.get("alerts"), list) else [])
                 ) or '<tr><td colspan="2">Nenhum alerta aberto.</td></tr>'}
               </tbody>
@@ -2054,11 +2116,11 @@ if (snapshot.refresh_enabled) {{
       <section id="reports" class="section" data-section="reports">
         <div class="section-grid">
           <div class="panel">
-            <h2>RelatÃ³rios</h2>
-            <p>Resumo pronto para impressÃ£o ou exportaÃ§Ã£o via navegador.</p>
+            <h2>RelatÃƒÆ’Ã‚Â³rios</h2>
+            <p>Resumo pronto para impressÃƒÆ’Ã‚Â£o ou exportaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o via navegador.</p>
             <div style="display:flex; gap:10px; flex-wrap:wrap;">
-              <a class="btn primary" href="/reports">Abrir relatÃ³rio</a>
-              <button class="btn" type="button" onclick="window.print()">Imprimir pÃ¡gina</button>
+              <a class="btn primary" href="/reports">Abrir relatÃƒÆ’Ã‚Â³rio</a>
+              <button class="btn" type="button" onclick="window.print()">Imprimir pÃƒÆ’Ã‚Â¡gina</button>
             </div>
           </div>
           <div class="panel">
@@ -2188,7 +2250,7 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
       <form method="post" action="/settings">
         <div class="panel" style="margin-bottom:14px;">
           <h2>Chave de sincronizacao</h2>
-          <p>Essa chave protege os endpoints de sync. Se voce trocar aqui, os automations e integraÃ§Ãµes que usam API key precisam receber o novo valor.</p>
+          <p>Essa chave protege os endpoints de sync. Se voce trocar aqui, os automations e integraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes que usam API key precisam receber o novo valor.</p>
           <div class="form-grid">
             <div class="field">
               <label for="sync_api_key">SYNC API key</label>
@@ -2198,11 +2260,11 @@ def _render_settings(runtime: dict[str, Any], saved: bool = False) -> str:
           </div>
         </div>
         <div class="panel" style="margin-bottom:14px;">
-          <h2>AtualizaÃ§Ã£o automÃ¡tica</h2>
+          <h2>AtualizaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o automÃƒÆ’Ã‚Â¡tica</h2>
           <p>Escolha de quanto em quanto tempo o painel deve recarregar os dados vindos dos devices e dos conectores integrados.</p>
           <div class="form-grid">
             <div class="field">
-              <label for="refresh_enabled">Habilitar atualizaÃ§Ã£o automÃ¡tica</label>
+              <label for="refresh_enabled">Habilitar atualizaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o automÃƒÆ’Ã‚Â¡tica</label>
               <input id="refresh_enabled" name="refresh_enabled" type="checkbox" {"checked" if refresh["enabled"] else ""} />
             </div>
             <div class="field">
@@ -2489,7 +2551,7 @@ def _management_nav(active: str) -> str:
         ("devices", "/devices", "Devices", "Criar e editar equipamentos"),
         ("vlans", "/vlans", "VLANs", "Segmentacao e tags"),
         ("networks", "/networks", "Redes", "Prefixes e blocos IP"),
-        ("snmp", "/snmp", "SNMP", "Portas, CPU e trÃ¡fego"),
+        ("snmp", "/snmp", "SNMP", "Portas, CPU e trÃƒÆ’Ã‚Â¡fego"),
         ("alerts", "/alerts", "Alertas", "Problemas em tempo real"),
         ("reports", "/reports", "Relatorios", "Impressao e exportacao"),
         ("discovery", "/discovery", "Descoberta", "Varredura SNMP"),
@@ -2510,9 +2572,9 @@ def _relation_label(value: Any) -> str:
         related_id = value.get("id")
         if related_id is not None:
             return str(related_id)
-        return "â€”"
+        return "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â"
     text = _normalize_text(value)
-    return text or "â€”"
+    return text or "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â"
 
 
 def _status_value(value: Any, default: str = "active") -> str:
@@ -2599,7 +2661,7 @@ def _render_device_choice_options(devices: list[dict[str, Any]], selected: Any =
         value = _related_id(device.get("id"))
         label = _normalize_text(device.get("name")) or value or "-"
         site = _relation_label(device.get("site"))
-        if site and site != "â€”":
+        if site and site != "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â":
             label = f"{label} ({site})"
         current = " selected" if value and value == selected_value else ""
         options.append(f'<option value="{escape(value)}"{current}>{escape(label)}</option>')
@@ -2658,7 +2720,7 @@ def _render_management_page(
       <div class="brand">
         <div class="kicker">ECV Network Control</div>
         <h1>Rede</h1>
-        <p>Central de operaÃ§Ã£o para inventÃ¡rio, IPAM, alertas e automaÃ§Ã£o.</p>
+        <p>Central de operaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o para inventÃƒÆ’Ã‚Â¡rio, IPAM, alertas e automaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o.</p>
       </div>
       <nav class="menu">
         {_management_nav(active)}
@@ -2693,6 +2755,78 @@ def _render_table_empty(message: str, colspan: int) -> str:
     return f'<tr><td colspan="{colspan}">{escape(message)}</td></tr>'
 
 
+DEVICE_KIND_ORDER = ("all", "computers", "servers", "network", "wireless", "printers", "phones", "monitors", "other")
+DEVICE_KIND_LABELS = {
+    "all": "Todos",
+    "computers": "Computadores",
+    "servers": "Servidores",
+    "network": "Dispositivos de rede",
+    "wireless": "Wireless / APs",
+    "printers": "Impressoras",
+    "phones": "Telefonia",
+    "monitors": "Monitores",
+    "other": "Outros",
+}
+
+
+def _inventory_kind_for_device(device: dict[str, Any]) -> str:
+    name = _normalize_text(device.get("name")).lower()
+    comments = _normalize_text(device.get("comments")).lower()
+    role = _relation_label(device.get("role")).lower()
+    device_type = _relation_label(device.get("device_type")).lower()
+    manufacturer = ""
+    model = ""
+    if isinstance(device.get("device_type"), dict):
+        manufacturer = _relation_label(device.get("device_type", {}).get("manufacturer")).lower()
+        model = _normalize_text(device.get("device_type", {}).get("model")).lower()
+    text = " ".join(part for part in (name, comments, role, device_type, manufacturer, model) if part)
+    if any(token in text for token in ("notebook", "laptop", "desktop", "workstation", "pc", "computer", "computador", "windows", "macbook", "chromebook")):
+        return "computers"
+    if any(token in text for token in ("server", "hypervisor", "proxmox", "esxi", "idrac", "ilo", "qemu", "rack server", "blade", "virtual")):
+        return "servers"
+    if any(token in text for token in ("printer", "print server", "brother", "epson", "hp ethernet multi-environment")):
+        return "printers"
+    if any(token in text for token in ("phone", "voip", "sip", "grandstream", "yealink", "polycom", "softphone")):
+        return "phones"
+    if any(token in text for token in ("access point", "wireless", "ap", "gwn", "omada", "wifi")):
+        return "wireless"
+    if any(token in text for token in ("monitor",)):
+        return "monitors"
+    if any(token in text for token in ("switch", "router", "gateway", "firewall", "bridge", "uplink", "network", "mikrotik", "intelbras", "tp-link", "grandstream")):
+        return "network"
+    return "other"
+
+
+def _inventory_kind_label(kind: str) -> str:
+    return DEVICE_KIND_LABELS.get(kind, DEVICE_KIND_LABELS["other"])
+
+
+def _inventory_kind_counts(devices: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {kind: 0 for kind in DEVICE_KIND_ORDER}
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        kind = _inventory_kind_for_device(device)
+        counts[kind] = counts.get(kind, 0) + 1
+        counts["all"] += 1
+    return counts
+
+
+def _inventory_kind_menu(active_kind: str, counts: dict[str, int], search: str = "") -> str:
+    items = []
+    for kind in DEVICE_KIND_ORDER:
+        label = DEVICE_KIND_LABELS[kind]
+        count = counts.get(kind, 0)
+        active = " active" if kind == active_kind else ""
+        query = f"kind={quote(kind)}"
+        if search:
+            query += f"&q={quote(search)}"
+        items.append(
+            f'<a class="inventory-kind-item{active}" href="/devices?{query}"><span>{escape(label)}</span><strong>{count}</strong></a>'
+        )
+    return "".join(items)
+
+
 def _device_form(device: dict[str, Any] | None = None) -> str:
     device = device or {}
     custom_fields = device.get("custom_fields") if isinstance(device.get("custom_fields"), dict) else {}
@@ -2709,7 +2843,7 @@ def _device_form(device: dict[str, Any] | None = None) -> str:
     return f"""
     <div class="panel">
       <h2>{'Editar device' if device.get('id') else 'Criar device'}</h2>
-      <p>Use este formulÃ¡rio para cadastrar ou corrigir um equipamento no NetBox.</p>
+      <p>Use este formulÃƒÆ’Ã‚Â¡rio para cadastrar ou corrigir um equipamento no NetBox.</p>
       <form method="post" action="/devices/save">
         <input type="hidden" name="device_id" value="{escape(_related_id(device.get('id')))}" />
         <div class="form-grid">
@@ -2728,7 +2862,7 @@ def _device_form(device: dict[str, Any] | None = None) -> str:
         </div>
         <div class="field">
           <label>Campos personalizados</label>
-          <p>Adicione qualquer informaÃ§Ã£o extra do device. Ex.: acesso L2/L3, usuÃ¡rio, senha de apoio, VLAN de gerÃªncia ou observaÃ§Ãµes.</p>
+          <p>Adicione qualquer informaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o extra do device. Ex.: acesso L2/L3, usuÃƒÆ’Ã‚Â¡rio, senha de apoio, VLAN de gerÃƒÆ’Ã‚Âªncia ou observaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes.</p>
           {custom_rows_markup}
         </div>
         <div class="field"><label>Comments</label><input name="comments" type="text" value="{escape(_normalize_text(device.get('comments')))}" /></div>
@@ -2760,11 +2894,11 @@ def _render_device_detail_page(
         topology_rows.append(
             f"""
             <tr>
-              <td>{escape(_normalize_text(prefix.get('prefix')) if isinstance(prefix, dict) else '—')}</td>
+              <td>{escape(_normalize_text(prefix.get('prefix')) if isinstance(prefix, dict) else 'Ã¢â‚¬â€')}</td>
               <td>{escape(_normalize_text(entry.get('network_kind')) or ('VLAN' if prefix and _related_id(prefix.get('vlan')) else 'Prefixo'))}</td>
-              <td>{escape(_normalize_text(entry.get('origin_interface')) or '—')}</td>
-              <td>{escape(_normalize_text(entry.get('next_interface')) or '—')}</td>
-              <td>{escape(_normalize_text(entry.get('route_notes')) or '—')}</td>
+              <td>{escape(_normalize_text(entry.get('origin_interface')) or 'Ã¢â‚¬â€')}</td>
+              <td>{escape(_normalize_text(entry.get('next_interface')) or 'Ã¢â‚¬â€')}</td>
+              <td>{escape(_normalize_text(entry.get('route_notes')) or 'Ã¢â‚¬â€')}</td>
             </tr>
             """
         )
@@ -2775,13 +2909,13 @@ def _render_device_detail_page(
         interface_rows.append(
             f"""
             <tr>
-              <td><strong>{escape(_normalize_text(interface.get('name')) or '—')}</strong></td>
-              <td>{escape(_normalize_text(interface.get('description')) or '—')}</td>
-              <td>{escape(_relation_label(interface.get('enabled')) if isinstance(interface.get('enabled'), dict) else _normalize_text(interface.get('enabled')) or '—')}</td>
+              <td><strong>{escape(_normalize_text(interface.get('name')) or 'Ã¢â‚¬â€')}</strong></td>
+              <td>{escape(_normalize_text(interface.get('description')) or 'Ã¢â‚¬â€')}</td>
+              <td>{escape(_relation_label(interface.get('enabled')) if isinstance(interface.get('enabled'), dict) else _normalize_text(interface.get('enabled')) or 'Ã¢â‚¬â€')}</td>
               <td>{escape(_relation_label(interface.get('type')))}</td>
-              <td>{escape(_normalize_text(interface.get('mode')) or '—')}</td>
+              <td>{escape(_normalize_text(interface.get('mode')) or 'Ã¢â‚¬â€')}</td>
               <td>{escape(_relation_label(interface.get('untagged_vlan')))}</td>
-              <td>{escape(_normalize_text(interface.get('mac_address')) or '—')}</td>
+              <td>{escape(_normalize_text(interface.get('mac_address')) or 'Ã¢â‚¬â€')}</td>
             </tr>
             """
         )
@@ -2794,37 +2928,56 @@ def _render_device_detail_page(
     primary_ip = _relation_label(device.get("primary_ip4"))
     custom_fields = device.get("custom_fields") if isinstance(device.get("custom_fields"), dict) else {}
     custom_rows = "".join(
-        f"<tr><td>{escape(str(key))}</td><td>{escape(_normalize_text(value) or '—')}</td></tr>"
+        f"<tr><td>{escape(str(key))}</td><td>{escape(_normalize_text(value) or 'Ã¢â‚¬â€')}</td></tr>"
         for key, value in custom_fields.items()
     ) or _render_table_empty("Sem campos personalizados.", 2)
+    detail_nav = """
+      <div class="detail-nav">
+        <a href="#resumo"><span>Resumo</span><small>Status, site e rack</small></a>
+        <a href="#relacoes"><span>RelaÃ§Ãµes</span><small>Rotas e vÃ­nculos</small></a>
+        <a href="#interfaces"><span>Interfaces</span><small>Portas e SNMP</small></a>
+        <a href="#campos"><span>Campos</span><small>Custom fields</small></a>
+      </div>
+    """
     body = f"""
-    <div class="panels" style="grid-template-columns: 1.1fr .9fr;">
+    <div class="panels" style="grid-template-columns: 240px minmax(0, 1.2fr) minmax(360px, .9fr); align-items:start;">
+      <aside class="panel">
+        <h2>Ativo</h2>
+        <p>Menu lateral do device no estilo de inventÃ¡rio do GLPI.</p>
+        {detail_nav}
+        <div style="margin-top:14px; display:flex; flex-direction:column; gap:8px;">
+          <a class="btn" href="/devices">Voltar para ativos</a>
+          <a class="btn" href="/networks">Relacionar redes</a>
+          <a class="btn" href="/vlans">Relacionar VLANs</a>
+          <a class="btn" href="/topology">Ver topologia</a>
+        </div>
+      </aside>
       <div class="panel">
-        <h2>{escape(_normalize_text(device.get('name')) or 'Device')}</h2>
-        <p>Visão detalhada do ativo com relações para IP, rack, VLAN, interfaces e rota.</p>
-        <div class="metrics" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
-          <article class="metric-card"><div class="metric-label">Status</div><div class="metric-value" style="font-size:24px;">{escape(status)}</div><div class="metric-note">Situação atual do device no NetBox.</div></article>
-          <article class="metric-card"><div class="metric-label">Site</div><div class="metric-value" style="font-size:24px;">{escape(site)}</div><div class="metric-note">Local físico ou unidade.</div></article>
-          <article class="metric-card"><div class="metric-label">Rack</div><div class="metric-value" style="font-size:24px;">{escape(rack)}</div><div class="metric-note">Posição no rack e sala.</div></article>
-          <article class="metric-card"><div class="metric-label">Role</div><div class="metric-value" style="font-size:24px;">{escape(role)}</div><div class="metric-note">Função operacional.</div></article>
+        <h2 id="resumo">{escape(_normalize_text(device.get('name')) or 'Device')}</h2>
+        <p>VisÃ£o detalhada do ativo com relaÃ§Ãµes para IP, rack, VLAN, interfaces e rota.</p>
+        <div class="detail-meta">
+          <article class="metric-card"><div class="metric-label">Status</div><div class="metric-value" style="font-size:24px;">{escape(status)}</div><div class="metric-note">SituaÃ§Ã£o atual do device no NetBox.</div></article>
+          <article class="metric-card"><div class="metric-label">Site</div><div class="metric-value" style="font-size:24px;">{escape(site)}</div><div class="metric-note">Local fÃ­sico ou unidade.</div></article>
+          <article class="metric-card"><div class="metric-label">Rack</div><div class="metric-value" style="font-size:24px;">{escape(rack)}</div><div class="metric-note">PosiÃ§Ã£o no rack e sala.</div></article>
+          <article class="metric-card"><div class="metric-label">Role</div><div class="metric-value" style="font-size:24px;">{escape(role)}</div><div class="metric-note">FunÃ§Ã£o operacional.</div></article>
           <article class="metric-card"><div class="metric-label">Tipo</div><div class="metric-value" style="font-size:24px;">{escape(device_type)}</div><div class="metric-note">Modelo e classe do device.</div></article>
           <article class="metric-card"><div class="metric-label">IP</div><div class="metric-value" style="font-size:24px;">{escape(primary_ip)}</div><div class="metric-note">IP principal associado.</div></article>
         </div>
-        <div class="panel" style="margin-top:14px; background:#0f0f12;">
-          <h3 style="margin-top:0;">Rota e vínculos</h3>
+        <div class="panel" id="relacoes" style="margin-top:14px; background:#0f0f12;">
+          <h3 style="margin-top:0;">Rota e vÃ­nculos</h3>
           <table>
-            <thead><tr><th>Prefixo</th><th>Tipo</th><th>Origem</th><th>Destino</th><th>Observação</th></tr></thead>
+            <thead><tr><th>Prefixo</th><th>Tipo</th><th>Origem</th><th>Destino</th><th>ObservaÃ§Ã£o</th></tr></thead>
             <tbody>{''.join(topology_rows) if topology_rows else _render_table_empty('Nenhuma rota vinculada a este device.', 5)}</tbody>
           </table>
         </div>
-        <div class="panel" style="margin-top:14px; background:#0f0f12;">
+        <div class="panel" id="interfaces" style="margin-top:14px; background:#0f0f12;">
           <h3 style="margin-top:0;">Interfaces</h3>
           <table>
-            <thead><tr><th>Nome</th><th>Descrição</th><th>Ativa</th><th>Tipo</th><th>Modo</th><th>VLAN</th><th>MAC</th></tr></thead>
+            <thead><tr><th>Nome</th><th>DescriÃ§Ã£o</th><th>Ativa</th><th>Tipo</th><th>Modo</th><th>VLAN</th><th>MAC</th></tr></thead>
             <tbody>{''.join(interface_rows) if interface_rows else _render_table_empty('Nenhuma interface encontrada.', 7)}</tbody>
           </table>
         </div>
-        <div class="panel" style="margin-top:14px; background:#0f0f12;">
+        <div class="panel" id="campos" style="margin-top:14px; background:#0f0f12;">
           <h3 style="margin-top:0;">Campos personalizados</h3>
           <table>
             <thead><tr><th>Campo</th><th>Valor</th></tr></thead>
@@ -2844,12 +2997,134 @@ def _render_device_detail_page(
         title=f"{escape(_normalize_text(device.get('name')) or 'Device')} | infra-sync-api",
         active="devices",
         heading=_normalize_text(device.get("name")) or "Device",
-        subtitle="Detalhe do device com relações, interfaces e edição centralizada.",
+        subtitle="Detalhe do device com relaÃ§Ãµes, interfaces e ediÃ§Ã£o centralizada.",
         actions='<a class="btn" href="/devices">Lista de devices</a><a class="btn" href="/networks">Redes</a><a class="btn" href="/vlans">VLANs</a><a class="btn" href="/topology">Topologia</a>',
         banner=banner,
         body=body,
     )
 
+
+@app.get("/devices", include_in_schema=False)
+async def devices_page(request: Request, saved: int = 0, error: str | None = None, edit: int | None = None):
+    client = request.app.state.netbox_client
+    devices: list[dict[str, Any]] = []
+    edit_device: dict[str, Any] | None = None
+    page_error = error
+    active_kind = _query_value(request, "kind", "all") or "all"
+    search = _query_value(request, "q")
+    try:
+        if client is not None:
+            params: dict[str, Any] = {"limit": 100}
+            if search:
+                params["q"] = search
+            devices = await client.list_devices(params=params)
+            if edit is not None:
+                edit_device = await client.get_device(edit)
+    except Exception as exc:
+        page_error = str(exc)
+
+    inventory_counts = _inventory_kind_counts(devices)
+    if active_kind not in inventory_counts:
+        active_kind = "all"
+    filtered_devices = [
+        device for device in devices
+        if active_kind == "all" or _inventory_kind_for_device(device) == active_kind
+    ]
+
+    rows = []
+    for device in filtered_devices:
+        device_type = device.get("device_type") if isinstance(device.get("device_type"), dict) else {}
+        manufacturer = _relation_label(device_type.get("manufacturer")) if isinstance(device_type, dict) else "?"
+        model = _normalize_text(device_type.get("model")) if isinstance(device_type, dict) else _relation_label(device.get("device_type"))
+        kind = _inventory_kind_label(_inventory_kind_for_device(device))
+        rows.append(
+            f"""
+            <tr>
+              <td><a href="/devices/view/{escape(_related_id(device.get('id')))}"><strong>{escape(_normalize_text(device.get('name')) or '?')}</strong></a></td>
+              <td><span class="pill muted">{escape(kind)}</span></td>
+              <td>{escape(_relation_label(device.get('status')))}</td>
+              <td>{escape(manufacturer or '?')}</td>
+              <td>{escape(model or '?')}</td>
+              <td>{escape(_relation_label(device.get('site')))}</td>
+              <td>{escape(_relation_label(device.get('rack')))}</td>
+              <td>{escape(_relation_label(device.get('primary_ip4')))}</td>
+              <td><a href="/devices/view/{escape(_related_id(device.get('id')))}">Detalhe</a> | <a href="/devices?edit={escape(_related_id(device.get('id')))}&kind={escape(active_kind)}">Editar</a></td>
+            </tr>
+            """
+        )
+
+    banner = ""
+    if saved:
+        banner = "<div class='hero'><small>Salvo</small><strong>Device atualizado com sucesso.</strong></div>"
+    if page_error:
+        banner = f"<div class='hero'><small>Erro</small><strong>{escape(page_error)}</strong></div>"
+
+    kind_menu = _inventory_kind_menu(active_kind, inventory_counts, search)
+    body = f"""
+    <div class="panels" style="grid-template-columns: 280px minmax(0, 1.15fr) minmax(360px, .9fr); align-items:start;">
+      <div class="panel">
+        <h2>Ativos</h2>
+        <p>Menu de inventÃ¡rio por tipo, semelhante ao GLPI.</p>
+        <div class="inventory-kind-menu">{kind_menu}</div>
+        <div class="inventory-summary" style="margin-top:14px;">
+          <div class="metric-card" style="min-height:92px;"><div class="metric-label">Total</div><div class="metric-value" style="font-size:28px;">{len(devices)}</div><div class="metric-note">Devices cadastrados e carregados do NetBox.</div></div>
+          <div class="metric-card" style="min-height:92px; margin-top:12px;"><div class="metric-label">Filtro atual</div><div class="metric-value" style="font-size:24px;">{escape(_inventory_kind_label(active_kind))}</div><div class="metric-note">Clique em um tipo para listar os ativos correspondentes.</div></div>
+        </div>
+        <div style="margin-top:14px;">
+          <a class="btn" href="/devices">Todos os ativos</a>
+          <a class="btn" style="margin-top:8px; display:inline-flex;" href="/topology">Topologia</a>
+        </div>
+      </div>
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-end; margin-bottom:12px; flex-wrap:wrap;">
+          <div>
+            <h2 style="margin-bottom:6px;">{escape(_inventory_kind_label(active_kind))}</h2>
+            <p style="margin:0; color:var(--muted);">{len(filtered_devices)} device(s) nesta categoria.</p>
+            <p style="margin:6px 0 0; color:var(--muted);">Devices cadastrados | Leitura SNMP | ediÃ§Ã£o centralizada.</p>
+          </div>
+          <form method="get" action="/devices" style="display:flex; gap:8px; align-items:end; flex-wrap:wrap; margin:0;">
+            <input type="hidden" name="kind" value="{escape(active_kind)}" />
+            <div class="field" style="margin:0; min-width:260px;"><label for="q">Pesquisar</label><input id="q" name="q" type="text" value="{escape(search)}" placeholder="Nome, IP, modelo..." /></div>
+            <button class="btn primary" type="submit">Pesquisar</button>
+          </form>
+        </div>
+        <table>
+          <thead><tr><th>Nome</th><th>Tipo</th><th>Status</th><th>Fabricante</th><th>Modelo</th><th>Site</th><th>Rack</th><th>IP</th><th>AÃ§Ãµes</th></tr></thead>
+          <tbody>{''.join(rows) if rows else _render_table_empty('Nenhum device encontrado nesta categoria.', 9)}</tbody>
+        </table>
+      </div>
+      {_device_form(edit_device)}
+    </div>
+    """
+    return HTMLResponse(
+        _render_management_page(
+            title="Assets | infra-sync-api",
+            active="devices",
+            heading="Ativos",
+            subtitle="Lista e detalhe dos equipamentos com navegaÃ§Ã£o por tipo, como no GLPI.",
+            actions=f'<a class="btn" href="/">Dashboard</a><a class="btn" href="/snmp">Leitura SNMP</a><a class="btn" href="/reports">Imprimir relatÃ³rio</a>',
+            body=body,
+            banner=banner,
+        )
+    )
+
+
+@app.get("/devices/view/{device_id}", include_in_schema=False)
+async def device_detail_page(request: Request, device_id: int, saved: int = 0, error: str | None = None):
+    client = request.app.state.netbox_client
+    device: dict[str, Any] = {}
+    interfaces: list[dict[str, Any]] = []
+    prefixes: list[dict[str, Any]] = []
+    topology_state = load_network_topology()
+    page_error = error
+    try:
+        if client is not None:
+            device = await client.get_device(device_id)
+            interfaces = await client.list_interfaces(params={"device_id": device_id, "limit": 100})
+            prefixes = await client.list_prefixes(params={"limit": 100})
+    except Exception as exc:
+        page_error = str(exc)
+    return HTMLResponse(_render_device_detail_page(device, interfaces, prefixes, topology_state, saved=bool(saved), error=page_error))
 
 def _vlan_form(vlan: dict[str, Any] | None = None) -> str:
     vlan = vlan or {}
