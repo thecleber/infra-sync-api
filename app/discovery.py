@@ -102,7 +102,7 @@ async def scan_network(
     *,
     timeout: float = 1.0,
     retries: int = 0,
-    max_hosts: int = 128,
+    max_hosts: int = 1024,
     concurrency: int = 32,
 ) -> dict[str, Any]:
     net = ipaddress.ip_network(network.strip(), strict=False)

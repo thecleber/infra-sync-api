@@ -2268,7 +2268,7 @@ async def discovery_scan(request: Request):
     community = form.get("community", "public").strip() or "public"
     timeout = float(form.get("timeout", "1.0") or "1.0")
     retries = int(form.get("retries", "0") or "0")
-    max_hosts = int(form.get("max_hosts", "128") or "128")
+    max_hosts = int(form.get("max_hosts", "1024") or "1024")
     try:
         payload = await scan_network(network, community, timeout=timeout, retries=retries, max_hosts=max_hosts)
         return HTMLResponse(_render_discovery_page(payload, saved=True))
@@ -2434,6 +2434,10 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             <div class="field">
               <label for="retries">Retries</label>
               <input id="retries" name="retries" type="text" value="0" />
+            </div>
+            <div class="field">
+              <label for="max_hosts">Limite de hosts</label>
+              <input id="max_hosts" name="max_hosts" type="text" value="1024" />
             </div>
           </div>
           <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">

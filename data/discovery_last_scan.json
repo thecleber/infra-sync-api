@@ -1,7 +1,7 @@
 {
   "network": "10.0.0.0/24",
-  "count": 23,
-  "scanned_at": "2026-08-04T15:17:28.410587+00:00",
+  "count": 24,
+  "scanned_at": "2026-08-04T15:27:51.667272+00:00",
   "devices": [
     {
       "ip": "10.0.0.1",
@@ -140,6 +140,23 @@
       "notes": "Matched switches/wireless via Grandstream GWN7803 wireless_ap"
     },
     {
+      "ip": "10.0.0.28",
+      "reachable": true,
+      "manufacturer": "Generico",
+      "model": "SW-16-PORTARIA BASE-CFTV",
+      "device_type": "switch",
+      "sys_descr": "Omada 10-Port Gigabit Smart Switch with 8-Port PoE+",
+      "sys_name": "SW-16-PORTARIA BASE-CFTV",
+      "sys_object_id": "SNMPv2-SMI::enterprises.11863.5.158",
+      "if_number": "11",
+      "hr_memory_size": "No Such Object currently exists at this OID",
+      "ucd_load_1": "No Such Object currently exists at this OID",
+      "group": "switches",
+      "subgroup": "access",
+      "include": true,
+      "notes": "Matched switches/access via Generico SW-16-PORTARIA BASE-CFTV switch"
+    },
+    {
       "ip": "10.0.0.29",
       "reachable": true,
       "manufacturer": "Intelbras",
@@ -269,7 +286,7 @@
       "sys_object_id": "SNMPv2-SMI::enterprises.8072.3.2.10",
       "if_number": "14",
       "hr_memory_size": "492452",
-      "ucd_load_1": "3.00",
+      "ucd_load_1": "3.01",
       "group": "hosts",
       "subgroup": "fixed",
       "include": true,
@@ -286,7 +303,7 @@
       "sys_object_id": "SNMPv2-SMI::enterprises.8072.3.2.10",
       "if_number": "28",
       "hr_memory_size": "887892",
-      "ucd_load_1": "3.05",
+      "ucd_load_1": "3.08",
       "group": "switches",
       "subgroup": "wireless",
       "include": true,
