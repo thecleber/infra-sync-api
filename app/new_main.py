@@ -2789,6 +2789,15 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
     <script>
       const discoveryForm = document.getElementById('discovery-scan-form');
       const discoveryButton = document.getElementById('discovery-scan-button');
+      const discoveryScanOverlay = document.getElementById('discovery-scan-overlay');
+      const discoveryScanModal = document.getElementById('discovery-scan-modal');
+      const discoveryScanModalText = document.getElementById('discovery-scan-modal-text');
+      const discoveryScanModalOk = document.getElementById('discovery-scan-modal-ok');
+      const discoveryScanModalCount = document.getElementById('discovery-scan-modal-count');
+      const discoveryScanModalAlive = document.getElementById('discovery-scan-modal-alive');
+      const discoveryScanModalFound = document.getElementById('discovery-scan-modal-found');
+      const discoveryScanModalPercent = document.getElementById('discovery-scan-modal-percent');
+      const discoveryScanModalBar = document.getElementById('discovery-scan-modal-bar');
       const discoverySaveOverlay = document.getElementById('discovery-save-overlay');
       const discoverySaveModal = document.getElementById('discovery-save-modal');
       const discoverySaveModalText = document.getElementById('discovery-save-modal-text');
@@ -2808,6 +2817,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       let lastAlive = 0;
       let lastFound = 0;
       let saveBusy = false;
+      let scanBusy = false;
 
       function resetProgressMemory(scanId) {
         activeScanId = scanId || '';
@@ -2837,6 +2847,21 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         progressCount.textContent = `${safeProcessed} / ${Number(data?.total_hosts || 0)} hosts`;
         progressAlive.textContent = `${safeAlive} hosts vivos`;
         progressFound.textContent = `${safeFound} devices encontrados`;
+        if (discoveryScanModalCount) {
+          discoveryScanModalCount.textContent = `${safeProcessed} / ${Number(data?.total_hosts || 0)}`;
+        }
+        if (discoveryScanModalAlive) {
+          discoveryScanModalAlive.textContent = String(safeAlive);
+        }
+        if (discoveryScanModalFound) {
+          discoveryScanModalFound.textContent = String(safeFound);
+        }
+        if (discoveryScanModalPercent) {
+          discoveryScanModalPercent.textContent = `${safePercentage}%`;
+        }
+        if (discoveryScanModalBar) {
+          discoveryScanModalBar.style.width = `${safePercentage}%`;
+        }
         progressLabel.textContent = status === 'running'
           ? 'Varredura em andamento'
           : status === 'completed'
@@ -2844,6 +2869,9 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             : status === 'failed'
               ? 'Falha na varredura'
               : 'Pronto para iniciar';
+        if (discoveryScanModalText && status === 'running') {
+          discoveryScanModalText.textContent = `${progressLabel.textContent}: ${data?.message || 'Processando hosts na rede.'}`;
+        }
         progressBar.style.background = status === 'failed'
           ? 'linear-gradient(90deg, #991b1b, #ef4444)'
           : 'linear-gradient(90deg, #b91c1c, #ef4444)';
@@ -2891,6 +2919,45 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         }
       }
 
+      function openScanOverlay(message) {
+        scanBusy = true;
+        if (discoveryScanOverlay) {
+          discoveryScanOverlay.style.display = 'flex';
+        }
+        if (discoveryScanModal) {
+          discoveryScanModal.style.display = 'block';
+        }
+        if (discoveryScanModalOk) {
+          discoveryScanModalOk.style.display = 'none';
+        }
+        if (discoveryScanModalText) {
+          discoveryScanModalText.textContent = message || 'Iniciando varredura...';
+        }
+      }
+
+      function closeScanOverlay() {
+        scanBusy = false;
+        if (discoveryScanOverlay) {
+          discoveryScanOverlay.style.display = 'none';
+        }
+      }
+
+      function showScanSuccess(message) {
+        scanBusy = false;
+        if (discoveryScanModalText) {
+          discoveryScanModalText.textContent = message || 'Varredura concluida com sucesso.';
+        }
+        if (discoveryScanOverlay) {
+          discoveryScanOverlay.style.display = 'flex';
+        }
+        if (discoveryScanModal) {
+          discoveryScanModal.style.display = 'block';
+        }
+        if (discoveryScanModalOk) {
+          discoveryScanModalOk.style.display = 'inline-flex';
+        }
+      }
+
       function getIncludeCheckboxes() {
         return Array.from(document.querySelectorAll('input[type="checkbox"][name^="include_"]'));
       }
@@ -2933,10 +3000,14 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
 
       async function submitDiscoveryScan(event) {
         event.preventDefault();
+        if (scanBusy) {
+          return;
+        }
         if (progressTimer) {
           clearInterval(progressTimer);
           progressTimer = null;
         }
+        openScanOverlay('Iniciando varredura SNMP...');
         discoveryButton.disabled = true;
         discoveryButton.textContent = 'Executando...';
         resetProgressMemory('');
@@ -2953,15 +3024,17 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
           });
           const html = await response.text();
           if (!response.ok) {
+            closeScanOverlay();
             document.open();
             document.write(html);
             document.close();
             return;
           }
           await refreshProgress();
-          window.location.reload();
+          showScanSuccess('Varredura concluida com sucesso.');
         } catch (error) {
           console.error('Falha ao executar varredura', error);
+          closeScanOverlay();
         } finally {
           if (progressTimer) {
             clearInterval(progressTimer);
@@ -3012,6 +3085,12 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         discoverySaveModalOk.addEventListener('click', () => {
           closeSaveOverlay();
           window.location.href = '/discovery?saved=1';
+        });
+      }
+      if (discoveryScanModalOk) {
+        discoveryScanModalOk.addEventListener('click', () => {
+          closeScanOverlay();
+          window.location.reload();
         });
       }
       if (toggleAllInclude) {
@@ -3123,6 +3202,39 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
           <span id="discovery-progress-count">{progress_processed} / {progress_total} hosts</span>
           <span id="discovery-progress-alive">{progress_alive} hosts vivos</span>
           <span id="discovery-progress-found">{progress_found} devices encontrados</span>
+        </div>
+      </div>
+      <div id="discovery-scan-overlay" style="display:none; position:fixed; inset:0; z-index:1000; align-items:center; justify-content:center; background:rgba(2,6,23,.82); backdrop-filter:blur(6px); padding:24px;">
+        <div id="discovery-scan-modal" style="width:min(560px, 100%); border-radius:18px; border:1px solid rgba(255,255,255,.10); background:#111317; box-shadow:0 30px 80px rgba(0,0,0,.45); padding:22px;">
+          <div style="display:flex; align-items:center; gap:14px;">
+            <div style="width:18px; height:18px; border-radius:999px; border:3px solid rgba(239,68,68,.25); border-top-color:#ef4444; animation:spin 1s linear infinite;"></div>
+            <strong style="font-size:18px; color:#fff;">Varredura SNMP em andamento</strong>
+          </div>
+          <p id="discovery-scan-modal-text" style="margin:14px 0 16px; color:#d1d5db; line-height:1.5;">Iniciando varredura SNMP...</p>
+          <div style="display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:10px; margin-bottom:16px;">
+            <div style="border-radius:14px; border:1px solid rgba(255,255,255,.08); background:#0f1115; padding:12px;">
+              <div style="font-size:11px; color:#9ca3af; text-transform:uppercase;">Hosts</div>
+              <strong id="discovery-scan-modal-count" style="font-size:20px; color:#fff;">0 / 0</strong>
+            </div>
+            <div style="border-radius:14px; border:1px solid rgba(255,255,255,.08); background:#0f1115; padding:12px;">
+              <div style="font-size:11px; color:#9ca3af; text-transform:uppercase;">Vivos</div>
+              <strong id="discovery-scan-modal-alive" style="font-size:20px; color:#fff;">0</strong>
+            </div>
+            <div style="border-radius:14px; border:1px solid rgba(255,255,255,.08); background:#0f1115; padding:12px;">
+              <div style="font-size:11px; color:#9ca3af; text-transform:uppercase;">Devices</div>
+              <strong id="discovery-scan-modal-found" style="font-size:20px; color:#fff;">0</strong>
+            </div>
+            <div style="border-radius:14px; border:1px solid rgba(255,255,255,.08); background:#0f1115; padding:12px;">
+              <div style="font-size:11px; color:#9ca3af; text-transform:uppercase;">Progresso</div>
+              <strong id="discovery-scan-modal-percent" style="font-size:20px; color:#fff;">0%</strong>
+            </div>
+          </div>
+          <div style="height:14px; border-radius:999px; background:#1f2937; overflow:hidden; border:1px solid rgba(255,255,255,0.08);">
+            <div id="discovery-scan-modal-bar" style="height:100%; width:0%; background:linear-gradient(90deg, #b91c1c, #ef4444); transition:width .25s ease;"></div>
+          </div>
+          <div style="display:flex; justify-content:flex-end; margin-top:18px;">
+            <button id="discovery-scan-modal-ok" type="button" class="btn primary" style="display:none;">OK</button>
+          </div>
         </div>
       </div>
       <div id="results" class="panel">

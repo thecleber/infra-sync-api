@@ -496,6 +496,9 @@ def test_discovery_page_renders(monkeypatch):
     assert "Status sistema" in response.text
     assert "Marcar / desmarcar todos" in response.text
     assert "MAC" in response.text
+    assert "discovery-scan-overlay" in response.text
+    assert "discovery-scan-modal" in response.text
+    assert "Varredura SNMP em andamento" in response.text
     assert "discovery-save-form" in response.text
     assert "Salvando classificacao" in response.text
     assert "Classificacao salva com sucesso" in response.text
