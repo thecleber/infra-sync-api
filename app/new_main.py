@@ -2672,7 +2672,7 @@ async def _lookup_discovery_netbox_device(client: NetBoxClient | None, ip: str, 
 def _discovery_device_status(device: dict[str, Any], existing: dict[str, Any] | None) -> tuple[str, str]:
     if existing is not None:
         name = _normalize_text(existing.get("name")) or _normalize_text(existing.get("display_name")) or _discovery_device_label(device)
-        return "Já cadastrado", f"Encontrado no inventário como {name}"
+        return "Cadastrado", f"Encontrado no inventário como {name}"
     if device.get("include") is False:
         return "Novo", "Ainda não cadastrado no inventário"
     return "Novo", "Pronto para criar no inventário"
@@ -3129,7 +3129,7 @@ def _status_value(value: Any, default: str = "active") -> str:
 
 def _render_status_badge(label: str, title: str = "") -> str:
     normalized = _normalize_text(label).lower()
-    if normalized in {"já cadastrado", "ja cadastrado"}:
+    if normalized in {"cadastrado"}:
         color = "#16a34a"
     elif normalized in {"atualizado"}:
         color = "#7c3aed"
