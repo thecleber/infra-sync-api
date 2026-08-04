@@ -429,6 +429,10 @@ def test_discovery_page_renders(monkeypatch):
     assert "Status sistema" in response.text
     assert "Marcar / desmarcar todos" in response.text
     assert "MAC" in response.text
+    assert "discovery-save-form" in response.text
+    assert "Salvando classificacao" in response.text
+    assert "Classificacao salva com sucesso" in response.text
+    assert "OK" in response.text
     assert "5 de 254 hosts processados" in response.text
     assert "227 hosts vivos" in response.text
     assert "Salvar classificacao" in response.text

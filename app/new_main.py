@@ -2786,6 +2786,10 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
     <script>
       const discoveryForm = document.getElementById('discovery-scan-form');
       const discoveryButton = document.getElementById('discovery-scan-button');
+      const discoverySaveOverlay = document.getElementById('discovery-save-overlay');
+      const discoverySaveModal = document.getElementById('discovery-save-modal');
+      const discoverySaveModalText = document.getElementById('discovery-save-modal-text');
+      const discoverySaveModalOk = document.getElementById('discovery-save-modal-ok');
       const progressBar = document.getElementById('discovery-progress-bar');
       const progressMessage = document.getElementById('discovery-progress-message');
       const progressLabel = document.getElementById('discovery-progress-label');
@@ -2800,6 +2804,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       let lastProcessed = 0;
       let lastAlive = 0;
       let lastFound = 0;
+      let saveBusy = false;
 
       function resetProgressMemory(scanId) {
         activeScanId = scanId || '';
@@ -2844,6 +2849,42 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
           lastProcessed = safeProcessed;
           lastAlive = safeAlive;
           lastFound = safeFound;
+        }
+      }
+
+      function openSaveOverlay(message) {
+        saveBusy = true;
+        if (discoverySaveOverlay) {
+          discoverySaveOverlay.style.display = 'flex';
+        }
+        if (discoverySaveModal) {
+          discoverySaveModal.style.display = 'none';
+        }
+        if (discoverySaveModalText) {
+          discoverySaveModalText.textContent = message || 'Salvando classificacao...';
+        }
+      }
+
+      function closeSaveOverlay() {
+        saveBusy = false;
+        if (discoverySaveOverlay) {
+          discoverySaveOverlay.style.display = 'none';
+        }
+      }
+
+      function showSaveSuccess(message) {
+        saveBusy = false;
+        if (discoverySaveModalText) {
+          discoverySaveModalText.textContent = message || 'Classificacao salva com sucesso.';
+        }
+        if (discoverySaveOverlay) {
+          discoverySaveOverlay.style.display = 'flex';
+        }
+        if (discoverySaveModal) {
+          discoverySaveModal.style.display = 'block';
+        }
+        if (discoverySaveModalOk) {
+          discoverySaveModalOk.style.display = 'inline-flex';
         }
       }
 
@@ -2928,8 +2969,47 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         }
       }
 
+      async function submitDiscoverySave(event) {
+        event.preventDefault();
+        if (saveBusy) {
+          return;
+        }
+        openSaveOverlay('Salvando classificacao...');
+        try {
+          const formData = new URLSearchParams(new FormData(discoverySaveForm));
+          const response = await fetch(discoverySaveForm.action, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: formData.toString(),
+          });
+          const html = await response.text();
+          if (!response.ok) {
+            closeSaveOverlay();
+            document.open();
+            document.write(html);
+            document.close();
+            return;
+          }
+          showSaveSuccess('Classificacao salva com sucesso.');
+        } catch (error) {
+          console.error('Falha ao salvar classificacao', error);
+          closeSaveOverlay();
+          return;
+        }
+      }
+
       if (discoveryForm) {
         discoveryForm.addEventListener('submit', submitDiscoveryScan);
+      }
+      const discoverySaveForm = document.getElementById('discovery-save-form');
+      if (discoverySaveForm) {
+        discoverySaveForm.addEventListener('submit', submitDiscoverySave);
+      }
+      if (discoverySaveModalOk) {
+        discoverySaveModalOk.addEventListener('click', () => {
+          closeSaveOverlay();
+          window.location.href = '/discovery?saved=1';
+        });
       }
       if (toggleAllInclude) {
         toggleAllInclude.addEventListener('change', () => {
@@ -3045,7 +3125,20 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       <div id="results" class="panel">
         <h2>Resultados</h2>
         <p>{escape(str(len(devices)))} itens encontrados para enriquecer o inventario (ARP/Nmap + SNMP).</p>
-        <form method="post" action="/discovery/save">
+        <form id="discovery-save-form" method="post" action="/discovery/save">
+          <div id="discovery-save-overlay" style="display:none; position:fixed; inset:0; z-index:1000; align-items:center; justify-content:center; background:rgba(2,6,23,.82); backdrop-filter:blur(6px); padding:24px;">
+            <style>@keyframes spin {{ to {{ transform: rotate(360deg); }} }}</style>
+            <div id="discovery-save-modal" style="display:none; width:min(460px, 100%); border-radius:18px; border:1px solid rgba(255,255,255,.10); background:#111317; box-shadow:0 30px 80px rgba(0,0,0,.45); padding:22px;">
+              <div style="display:flex; align-items:center; gap:14px;">
+                <div style="width:18px; height:18px; border-radius:999px; border:3px solid rgba(239,68,68,.25); border-top-color:#ef4444; animation:spin 1s linear infinite;"></div>
+                <strong style="font-size:18px; color:#fff;">Salvamento em andamento</strong>
+              </div>
+              <p id="discovery-save-modal-text" style="margin:14px 0 18px; color:#d1d5db; line-height:1.5;">Salvando classificacao...</p>
+              <div style="display:flex; justify-content:flex-end;">
+                <button id="discovery-save-modal-ok" type="button" class="btn primary" style="display:none;">OK</button>
+              </div>
+            </div>
+          </div>
           <input type="hidden" name="network" value="{escape(state.get("network") or "")}" />
           <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
             <label class="check" style="margin:0;">
