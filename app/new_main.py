@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from . import __version__
 from .config import Settings, get_settings
 from .email_notifications import EmailNotificationError, normalize_email_config, send_alert_email
-from .discovery import classify_discovered_device, load_last_scan, save_group_selections, scan_network
+from .discovery import classify_discovered_device, load_last_scan, save_group_selections, save_last_scan, scan_network
 from .models import SyncDeviceRequest, ZabbixHostSyncRequest
 from .netbox_client import NetBoxClient, NetBoxClientError
 from .snmp_probe import load_last_probe, probe_device as probe_snmp_device

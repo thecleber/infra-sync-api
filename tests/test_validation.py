@@ -301,6 +301,57 @@ def test_discovery_page_renders(monkeypatch):
     assert 'value="4096"' in response.text
 
 
+def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+
+    saved_payloads = {}
+    monkeypatch.setattr(
+        new_main,
+        "load_last_scan",
+        lambda: {
+            "network": "10.0.0.0/24",
+            "scanned_at": "2026-08-04T00:00:00Z",
+            "devices": [
+                {
+                    "ip": "10.0.0.24",
+                    "sys_name": "SW-ACCESS-LAN",
+                    "manufacturer": "Intelbras",
+                    "model": "SF 2400 QR+",
+                    "device_type": "switch",
+                    "sys_descr": "Switch Gerenciavel Generico",
+                    "group": "switches",
+                    "subgroup": "access",
+                    "include": True,
+                    "sys_object_id": "1.3.6.1.4.1.26138",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(new_main, "save_group_selections", lambda payload: saved_payloads.__setitem__("groups", payload))
+    monkeypatch.setattr(new_main, "save_last_scan", lambda payload: saved_payloads.__setitem__("scan", payload))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/discovery/save",
+            data={
+                "include_10_0_0_24": "on",
+                "group_10_0_0_24": "switches",
+                "subgroup_10_0_0_24": "access",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200
+    assert "Classificacao gravada com sucesso" in response.text
+    assert saved_payloads["groups"]["count"] == 1
+    assert saved_payloads["scan"]["devices"][0]["include"] is True
+
+
 def test_management_pages_render(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
