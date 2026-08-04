@@ -202,9 +202,10 @@ async def test_sync_device_updates_existing_device_by_id(monkeypatch):
         "comments": "updated from scan",
         "custom_fields": {"zabbix_hostid": "10917"},
     })
+    update_interface_mock = AsyncMock(return_value={"id": 501, "name": "mgmt0", "mac_address": "AA:BB:CC:DD:EE:FF"})
     monkeypatch.setattr(NetBoxClient, "update_device", update_device_mock)
     monkeypatch.setattr(NetBoxClient, "find_interface", AsyncMock(return_value={"id": 501, "name": "mgmt0", "mac_address": "00:11:22:33:44:55"}))
-    monkeypatch.setattr(NetBoxClient, "update_interface", AsyncMock(return_value={"id": 501, "name": "mgmt0", "mac_address": "AA:BB:CC:DD:EE:FF"}))
+    monkeypatch.setattr(NetBoxClient, "update_interface", update_interface_mock)
     monkeypatch.setattr(NetBoxClient, "find_ip_address", AsyncMock(return_value={"id": 701, "address": "10.0.0.24/32", "assigned_object_type": "dcim.interface", "assigned_object_id": 501}))
     monkeypatch.setattr(NetBoxClient, "update_ip_address", AsyncMock(return_value={"id": 701, "address": "10.0.0.24/32", "assigned_object_type": "dcim.interface", "assigned_object_id": 501}))
     monkeypatch.setattr(NetBoxClient, "get_site", AsyncMock(return_value={"id": 1}))
@@ -231,6 +232,7 @@ async def test_sync_device_updates_existing_device_by_id(monkeypatch):
     assert outcome.action == "updated"
     assert outcome.device_id == 101
     assert update_device_mock.await_count >= 1
+    assert update_interface_mock.await_args.args[1] == {"primary_mac_address": {"mac_address": "AA:BB:CC:DD:EE:FF"}}
     assert client.get_device is not None
 
 
@@ -293,6 +295,7 @@ async def test_sync_device_continues_interface_mac_update_when_device_patch_fail
 
     assert outcome.success is True
     assert update_interface_mock.await_count == 1
+    assert update_interface_mock.await_args.args[1] == {"primary_mac_address": {"mac_address": "80:85:44:00:7B:92"}}
     assert any("Device update skipped" in warning for warning in outcome.warnings)
 
 

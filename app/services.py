@@ -245,20 +245,26 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
             "type": "virtual",
             "enabled": True,
         }
-        if payload.mac_address:
-            interface_payload["mac_address"] = payload.mac_address
         interface = await _create_or_refetch(
             lambda: client.create_interface(interface_payload),
             lambda: client.find_interface(device["id"], "mgmt0"),
         )
         created_interface = True
+        if payload.mac_address:
+            interface = await client.update_interface(
+                interface["id"],
+                {"primary_mac_address": {"mac_address": payload.mac_address}},
+            )
     elif interface is None:
         warnings.append("Interface mgmt0 would be created.")
     elif payload.mac_address and not dry_run:
-        current_mac = str(interface.get("mac_address") or "").strip().upper()
+        current_mac = _interface_primary_mac(interface)
         desired_mac = str(payload.mac_address).strip().upper()
         if current_mac != desired_mac:
-            interface = await client.update_interface(interface["id"], {"mac_address": desired_mac})
+            interface = await client.update_interface(
+                interface["id"],
+                {"primary_mac_address": {"mac_address": desired_mac}},
+            )
     elif payload.mac_address:
         warnings.append("Interface mgmt0 would receive the discovered MAC address.")
 
@@ -351,6 +357,27 @@ async def _find_device_type(client: NetBoxClient, model: str, manufacturer_id: i
         if candidate_manufacturer_id == manufacturer_id and candidate.get("model") == model:
             return candidate
     return None
+
+
+def _interface_primary_mac(interface: dict[str, Any] | None) -> str:
+    if not isinstance(interface, dict):
+        return ""
+    primary = interface.get("primary_mac_address")
+    if isinstance(primary, dict):
+        mac = str(primary.get("mac_address") or "").strip().upper()
+        if mac:
+            return mac
+    direct = str(interface.get("mac_address") or "").strip().upper()
+    if direct:
+        return direct
+    mac_addresses = interface.get("mac_addresses")
+    if isinstance(mac_addresses, list):
+        for entry in mac_addresses:
+            if isinstance(entry, dict):
+                mac = str(entry.get("mac_address") or "").strip().upper()
+                if mac:
+                    return mac
+    return ""
 
 
 async def _create_or_refetch(create_fn, refetch_fn):
