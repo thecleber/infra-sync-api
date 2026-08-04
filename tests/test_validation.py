@@ -9,7 +9,7 @@ from app.main import app
 from app import discovery as discovery_module
 from app.discovery import DiscoveredDevice, classify_discovered_device, scan_network
 from app.models import SyncDeviceRequest
-from app.netbox_client import NetBoxClient
+from app.netbox_client import NetBoxClient, NetBoxClientError
 from app.services import SyncOutcome, sync_device
 from app.zabbix_client import ZabbixClient
 
@@ -232,6 +232,68 @@ async def test_sync_device_updates_existing_device_by_id(monkeypatch):
     assert outcome.device_id == 101
     assert update_device_mock.await_count >= 1
     assert client.get_device is not None
+
+
+@pytest.mark.anyio
+async def test_sync_device_continues_interface_mac_update_when_device_patch_fails(monkeypatch):
+    client = NetBoxClient("http://netbox.local", "Bearer token", 5.0)
+    monkeypatch.setattr(NetBoxClient, "find_manufacturer_by_slug", AsyncMock(return_value={"id": 11, "name": "Intelbras"}))
+    monkeypatch.setattr(
+        NetBoxClient,
+        "find_device_types",
+        AsyncMock(return_value=[{"id": 22, "model": "S2328G-A", "manufacturer": {"id": 11, "name": "Intelbras"}}]),
+    )
+    monkeypatch.setattr(
+        NetBoxClient,
+        "get_device",
+        AsyncMock(return_value={
+            "id": 101,
+            "name": "Atendimento SMV",
+            "status": {"value": "active"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "device_type": {"id": 22, "model": "S2328G-A", "manufacturer": {"id": 11, "name": "Intelbras"}},
+            "primary_ip4": {"id": 77, "address": "10.0.0.18/32"},
+            "comments": "",
+            "custom_fields": {"zabbix_hostid": "1234"},
+        }),
+    )
+    monkeypatch.setattr(
+        NetBoxClient,
+        "update_device",
+        AsyncMock(side_effect=[
+            NetBoxClientError("NetBox request failed with status 400", status_code=400),
+            {"id": 101, "name": "Atendimento SMV", "primary_ip4": {"id": 77, "address": "10.0.0.18/32"}},
+        ]),
+    )
+    update_interface_mock = AsyncMock(return_value={"id": 67, "name": "mgmt0", "mac_address": "80:85:44:00:7B:92"})
+    monkeypatch.setattr(NetBoxClient, "find_interface", AsyncMock(return_value={"id": 67, "name": "mgmt0", "mac_address": ""}))
+    monkeypatch.setattr(NetBoxClient, "update_interface", update_interface_mock)
+    monkeypatch.setattr(NetBoxClient, "find_ip_address", AsyncMock(return_value={"id": 88, "address": "10.0.0.18/32"}))
+    monkeypatch.setattr(NetBoxClient, "update_ip_address", AsyncMock(return_value={"id": 88, "address": "10.0.0.18/32"}))
+    monkeypatch.setattr(NetBoxClient, "get_site", AsyncMock(return_value={"id": 1}))
+    monkeypatch.setattr(NetBoxClient, "get_device_role", AsyncMock(return_value={"id": 2}))
+
+    payload = SyncDeviceRequest(
+        hostid="10.0.0.18",
+        hostname="Atendimento SMV",
+        display_name="Atendimento SMV",
+        ip="10.0.0.18",
+        fabricante="Intelbras",
+        modelo="S2328G-A",
+        site_id=1,
+        role_id=2,
+        netbox_device_id=101,
+        mac_address="80:85:44:00:7B:92",
+        comments_summary="Descoberto por ARP/Nmap + SNMP",
+        netbox_status="active",
+    )
+
+    outcome = await sync_device(payload, client, default_site_id=1, dry_run=False)
+
+    assert outcome.success is True
+    assert update_interface_mock.await_count == 1
+    assert any("Device update skipped" in warning for warning in outcome.warnings)
 
 
 def test_mac_normalization_is_consistent():

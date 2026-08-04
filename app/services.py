@@ -171,7 +171,13 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                 update_payload["device_type"] = device_type_id
             if device_name and device.get("name") != device_name:
                 update_payload["name"] = device_name
-            device = await client.update_device(device["id"], update_payload)
+            try:
+                device = await client.update_device(device["id"], update_payload)
+            except NetBoxClientError as exc:
+                if exc.status_code == 400:
+                    warnings.append(f"Device update skipped: {exc}")
+                else:
+                    raise
     else:
         if payload.is_blocked_for_auto_create():
             return SyncOutcome(
@@ -287,13 +293,19 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                 ip_address = await client.update_ip_address(ip_address["id"], desired_assignment)
 
         if ip_address is not None and _extract_related_id(device.get("primary_ip4")) != ip_address.get("id"):
-            device = await client.update_device(
-                device["id"],
-                {
-                    "primary_ip4": ip_address["id"],
-                    "custom_fields": merge_custom_fields(device.get("custom_fields"), payload.hostid),
-                },
-            )
+            try:
+                device = await client.update_device(
+                    device["id"],
+                    {
+                        "primary_ip4": ip_address["id"],
+                        "custom_fields": merge_custom_fields(device.get("custom_fields"), payload.hostid),
+                    },
+                )
+            except NetBoxClientError as exc:
+                if exc.status_code == 400:
+                    warnings.append(f"Primary IP update skipped: {exc}")
+                else:
+                    raise
 
     return SyncOutcome(
         success=True,
