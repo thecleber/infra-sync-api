@@ -169,6 +169,31 @@ class ExistingDeviceWithoutMgmtInterfaceClient(FakeClient):
         return {"id": 199, "address": address, "assigned_object_type": "dcim.interface", "assigned_object_id": 188}
 
 
+class ExistingSwitchWithPortsClient(FakeClient):
+    async def find_devices_by_hostid(self, hostid: str):
+        return [{
+            "id": 88,
+            "name": "SW-EDGE-01",
+            "custom_fields": {"site_tag": "A", "zabbix_hostid": hostid},
+            "description": "existing description",
+            "status": {"value": "planned"},
+            "primary_ip4": None,
+        }]
+
+    async def find_devices_by_name(self, name: str):
+        return []
+
+    async def find_interface(self, device_id: int, name: str):
+        if name == "mgmt0":
+            return {"id": 11, "device": device_id, "name": name, "mac_address": "00:00:00:00:00:01"}
+        if name == "ge-0/0/1":
+            return {"id": 12, "device": device_id, "name": name, "description": "old", "enabled": False, "mac_address": ""}
+        return None
+
+    async def find_ip_address(self, address: str):
+        return {"id": 21, "address": address, "assigned_object_type": "dcim.interface", "assigned_object_id": 11}
+
+
 class FakeZabbixClient:
     def __init__(self, snapshot: ZabbixHostSnapshot) -> None:
         self.snapshot = snapshot
@@ -264,8 +289,50 @@ def test_sync_device_updates_mac_on_first_available_interface_when_mgmt0_missing
     outcome = asyncio.run(sync_device(payload, client, default_site_id=1, dry_run=False))
 
     assert outcome.action == "updated"
-    assert client.updated_interface_payloads[-1] == (188, {"mac_address": "AA:BB:CC:DD:EE:FF"})
-    assert client.created_interface_payload is None
+    assert any(entry == (188, {"mac_address": "AA:BB:CC:DD:EE:FF"}) for entry in client.updated_interface_payloads)
+    assert client.created_interface_payload is not None
+
+
+def test_sync_device_updates_switch_ports_from_snmp_snapshot():
+    payload = SyncDeviceRequest(
+        hostid="switch-01",
+        hostname="SW-EDGE-01",
+        display_name="SW-EDGE-01",
+        ip="10.0.0.55",
+        fabricante="Intelbras",
+        modelo="S2328G-A",
+        site_id=1,
+        role_id=2,
+        mac_address="00:11:22:33:44:55",
+        ports=[
+            {
+                "index": "1",
+                "name": "ge-0/0/1",
+                "description": "uplink core",
+                "alias": "uplink core",
+                "admin_status": "up",
+                "oper_status": "up",
+                "speed_bps": "1.00 Gbps",
+                "mac_address": "00:11:22:33:44:55",
+            },
+            {
+                "index": "2",
+                "name": "ge-0/0/2",
+                "description": "user port",
+                "alias": "user port",
+                "admin_status": "down",
+                "oper_status": "down",
+                "speed_bps": "100 Mbps",
+            },
+        ],
+    )
+    client = ExistingSwitchWithPortsClient()
+
+    outcome = asyncio.run(sync_device(payload, client, default_site_id=1, dry_run=False))
+
+    assert outcome.action == "updated"
+    assert (12, {"description": "uplink core", "enabled": True, "mac_address": "00:11:22:33:44:55"}) in client.updated_interface_payloads
+    assert client.updated_device_payloads
 
 
 def test_sync_device_rejects_missing_site_in_netbox():

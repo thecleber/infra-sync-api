@@ -1004,6 +1004,77 @@ def test_snmp_probe_post_renders_success(monkeypatch):
     assert "Leitura SNMP atualizada com sucesso" in response.text
 
 
+def test_snmp_sync_post_sends_ports_to_netbox(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    synced_payloads = []
+
+    async def fake_probe_snmp_device(ip, community, **kwargs):
+        return {
+            "ip": "10.0.0.24",
+            "sys_name": "SW-ACCESS-LAN",
+            "sys_descr": "Access switch",
+            "sys_object_id": "1.3.6.1.4.1.26138",
+            "if_number": "24",
+            "hr_memory_size": "1024",
+            "processor_load_average": "12.5",
+            "notes": "sysName=SW-ACCESS-LAN",
+            "ports": [
+                {
+                    "index": "1",
+                    "name": "ge-0/0/1",
+                    "description": "uplink core",
+                    "alias": "uplink core",
+                    "admin_status": "up",
+                    "oper_status": "up",
+                    "mac_address": "aa:bb:cc:dd:ee:ff",
+                    "speed_bps": "1.00 Gbps",
+                }
+            ],
+        }
+
+    async def fake_sync_device(payload, client, default_site_id, dry_run=False):
+        synced_payloads.append(payload)
+        return SyncOutcome(
+            success=True,
+            action="updated",
+            device_id=101,
+            device_name=payload.hostname,
+            manufacturer_id=1,
+            device_type_id=2,
+            interface_id=3,
+            ip_address_id=4,
+            message="Synchronization completed successfully.",
+        )
+
+    monkeypatch.setattr(new_main, "probe_snmp_device", fake_probe_snmp_device)
+    monkeypatch.setattr(new_main, "sync_device", fake_sync_device)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/snmp/sync",
+            data={
+                "ip": "10.0.0.24",
+                "community": "public",
+                "timeout": "1.0",
+                "retries": "0",
+                "max_ports": "24",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200
+    assert "Leitura SNMP atualizada com sucesso" in response.text
+    assert synced_payloads[0].ports and synced_payloads[0].ports[0]["name"] == "ge-0/0/1"
+    assert synced_payloads[0].mac_address == "AA:BB:CC:DD:EE:FF"
+
+
 def test_cpd_dashboard_config_normalization():
     config = new_main._normalize_cpd_dashboard_config({
         "enabled": "yes",

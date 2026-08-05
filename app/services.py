@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import re
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
@@ -230,9 +231,12 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
             message="Dry-run completed." if dry_run else "No device changes were necessary.",
         )
 
-    interface = await _resolve_device_interface(client, device["id"])
+    management_interface = await _resolve_management_interface(client, device["id"])
+    any_interface = await _resolve_any_device_interface(client, device["id"])
+    interface = management_interface or any_interface
+    mac_interface = management_interface or any_interface
     created_interface = False
-    if interface is None and not dry_run:
+    if management_interface is None and not dry_run:
         interface_payload = {
             "device": device["id"],
             "name": "mgmt0",
@@ -241,31 +245,32 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
         }
         if payload.mac_address:
             interface_payload["mac_address"] = payload.mac_address
-        interface = await _create_or_refetch(
+        management_interface = await _create_or_refetch(
             lambda: client.create_interface(interface_payload),
-            lambda: _resolve_device_interface(client, device["id"]),
+            lambda: _resolve_management_interface(client, device["id"]),
         )
         created_interface = True
-    elif interface is None:
+        interface = management_interface or interface
+    elif management_interface is None:
         warnings.append("Interface mgmt0 would be created.")
-    elif payload.mac_address and not dry_run:
-        current_mac = str(interface.get("mac_address") or "").strip().upper()
+    if payload.mac_address and mac_interface is not None and not dry_run:
+        current_mac = str(mac_interface.get("mac_address") or "").strip().upper()
         desired_mac = str(payload.mac_address).strip().upper()
         if current_mac != desired_mac:
-            interface = await client.update_interface(interface["id"], {"mac_address": desired_mac})
+            mac_interface = await client.update_interface(mac_interface["id"], {"mac_address": desired_mac})
     elif payload.mac_address:
         warnings.append("Interface mgmt0 would receive the discovered MAC address.")
 
     ip_address = await client.find_ip_address(payload.ip)
     created_ip = False
-    if ip_address is None and not dry_run and interface is not None:
+    if ip_address is None and not dry_run and management_interface is not None:
         ip_address = await _create_or_refetch(
             lambda: client.create_ip_address(
                 {
                     "address": payload.ip,
                     "status": "active",
                     "assigned_object_type": "dcim.interface",
-                    "assigned_object_id": interface["id"],
+                    "assigned_object_id": management_interface["id"],
                 }
             ),
             lambda: client.find_ip_address(payload.ip),
@@ -278,7 +283,7 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
         if ip_address is not None and interface is not None:
             desired_assignment = {
                 "assigned_object_type": "dcim.interface",
-                "assigned_object_id": interface["id"],
+                "assigned_object_id": management_interface["id"] if management_interface is not None else interface["id"],
             }
             if (
                 ip_address.get("assigned_object_type") != desired_assignment["assigned_object_type"]
@@ -294,6 +299,18 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                     "custom_fields": merge_custom_fields(device.get("custom_fields"), payload.hostid),
                 },
             )
+
+    ports = _normalize_snmp_ports(payload.ports)
+    if ports:
+        synced_interfaces, interface_warnings = await _sync_snmp_interfaces(
+            client,
+            device["id"],
+            ports,
+            dry_run=dry_run,
+        )
+        warnings.extend(interface_warnings)
+        if synced_interfaces and interface is None:
+            interface = synced_interfaces[0]
 
     return SyncOutcome(
         success=True,
@@ -314,17 +331,20 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
     )
 
 
-async def _resolve_device_interface(client: NetBoxClient, device_id: int) -> dict[str, Any] | None:
+async def _resolve_management_interface(client: NetBoxClient, device_id: int) -> dict[str, Any] | None:
     interface = await client.find_interface(device_id, "mgmt0")
     if interface is not None:
         return interface
+    return None
 
+
+async def _resolve_any_device_interface(client: NetBoxClient, device_id: int) -> dict[str, Any] | None:
     list_interfaces = getattr(client, "list_interfaces", None)
     if list_interfaces is None:
         return None
 
     with contextlib.suppress(Exception):
-        interfaces = await list_interfaces({"device_id": device_id})
+        interfaces = await list_interfaces({"device_id": device_id, "limit": 200})
         if interfaces:
             return sorted(
                 interfaces,
@@ -334,6 +354,145 @@ async def _resolve_device_interface(client: NetBoxClient, device_id: int) -> dic
                 ),
             )[0]
     return None
+
+
+async def _sync_snmp_interfaces(
+    client: NetBoxClient,
+    device_id: int,
+    ports: list[dict[str, Any]],
+    *,
+    dry_run: bool,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    warnings: list[str] = []
+    synced_interfaces: list[dict[str, Any]] = []
+    for port in ports:
+        interface_name = _snmp_interface_name(port)
+        if not interface_name:
+            continue
+        desired_description = _snmp_interface_description(port)
+        desired_mac = _normalize_snmp_mac(port.get("mac_address"))
+        desired_enabled = _snmp_interface_enabled(port)
+        desired_type = _snmp_interface_type(port)
+
+        interface = await client.find_interface(device_id, interface_name)
+        if interface is None:
+            if dry_run:
+                warnings.append(f"Interface {interface_name} would be created.")
+                continue
+            interface_payload: dict[str, Any] = {
+                "device": device_id,
+                "name": interface_name,
+                "type": desired_type,
+                "enabled": desired_enabled,
+            }
+            if desired_description:
+                interface_payload["description"] = desired_description
+            if desired_mac:
+                interface_payload["mac_address"] = desired_mac
+            interface = await client.create_interface(interface_payload)
+        else:
+            update_payload: dict[str, Any] = {}
+            current_description = str(interface.get("description") or "").strip()
+            if desired_description and current_description != desired_description:
+                update_payload["description"] = desired_description
+            current_enabled = interface.get("enabled")
+            if isinstance(current_enabled, bool) and current_enabled != desired_enabled:
+                update_payload["enabled"] = desired_enabled
+            elif current_enabled is None:
+                update_payload["enabled"] = desired_enabled
+            current_mac = str(interface.get("mac_address") or "").strip().upper()
+            if desired_mac and current_mac != desired_mac:
+                update_payload["mac_address"] = desired_mac
+            if update_payload and not dry_run:
+                interface = await client.update_interface(interface["id"], update_payload)
+            elif update_payload:
+                warnings.append(f"Interface {interface_name} would be updated.")
+        if isinstance(interface, dict):
+            synced_interfaces.append(interface)
+    return synced_interfaces, warnings
+
+
+def _normalize_snmp_ports(ports: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not ports:
+        return []
+    normalized: list[dict[str, Any]] = []
+    for port in ports:
+        if isinstance(port, dict):
+            normalized.append(port)
+    return normalized
+
+
+def _snmp_interface_name(port: dict[str, Any]) -> str:
+    for key in ("name", "description", "alias", "index"):
+        value = str(port.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _snmp_interface_description(port: dict[str, Any]) -> str:
+    for key in ("alias", "description"):
+        value = str(port.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _snmp_interface_enabled(port: dict[str, Any]) -> bool:
+    oper_status = str(port.get("oper_status") or "").strip().lower()
+    if oper_status:
+        return oper_status == "up"
+    admin_status = str(port.get("admin_status") or "").strip().lower()
+    if admin_status:
+        return admin_status == "up"
+    return True
+
+
+def _snmp_interface_type(port: dict[str, Any]) -> str:
+    name = str(port.get("name") or "").strip().lower()
+    description = str(port.get("description") or "").strip().lower()
+    alias = str(port.get("alias") or "").strip().lower()
+    text = " ".join(part for part in (name, description, alias) if part)
+    if any(token in text for token in ("mgmt", "management", "loopback")):
+        return "virtual"
+    speed = _snmp_port_speed_gbps(port.get("speed_bps"))
+    if speed >= 10:
+        return "10gbase-t"
+    if speed >= 1:
+        return "1000base-t"
+    if speed >= 0.1:
+        return "100base-tx"
+    return "virtual"
+
+
+def _snmp_port_speed_gbps(value: Any) -> float:
+    text = str(value or "").strip().lower()
+    if not text:
+        return 0.0
+    match = re.search(r"([\d.,]+)\s*(tbps|gbps|mbps|kbps|bps)", text)
+    if not match:
+        return 0.0
+    numeric = float(match.group(1).replace(",", "."))
+    unit = match.group(2)
+    if unit == "tbps":
+        return numeric * 1000.0
+    if unit == "gbps":
+        return numeric
+    if unit == "mbps":
+        return numeric / 1000.0
+    if unit == "kbps":
+        return numeric / 1_000_000.0
+    return numeric / 1_000_000_000.0
+
+
+def _normalize_snmp_mac(value: Any) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return ""
+    normalized = "".join(ch for ch in cleaned if ch.isalnum())
+    if len(normalized) == 12:
+        return ":".join(normalized[i:i + 2] for i in range(0, 12, 2)).upper()
+    return cleaned.upper()
 
 
 async def _find_device(client: NetBoxClient, hostid: str, device_name: str) -> dict[str, Any] | None:

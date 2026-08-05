@@ -5348,6 +5348,47 @@ async def snmp_probe_page(request: Request):
         return HTMLResponse(_render_snmp_page(load_last_probe(), error=str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
 
 
+@app.post("/snmp/sync", include_in_schema=False)
+async def snmp_sync_page(request: Request):
+    form = await _read_form(request)
+    ip = _form_value(form, "ip")
+    community = _form_value(form, "community", "public") or "public"
+    timeout = float(_form_value(form, "timeout", "1.0") or "1.0")
+    retries = int(_form_value(form, "retries", "0") or "0")
+    max_ports = int(_form_value(form, "max_ports", "48") or "48")
+    settings: Settings = request.app.state.settings
+    client: NetBoxClient = request.app.state.netbox_client
+    try:
+        snapshot = await probe_snmp_device(ip, community, timeout=timeout, retries=retries, max_ports=max_ports)
+        profile = infer_device_profile(
+            sys_descr=_normalize_text(snapshot.get("sys_descr")),
+            sys_name=_normalize_text(snapshot.get("sys_name")) or _normalize_text(snapshot.get("ip")) or ip,
+            sys_object_id=_normalize_text(snapshot.get("sys_object_id")),
+        )
+        role_id = _discovery_role_id_for_group(profile["group"], settings)
+        payload = SyncDeviceRequest(
+            hostid=_normalize_text(snapshot.get("ip")) or ip,
+            hostname=_normalize_text(snapshot.get("sys_name")) or _normalize_text(snapshot.get("ip")) or ip,
+            display_name=_normalize_text(snapshot.get("sys_name")) or _normalize_text(snapshot.get("ip")) or ip,
+            ip=_normalize_text(snapshot.get("ip")) or ip,
+            fabricante=profile["manufacturer"],
+            modelo=profile["model"] or profile["device_type"] or "Generico",
+            site_id=settings.default_site_id,
+            role_id=role_id or settings.default_role_id,
+            mac_address=next(
+                (_normalize_mac_text(port.get("mac_address")) for port in snapshot.get("ports", []) if isinstance(port, dict) and _normalize_mac_text(port.get("mac_address"))),
+                None,
+            ),
+            comments_summary=_normalize_text(snapshot.get("notes")) or "Leitura SNMP sincronizada com sucesso.",
+            netbox_status="active",
+            ports=snapshot.get("ports") if isinstance(snapshot.get("ports"), list) else None,
+        )
+        result = await sync_device(payload, client, settings.default_site_id, dry_run=False)
+        return HTMLResponse(_render_snmp_page(load_last_probe(), saved=True))
+    except Exception as exc:
+        return HTMLResponse(_render_snmp_page(load_last_probe(), error=str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
+
+
 def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | None = None) -> str:
     last_probe = state.get("last_probe") if isinstance(state.get("last_probe"), dict) else None
     ports = last_probe.get("ports") if last_probe and isinstance(last_probe.get("ports"), list) else []
@@ -5409,6 +5450,7 @@ def _render_snmp_page(state: dict[str, Any], saved: bool = False, error: str | N
         </div>
         <div style="display:flex; gap:10px; flex-wrap:wrap;">
           <button class="btn primary" type="submit">Consultar SNMP</button>
+          <button class="btn" type="submit" formaction="/snmp/sync">Salvar no NetBox</button>
           <a class="btn" href="/devices">Voltar aos devices</a>
         </div>
       </form>

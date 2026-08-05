@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 
 from .utils import is_ipv4_only_hostname, normalize_ip_input
@@ -20,6 +22,7 @@ class SyncDeviceRequest(BaseModel):
     mac_address: str | None = None
     comments_summary: str | None = None
     netbox_status: str | None = None
+    ports: list[dict[str, Any]] | None = None
 
     @field_validator("hostid", "hostname", "ip", "fabricante", "modelo")
     @classmethod
