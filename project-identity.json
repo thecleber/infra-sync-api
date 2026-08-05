@@ -1,0 +1,18 @@
+{
+  "projectId": "infra-sync-api::thecleber/infra-sync-api::10.0.0.115::C:/infra-sync-api",
+  "projectName": "infra-sync-api",
+  "packageName": "infra-sync-api",
+  "repoRemote": "https://github.com/thecleber/infra-sync-api.git",
+  "vmHost": "10.0.0.115",
+  "localPath": "C:/infra-sync-api",
+  "forbiddenMarkers": [
+    "C:\\ECV socios balad api",
+    "C:/ECV socios balad api",
+    "C:\\ProjetosSOCIOS_ECV\\socios_ecv",
+    "C:/ProjetosSOCIOS_ECV/socios_ecv",
+    "thecleber/ECV_Socios_balad",
+    "https://github.com/thecleber/ECV_Socios_balad.git",
+    "10.0.0.250",
+    "/home/ecv/ecv-socios-balad-api"
+  ]
+}
