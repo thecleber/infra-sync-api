@@ -230,7 +230,7 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
             message="Dry-run completed." if dry_run else "No device changes were necessary.",
         )
 
-    interface = await client.find_interface(device["id"], "mgmt0")
+    interface = await _resolve_device_interface(client, device["id"])
     created_interface = False
     if interface is None and not dry_run:
         interface_payload = {
@@ -243,7 +243,7 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
             interface_payload["mac_address"] = payload.mac_address
         interface = await _create_or_refetch(
             lambda: client.create_interface(interface_payload),
-            lambda: client.find_interface(device["id"], "mgmt0"),
+            lambda: _resolve_device_interface(client, device["id"]),
         )
         created_interface = True
     elif interface is None:
@@ -312,6 +312,28 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
         warnings=warnings,
         message="Dry-run completed." if dry_run else "Synchronization completed successfully.",
     )
+
+
+async def _resolve_device_interface(client: NetBoxClient, device_id: int) -> dict[str, Any] | None:
+    interface = await client.find_interface(device_id, "mgmt0")
+    if interface is not None:
+        return interface
+
+    list_interfaces = getattr(client, "list_interfaces", None)
+    if list_interfaces is None:
+        return None
+
+    with contextlib.suppress(Exception):
+        interfaces = await list_interfaces({"device_id": device_id})
+        if interfaces:
+            return sorted(
+                interfaces,
+                key=lambda item: (
+                    str(item.get("name") or "").lower(),
+                    int(item.get("id") or 0),
+                ),
+            )[0]
+    return None
 
 
 async def _find_device(client: NetBoxClient, hostid: str, device_name: str) -> dict[str, Any] | None:

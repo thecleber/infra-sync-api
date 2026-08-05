@@ -369,6 +369,7 @@ Host: 10.0.0.3 Status: Down
     "sys_descr, sys_name, expected_group, expected_subgroup",
     [
         ("HP LaserJet Pro printer", "PRN-01", "printers", "office"),
+        ("KYOCERA Document Solutions Printing System", "PRN-02", "printers", "office"),
         ("Grandstream GWN access point", "AP-01", "aps", "indoor"),
         ("Hikvision IP camera", "CAM-01", "cameras", "ip"),
         ("Intelbras DVR recorder", "REC-01", "recorders", "dvr"),

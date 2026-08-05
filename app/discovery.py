@@ -52,7 +52,7 @@ DISCOVERY_GROUPS: dict[str, dict[str, list[str]]] = {
         "wireless": ["ap", "access point", "wireless"],
     },
     "printers": {
-        "office": ["printer", "print server", "brother", "epson", "laserjet", "deskjet"],
+        "office": ["printer", "print server", "brother", "epson", "kyocera", "document solutions printing system", "laserjet", "deskjet"],
         "label": ["label printer", "zebra", "thermal", "etiqueta"],
     },
     "aps": {
@@ -567,6 +567,7 @@ def _enterprise_hint(sys_object_id: str) -> dict[str, str]:
         "1.3.6.1.4.1.674": {"manufacturer": "Dell", "device_type": "server_management"},
         "1.3.6.1.4.1.2435": {"manufacturer": "Brother", "device_type": "printer"},
         "1.3.6.1.4.1.1248": {"manufacturer": "Epson", "device_type": "printer"},
+        "1.3.6.1.4.1.1347": {"manufacturer": "Kyocera", "device_type": "printer"},
         "1.3.6.1.4.1.11": {"manufacturer": "HP", "device_type": "printer"},
         "1.3.6.1.4.1.8072": {"manufacturer": "Linux/Net-SNMP", "device_type": "host"},
     }
@@ -595,6 +596,8 @@ def _guess_manufacturer(text: str) -> str:
         return "Brother"
     if "epson" in text:
         return "Epson"
+    if "kyocera" in text or "document solutions printing system" in text:
+        return "Kyocera"
     if text.startswith("hp") or "hewlett" in text:
         return "HP"
     return "Generico"
@@ -621,7 +624,7 @@ def _guess_model(sys_descr: str, sys_name: str, manufacturer: str) -> str:
 
 
 def _guess_device_type(text: str, manufacturer: str, model: str) -> str:
-    if any(token in text for token in ("printer", "print server", "brother", "epson", "hp ethernet multi-environment", "laserjet", "deskjet")):
+    if any(token in text for token in ("printer", "print server", "brother", "epson", "kyocera", "document solutions printing system", "hp ethernet multi-environment", "laserjet", "deskjet")):
         return "printer"
     if any(token in text for token in ("camera", "cctv", "hikvision", "dahua", "intelbras vhd", "ip cam")):
         return "camera"

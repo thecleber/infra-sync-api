@@ -13,6 +13,7 @@ class FakeClient:
         self.created_device_payload = None
         self.created_interface_payload = None
         self.created_ip_payload = None
+        self.updated_interface_payloads = []
         self.updated_device_payloads = []
         self.validated_site_id = None
         self.validated_role_id = None
@@ -75,6 +76,13 @@ class FakeClient:
         self.created_interface_payload = payload
         return {"id": 44, **payload}
 
+    async def list_interfaces(self, params=None):
+        return []
+
+    async def update_interface(self, interface_id: int, payload):
+        self.updated_interface_payloads.append((interface_id, payload))
+        return {"id": interface_id, **payload}
+
     async def find_ip_address(self, address: str):
         return None
 
@@ -135,6 +143,30 @@ class ExistingDeviceClient(FakeClient):
 
     async def find_ip_address(self, address: str):
         return {"id": 99, "address": address, "assigned_object_type": "dcim.interface", "assigned_object_id": 88}
+
+
+class ExistingDeviceWithoutMgmtInterfaceClient(FakeClient):
+    async def find_devices_by_hostid(self, hostid: str):
+        return [{
+            "id": 77,
+            "name": "KYOCERA-PRN-01",
+            "custom_fields": {"site_tag": "A", "zabbix_hostid": hostid},
+            "description": "existing description",
+            "status": {"value": "planned"},
+            "primary_ip4": None,
+        }]
+
+    async def find_devices_by_name(self, name: str):
+        return []
+
+    async def find_interface(self, device_id: int, name: str):
+        return None
+
+    async def list_interfaces(self, params=None):
+        return [{"id": 188, "device": 77, "name": "ge-0/0/1", "mac_address": "00:11:22:33:44:55"}]
+
+    async def find_ip_address(self, address: str):
+        return {"id": 199, "address": address, "assigned_object_type": "dcim.interface", "assigned_object_id": 188}
 
 
 class FakeZabbixClient:
@@ -213,6 +245,27 @@ def test_sync_device_updates_existing_device_with_marker():
         "[infra-sync-api] updated at " in payload.get("description", "")
         for payload in client.updated_device_payloads
     )
+
+
+def test_sync_device_updates_mac_on_first_available_interface_when_mgmt0_missing():
+    payload = SyncDeviceRequest(
+        hostid="kyocera-01",
+        hostname="KYOCERA-PRN-01",
+        display_name="KYOCERA-PRN-01",
+        ip="10.0.0.118",
+        fabricante="Kyocera",
+        modelo="KYOCERA Document Solutions Printing System",
+        site_id=1,
+        role_id=2,
+        mac_address="AA:BB:CC:DD:EE:FF",
+    )
+    client = ExistingDeviceWithoutMgmtInterfaceClient()
+
+    outcome = asyncio.run(sync_device(payload, client, default_site_id=1, dry_run=False))
+
+    assert outcome.action == "updated"
+    assert client.updated_interface_payloads[-1] == (188, {"mac_address": "AA:BB:CC:DD:EE:FF"})
+    assert client.created_interface_payload is None
 
 
 def test_sync_device_rejects_missing_site_in_netbox():
