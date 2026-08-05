@@ -2916,7 +2916,8 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         progressBar.style.background = status === 'failed'
           ? 'linear-gradient(90deg, #991b1b, #ef4444)'
           : 'linear-gradient(90deg, #b91c1c, #ef4444)';
-        if (status === 'completed' && !scanCompletionShown) {
+        const activeScanInProgress = progressTimer !== null || scanBusy;
+        if (status === 'completed' && activeScanInProgress && !scanCompletionShown) {
           if (progressTimer) {
             clearInterval(progressTimer);
             progressTimer = null;
@@ -2924,7 +2925,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
           discoveryButton.disabled = false;
           discoveryButton.textContent = 'Varredura SNMP';
           showScanSuccess('Varredura concluida com sucesso.');
-        } else if (status === 'failed' && !scanCompletionShown) {
+        } else if (status === 'failed' && activeScanInProgress && !scanCompletionShown) {
           if (progressTimer) {
             clearInterval(progressTimer);
             progressTimer = null;
@@ -3094,6 +3095,9 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             progressTimer = null;
             discoveryButton.disabled = false;
             discoveryButton.textContent = 'Varredura SNMP';
+          }
+          if (!progressTimer && !scanBusy && (data.status === 'completed' || data.status === 'failed')) {
+            scanCompletionShown = true;
           }
         } catch (error) {
           console.error('Falha ao ler progresso da varredura', error);
