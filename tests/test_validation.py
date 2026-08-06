@@ -975,6 +975,147 @@ def test_discovery_update_only_targets_saved_devices(monkeypatch):
     assert synced_payloads[0].hostname == "Atendimento SMV"
 
 
+def test_discovery_update_refreshes_existing_device_from_snmp(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+
+    saved_payloads = {}
+    synced_payloads = []
+    probe_payload = {
+        "ip": "10.0.0.40",
+        "sys_name": "SW-40-CORE",
+        "sys_descr": "Managed switch core",
+        "sys_object_id": "1.3.6.1.4.1.99999",
+        "if_number": "24",
+        "hr_memory_size": "2048",
+        "notes": "interfaces=24 | mac=AA:BB:CC:DD:EE:FF",
+        "ports": [
+            {
+                "index": "1",
+                "name": "mgmt0",
+                "description": "management",
+                "alias": "",
+                "mac_address": "AA:BB:CC:DD:EE:FF",
+                "admin_status": "up",
+                "oper_status": "up",
+                "speed_bps": "1.00 Gbps",
+            }
+        ],
+    }
+
+    async def fake_probe_snmp_device(ip_value: str, community: str, *, timeout: float, retries: int, max_ports: int):
+        if ip_value == "10.0.0.40":
+            return probe_payload
+        raise AssertionError(f"Unexpected probe for {ip_value}")
+
+    async def fake_find_devices_by_ip(ip_value: str):
+        if ip_value == "10.0.0.40":
+            return [{"id": 401, "name": "SW-40-CORE"}]
+        return []
+
+    async def fake_find_devices_by_name(name: str):
+        if name == "SW-40-CORE":
+            return [{"id": 401, "name": "SW-40-CORE"}]
+        return []
+
+    async def fake_list_interfaces(params=None):
+        if params and str(params.get("device_id")) == "401":
+            return [{"id": 501, "name": "mgmt0", "mac_address": "00:11:22:33:44:55"}]
+        return []
+
+    async def fake_sync_device(payload, client, default_site_id, dry_run=False):
+        synced_payloads.append(payload)
+        return SyncOutcome(
+            success=True,
+            action="updated",
+            device_id=401,
+            device_name=payload.hostname,
+            manufacturer_id=1,
+            device_type_id=2,
+            interface_id=3,
+            ip_address_id=4,
+            message="Synchronization completed successfully.",
+        )
+
+    monkeypatch.setattr(
+        new_main,
+        "load_last_scan",
+        lambda: {
+            "network": "10.0.0.0/24",
+            "scan_community": "public",
+            "scan_timeout": 1.0,
+            "scan_retries": 0,
+            "scan_max_ports": 48,
+            "scanned_at": "2026-08-04T00:00:00Z",
+            "devices": [
+                {
+                    "ip": "10.0.0.40",
+                    "sys_name": "SW-40-CORE",
+                    "manufacturer": "Intelbras",
+                    "model": "S2328G-A",
+                    "device_type": "switch",
+                    "sys_descr": "Managed switch core",
+                    "group": "switches",
+                    "subgroup": "core",
+                    "include": True,
+                    "netbox_device_id": 401,
+                    "system_status": "Cadastrado",
+                    "sys_object_id": "1.3.6.1.4.1.26138",
+                    "mac_address": "00:11:22:33:44:55",
+                },
+                {
+                    "ip": "10.0.0.42",
+                    "sys_name": "SW-42-ACCESS",
+                    "manufacturer": "TP-Link",
+                    "model": "SG 5204 MR",
+                    "device_type": "switch",
+                    "sys_descr": "Access switch",
+                    "group": "switches",
+                    "subgroup": "access",
+                    "include": True,
+                    "system_status": "Novo",
+                    "sys_object_id": "1.3.6.1.4.1.11863",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(new_main, "probe_snmp_device", AsyncMock(side_effect=fake_probe_snmp_device))
+    monkeypatch.setattr(NetBoxClient, "find_devices_by_ip", AsyncMock(side_effect=fake_find_devices_by_ip))
+    monkeypatch.setattr(NetBoxClient, "find_devices_by_name", AsyncMock(side_effect=fake_find_devices_by_name))
+    monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(side_effect=fake_list_interfaces))
+    monkeypatch.setattr(new_main, "sync_device", AsyncMock(side_effect=fake_sync_device))
+    monkeypatch.setattr(new_main, "save_group_selections", lambda payload: saved_payloads.__setitem__("groups", payload))
+    monkeypatch.setattr(new_main, "save_last_scan", lambda payload: saved_payloads.__setitem__("scan", payload))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/discovery/save",
+            data={
+                "operation": "update",
+                "include_10_0_0_40": "on",
+                "include_10_0_0_42": "on",
+                "scan_community": "public",
+                "scan_timeout": "1.0",
+                "scan_retries": "0",
+                "scan_max_ports": "48",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200
+    assert len(synced_payloads) == 1
+    assert synced_payloads[0].netbox_device_id == 401
+    assert synced_payloads[0].mac_address == "AA:BB:CC:DD:EE:FF"
+    assert synced_payloads[0].ports and synced_payloads[0].ports[0]["name"] == "mgmt0"
+    assert saved_payloads["scan"]["devices"][0]["system_status"] == "Atualizado"
+    assert saved_payloads["scan"]["devices"][0]["mac_address"] == "AA:BB:CC:DD:EE:FF"
+    assert saved_payloads["scan"]["devices"][1]["system_status"] == "Novo"
+
+
 def test_management_pages_render(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")

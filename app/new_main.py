@@ -2523,6 +2523,10 @@ async def discovery_scan(request: Request):
     max_hosts = int(form.get("max_hosts", "4096") or "4096")
     try:
         payload = await scan_network(network, community, timeout=timeout, retries=retries, max_hosts=max_hosts)
+        payload["scan_community"] = community
+        payload["scan_timeout"] = timeout
+        payload["scan_retries"] = retries
+        payload["scan_max_ports"] = 48
         payload["devices"] = await _annotate_discovered_devices(
             request,
             payload.get("devices") if isinstance(payload.get("devices"), list) else [],
@@ -2544,6 +2548,10 @@ async def discovery_save(request: Request):
     settings: Settings = request.app.state.settings
     saved_devices: list[dict[str, Any]] = []
     operation = _normalize_text(form.get("operation")).lower() or "save"
+    scan_community = _normalize_text(form.get("scan_community") or state.get("scan_community")) or "public"
+    scan_timeout = float(form.get("scan_timeout") or state.get("scan_timeout") or 1.0)
+    scan_retries = int(form.get("scan_retries") or state.get("scan_retries") or 0)
+    scan_max_ports = int(form.get("scan_max_ports") or state.get("scan_max_ports") or 48)
 
     for device in devices:
         if not isinstance(device, dict):
@@ -2552,17 +2560,31 @@ async def discovery_save(request: Request):
         key = _device_key(ip)
         include = form.get(f"include_{key}") in {"on", "true", "True", "1", "checked", "yes"}
         existing_device_id = _related_id(device.get("netbox_device_id"))
-        if operation == "update" and not existing_device_id and _normalize_text(device.get("system_status")) != "Cadastrado":
+        is_registered = bool(existing_device_id) or _normalize_text(device.get("system_status")) in {"Cadastrado", "Atualizado", "Criado"}
+        if operation == "update" and not is_registered:
             include = False
+
+        refresh_candidate = dict(device)
+        if operation == "update" and include and is_registered and ip:
+            refresh_candidate = await _refresh_discovered_device_from_snmp(
+                refresh_candidate,
+                community=scan_community,
+                timeout=scan_timeout,
+                retries=scan_retries,
+                max_ports=scan_max_ports,
+            )
         classified_group, classified_subgroup, notes = classify_discovered_device(
-            sys_descr=str(device.get("sys_descr") or ""),
-            sys_name=str(device.get("sys_name") or ""),
-            sys_object_id=str(device.get("sys_object_id") or ""),
+            sys_descr=str(refresh_candidate.get("sys_descr") or ""),
+            sys_name=str(refresh_candidate.get("sys_name") or ""),
+            sys_object_id=str(refresh_candidate.get("sys_object_id") or ""),
+            manufacturer=str(refresh_candidate.get("manufacturer") or ""),
+            model=str(refresh_candidate.get("model") or ""),
+            device_type=str(refresh_candidate.get("device_type") or ""),
         )
-        group = form.get(f"group_{key}") or str(device.get("suggested_group") or classified_group or device.get("group") or "hosts")
-        subgroup = form.get(f"subgroup_{key}") or str(device.get("suggested_subgroup") or classified_subgroup or device.get("subgroup") or "fixed")
+        group = form.get(f"group_{key}") or str(refresh_candidate.get("suggested_group") or classified_group or refresh_candidate.get("group") or "hosts")
+        subgroup = form.get(f"subgroup_{key}") or str(refresh_candidate.get("suggested_subgroup") or classified_subgroup or refresh_candidate.get("subgroup") or "fixed")
         enriched_device = {
-            **device,
+            **refresh_candidate,
             "include": include,
             "group": group,
             "subgroup": subgroup,
@@ -2663,6 +2685,39 @@ async def _discover_device_mac(client: NetBoxClient | None, device_id: Any) -> s
         if mac_address:
             return mac_address
     return ""
+
+
+async def _refresh_discovered_device_from_snmp(
+    device: dict[str, Any],
+    *,
+    community: str,
+    timeout: float,
+    retries: int,
+    max_ports: int,
+) -> dict[str, Any]:
+    ip = _normalize_text(device.get("ip"))
+    if not ip:
+        return device
+    try:
+        snapshot = await probe_snmp_device(ip, community, timeout=timeout, retries=retries, max_ports=max_ports)
+    except Exception:
+        return device
+
+    refreshed = dict(device)
+    refreshed["sys_descr"] = _normalize_text(snapshot.get("sys_descr")) or refreshed.get("sys_descr", "")
+    refreshed["sys_name"] = _normalize_text(snapshot.get("sys_name")) or refreshed.get("sys_name", "")
+    refreshed["sys_object_id"] = _normalize_text(snapshot.get("sys_object_id")) or refreshed.get("sys_object_id", "")
+    refreshed["if_number"] = _normalize_text(snapshot.get("if_number")) or refreshed.get("if_number", "")
+    refreshed["hr_memory_size"] = _normalize_text(snapshot.get("hr_memory_size")) or refreshed.get("hr_memory_size", "")
+    refreshed["notes"] = _normalize_text(snapshot.get("notes")) or refreshed.get("notes", "")
+    ports = snapshot.get("ports") if isinstance(snapshot.get("ports"), list) else []
+    if ports:
+        refreshed["ports"] = [port for port in ports if isinstance(port, dict)]
+        refreshed["mac_address"] = next(
+            (_normalize_mac_text(port.get("mac_address")) for port in refreshed["ports"] if _normalize_mac_text(port.get("mac_address"))),
+            refreshed.get("mac_address", ""),
+        )
+    return refreshed
 
 
 async def _discover_device_interface_count(client: NetBoxClient | None, device_id: Any) -> int:
@@ -3490,6 +3545,10 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
           </div>
           <input type="hidden" id="discovery-operation" name="operation" value="save" />
           <input type="hidden" name="network" value="{escape(state.get("network") or "")}" />
+          <input type="hidden" name="scan_community" value="{escape(str(state.get("scan_community") or "public"))}" />
+          <input type="hidden" name="scan_timeout" value="{escape(str(state.get("scan_timeout") or "1.0"))}" />
+          <input type="hidden" name="scan_retries" value="{escape(str(state.get("scan_retries") or "0"))}" />
+          <input type="hidden" name="scan_max_ports" value="{escape(str(state.get("scan_max_ports") or "48"))}" />
           <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
             <label class="check" style="margin:0;">
               <input type="checkbox" id="discovery-toggle-all-include" />
