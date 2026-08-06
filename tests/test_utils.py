@@ -25,8 +25,13 @@ def test_is_ipv4_only_hostname():
 
 
 def test_merge_custom_fields_preserves_existing_values():
-    merged = merge_custom_fields({"site_tag": "A", "zabbix_hostid": "old"}, "10917")
-    assert merged == {"site_tag": "A", "zabbix_hostid": "10917"}
+    merged = merge_custom_fields({"site_tag": "A", "zabbix_hostid": "old"}, "10917", {"snmp_interface_count": 24, "snmp_mac_address": "58:10:8C:27:EF:28"})
+    assert merged == {
+        "site_tag": "A",
+        "zabbix_hostid": "10917",
+        "snmp_interface_count": 24,
+        "snmp_mac_address": "58:10:8C:27:EF:28",
+    }
 
 
 def test_normalize_auth_header_accepts_prefixed_tokens():

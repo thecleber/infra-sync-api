@@ -58,6 +58,8 @@ class SyncOutcome:
 
 async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_site_id: int, dry_run: bool = False) -> SyncOutcome:
     warnings: list[str] = []
+    ports = _normalize_snmp_ports(payload.ports)
+    scan_custom_fields, scan_summary = _build_scan_metadata(ports)
     device_name = payload.normalized_device_name()
     manufacturer_slug = slugify(payload.fabricante)
     device_type_slug = slugify(f"{payload.fabricante}-{payload.modelo}")
@@ -140,7 +142,7 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
             elif isinstance(existing_manufacturer, int):
                 manufacturer_id = existing_manufacturer or manufacturer_id
         current_custom_fields = dict(device.get("custom_fields") or {})
-        merged_custom_fields = merge_custom_fields(current_custom_fields, payload.hostid)
+        merged_custom_fields = merge_custom_fields(current_custom_fields, payload.hostid, scan_custom_fields)
         if not dry_run:
             update_payload: dict[str, Any] = {
                 "custom_fields": merged_custom_fields,
@@ -151,8 +153,9 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                     "updated",
                 ),
             }
-            if payload.comments_summary:
-                update_payload["comments"] = merge_sync_notes(device.get("comments"), payload.comments_summary)
+            merged_comments = merge_sync_notes(payload.comments_summary, scan_summary) if (payload.comments_summary or scan_summary) else ""
+            if merged_comments:
+                update_payload["comments"] = merge_sync_notes(device.get("comments"), merged_comments)
             if payload.serial:
                 current_serial = str(device.get("serial") or "").strip()
                 if current_serial != payload.serial:
@@ -172,7 +175,7 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                 update_payload["device_type"] = device_type_id
             if device_name and device.get("name") != device_name:
                 update_payload["name"] = device_name
-            device = await client.update_device(device["id"], update_payload)
+            device = await _update_device_with_scan_fallback(client, device["id"], update_payload, warnings)
     else:
         if payload.is_blocked_for_auto_create():
             return SyncOutcome(
@@ -196,7 +199,7 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                 "role": payload.role_id,
                 "site": payload.site_id or default_site_id,
                 "status": payload.netbox_status or "planned",
-                "custom_fields": merge_custom_fields({}, payload.hostid),
+                "custom_fields": merge_custom_fields({}, payload.hostid, scan_custom_fields),
                 "description": merge_sync_marker(
                     None,
                     payload.hostid,
@@ -204,12 +207,15 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                     "created",
                 ),
             }
-            if payload.comments_summary:
-                device_payload["comments"] = payload.comments_summary
+            merged_comments = merge_sync_notes(payload.comments_summary, scan_summary) if (payload.comments_summary or scan_summary) else ""
+            if merged_comments:
+                device_payload["comments"] = merged_comments
             if payload.serial:
                 device_payload["serial"] = payload.serial
-            device = await _create_or_refetch(
-                lambda: client.create_device(device_payload),
+            device = await _create_device_with_scan_fallback(
+                client,
+                device_payload,
+                warnings,
                 lambda: _find_device(client, payload.hostid, device_name),
             )
             created_device = True
@@ -292,15 +298,16 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                 ip_address = await client.update_ip_address(ip_address["id"], desired_assignment)
 
         if ip_address is not None and _extract_related_id(device.get("primary_ip4")) != ip_address.get("id"):
-            device = await client.update_device(
+            device = await _update_device_with_scan_fallback(
+                client,
                 device["id"],
                 {
                     "primary_ip4": ip_address["id"],
-                    "custom_fields": merge_custom_fields(device.get("custom_fields"), payload.hostid),
+                    "custom_fields": merge_custom_fields(device.get("custom_fields"), payload.hostid, scan_custom_fields),
                 },
+                warnings,
             )
 
-    ports = _normalize_snmp_ports(payload.ports)
     if ports:
         synced_interfaces, interface_warnings = await _sync_snmp_interfaces(
             client,
@@ -574,6 +581,76 @@ def _extract_related_id(value: Any) -> int | None:
         related_id = value.get("id")
         return related_id if isinstance(related_id, int) else None
     return value if isinstance(value, int) else None
+
+
+def _build_scan_metadata(ports: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+    metadata: dict[str, Any] = {}
+    notes: list[str] = []
+    if ports:
+        interface_count = len(ports)
+        metadata["snmp_interface_count"] = interface_count
+        notes.append(f"interfaces={interface_count}")
+        first_mac = next((_normalize_snmp_mac(port.get("mac_address")) for port in ports if _normalize_snmp_mac(port.get("mac_address"))), "")
+        if first_mac:
+            metadata["snmp_mac_address"] = first_mac
+            notes.append(f"mac={first_mac}")
+    return metadata, " | ".join(notes)
+
+
+def _looks_like_scan_custom_field_error(exc: NetBoxClientError, custom_field_keys: set[str]) -> bool:
+    text = " ".join(
+        str(part)
+        for part in (
+            exc,
+            getattr(exc, "payload", None),
+        )
+        if part
+    ).lower()
+    return "custom_fields" in text or any(key.lower() in text for key in custom_field_keys)
+
+
+async def _create_device_with_scan_fallback(
+    client: NetBoxClient,
+    payload: dict[str, Any],
+    warnings: list[str],
+    refetch_fn,
+) -> dict[str, Any]:
+    scan_custom_field_keys = {"snmp_interface_count", "snmp_mac_address"}
+    try:
+        return await _create_or_refetch(lambda: client.create_device(payload), refetch_fn)
+    except NetBoxClientError as exc:
+        if not payload.get("custom_fields") or not _looks_like_scan_custom_field_error(exc, scan_custom_field_keys):
+            raise
+        fallback_payload = dict(payload)
+        fallback_payload["custom_fields"] = {
+            key: value
+            for key, value in dict(payload.get("custom_fields") or {}).items()
+            if key not in scan_custom_field_keys
+        }
+        warnings.append("NetBox rejected scan custom fields; saved the scan summary in comments only.")
+        return await _create_or_refetch(lambda: client.create_device(fallback_payload), refetch_fn)
+
+
+async def _update_device_with_scan_fallback(
+    client: NetBoxClient,
+    device_id: int,
+    payload: dict[str, Any],
+    warnings: list[str],
+) -> dict[str, Any]:
+    scan_custom_field_keys = {"snmp_interface_count", "snmp_mac_address"}
+    try:
+        return await client.update_device(device_id, payload)
+    except NetBoxClientError as exc:
+        if not payload.get("custom_fields") or not _looks_like_scan_custom_field_error(exc, scan_custom_field_keys):
+            raise
+        fallback_payload = dict(payload)
+        fallback_payload["custom_fields"] = {
+            key: value
+            for key, value in dict(payload.get("custom_fields") or {}).items()
+            if key not in scan_custom_field_keys
+        }
+        warnings.append("NetBox rejected scan custom fields; saved the scan summary in comments only.")
+        return await client.update_device(device_id, fallback_payload)
 
 
 def merge_sync_notes(existing_value: Any, addition: str) -> str:

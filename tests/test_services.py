@@ -332,6 +332,15 @@ def test_sync_device_updates_switch_ports_from_snmp_snapshot():
 
     assert outcome.action == "updated"
     assert (12, {"description": "uplink core", "enabled": True, "mac_address": "00:11:22:33:44:55"}) in client.updated_interface_payloads
+    assert any(
+        payload.get("custom_fields", {}).get("snmp_interface_count") == 2
+        and payload.get("custom_fields", {}).get("snmp_mac_address") == "00:11:22:33:44:55"
+        for payload in client.updated_device_payloads
+    )
+    assert any(
+        "interfaces=2" in payload.get("comments", "") and "mac=00:11:22:33:44:55" in payload.get("comments", "")
+        for payload in client.updated_device_payloads
+    )
     assert client.updated_device_payloads
 
 

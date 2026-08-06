@@ -36,9 +36,16 @@ def normalize_ip_input(value: str) -> str:
     return str(interface)
 
 
-def merge_custom_fields(existing: dict[str, Any] | None, hostid: str) -> dict[str, Any]:
+def merge_custom_fields(existing: dict[str, Any] | None, hostid: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     merged = dict(existing or {})
     merged["zabbix_hostid"] = hostid
+    if extra:
+        for key, value in extra.items():
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            merged[key] = value
     return merged
 
 
