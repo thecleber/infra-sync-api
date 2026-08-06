@@ -1,0 +1,16 @@
+{
+  "scan_id": "2026-08-06T18:05:47.935806+00:00",
+  "network": "10.0.0.0/24",
+  "status": "completed",
+  "phase": "complete",
+  "message": "Varredura concluida",
+  "total_hosts": 254,
+  "processed_hosts": 254,
+  "alive_hosts": 0,
+  "found_devices": 0,
+  "percentage": 100,
+  "started_at": "2026-08-06T18:05:47.935806+00:00",
+  "updated_at": "2026-08-06T18:05:52.696285+00:00",
+  "finished_at": "2026-08-06T18:05:52.696285+00:00",
+  "last_ip": ""
+}
