@@ -13,7 +13,9 @@ class FakeClient:
         self.created_device_payload = None
         self.created_interface_payload = None
         self.created_ip_payload = None
+        self.created_mac_payloads = []
         self.updated_interface_payloads = []
+        self.updated_mac_payloads = []
         self.updated_device_payloads = []
         self.validated_site_id = None
         self.validated_role_id = None
@@ -82,6 +84,17 @@ class FakeClient:
     async def update_interface(self, interface_id: int, payload):
         self.updated_interface_payloads.append((interface_id, payload))
         return {"id": interface_id, **payload}
+
+    async def find_mac_addresses(self, mac_address: str):
+        return []
+
+    async def create_mac_address(self, payload):
+        self.created_mac_payloads.append(payload)
+        return {"id": 66, **payload}
+
+    async def update_mac_address(self, mac_id: int, payload):
+        self.updated_mac_payloads.append((mac_id, payload))
+        return {"id": mac_id, **payload}
 
     async def find_ip_address(self, address: str):
         return None
@@ -194,6 +207,16 @@ class ExistingSwitchWithPortsClient(FakeClient):
         return {"id": 21, "address": address, "assigned_object_type": "dcim.interface", "assigned_object_id": 11}
 
 
+class ExistingDeviceWithNameCollisionClient(ExistingSwitchWithPortsClient):
+    async def find_devices_by_name(self, name: str):
+        if name == "SW-BILHETERIA":
+            return [
+                {"id": 17, "name": "SW-BILHETERIA", "site": {"id": 1}},
+                {"id": 99, "name": "SW-BILHETERIA", "site": {"id": 1}},
+            ]
+        return []
+
+
 class FakeZabbixClient:
     def __init__(self, snapshot: ZabbixHostSnapshot) -> None:
         self.snapshot = snapshot
@@ -289,7 +312,11 @@ def test_sync_device_updates_mac_on_first_available_interface_when_mgmt0_missing
     outcome = asyncio.run(sync_device(payload, client, default_site_id=1, dry_run=False))
 
     assert outcome.action == "updated"
-    assert any(entry == (188, {"mac_address": "AA:BB:CC:DD:EE:FF"}) for entry in client.updated_interface_payloads)
+    assert client.created_mac_payloads[0]["mac_address"] == "AA:BB:CC:DD:EE:FF"
+    assert any(
+        entry == (188, {"primary_mac_address": {"id": 66}})
+        for entry in client.updated_interface_payloads
+    )
     assert client.created_interface_payload is not None
 
 
@@ -331,7 +358,9 @@ def test_sync_device_updates_switch_ports_from_snmp_snapshot():
     outcome = asyncio.run(sync_device(payload, client, default_site_id=1, dry_run=False))
 
     assert outcome.action == "updated"
-    assert (12, {"description": "uplink core", "enabled": True, "mac_address": "00:11:22:33:44:55"}) in client.updated_interface_payloads
+    assert (11, {"primary_mac_address": {"id": 66}}) in client.updated_interface_payloads
+    assert (12, {"description": "uplink core", "enabled": True}) in client.updated_interface_payloads
+    assert (12, {"primary_mac_address": {"id": 66}}) in client.updated_interface_payloads
     assert any(
         payload.get("custom_fields", {}).get("snmp_interface_count") == 2
         and payload.get("custom_fields", {}).get("snmp_mac_address") == "00:11:22:33:44:55"
@@ -343,6 +372,38 @@ def test_sync_device_updates_switch_ports_from_snmp_snapshot():
     )
     assert client.updated_device_payloads
 
+
+def test_sync_device_skips_duplicate_name_when_site_has_collision():
+    payload = SyncDeviceRequest(
+        hostid="10.0.0.27",
+        hostname="SW-BILHETERIA",
+        display_name="SW-BILHETERIA",
+        ip="10.0.0.27",
+        fabricante="Intelbras",
+        modelo="S2328G-A",
+        site_id=1,
+        role_id=2,
+        mac_address="58:10:8C:27:EF:28",
+        ports=[
+            {
+                "index": "1",
+                "name": "ge-0/0/1",
+                "description": "uplink core",
+                "alias": "uplink core",
+                "admin_status": "up",
+                "oper_status": "up",
+                "speed_bps": "1.00 Gbps",
+                "mac_address": "58:10:8C:27:EF:28",
+            }
+        ],
+    )
+    client = ExistingDeviceWithNameCollisionClient()
+
+    outcome = asyncio.run(sync_device(payload, client, default_site_id=1, dry_run=False))
+
+    assert outcome.action == "updated"
+    assert not any("name" in update for update in client.updated_device_payloads)
+    assert any("Device name SW-BILHETERIA already exists in the site" in warning for warning in outcome.warnings)
 
 def test_sync_device_rejects_missing_site_in_netbox():
     payload = SyncDeviceRequest(

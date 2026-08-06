@@ -173,8 +173,13 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
                 update_payload["role"] = payload.role_id
             if device_type_id:
                 update_payload["device_type"] = device_type_id
+            desired_site_id = _extract_related_id(device.get("site")) or payload.site_id or default_site_id
             if device_name and device.get("name") != device_name:
-                update_payload["name"] = device_name
+                name_available = await _device_name_is_available(client, device["id"], device_name, desired_site_id)
+                if not name_available:
+                    warnings.append(f"Device name {device_name} already exists in the site; keeping current name.")
+                else:
+                    update_payload["name"] = device_name
             device = await _update_device_with_scan_fallback(client, device["id"], update_payload, warnings)
     else:
         if payload.is_blocked_for_auto_create():
@@ -249,21 +254,30 @@ async def sync_device(payload: SyncDeviceRequest, client: NetBoxClient, default_
             "type": "virtual",
             "enabled": True,
         }
-        if payload.mac_address:
-            interface_payload["mac_address"] = payload.mac_address
         management_interface = await _create_or_refetch(
             lambda: client.create_interface(interface_payload),
             lambda: _resolve_management_interface(client, device["id"]),
         )
+        if payload.mac_address and management_interface is not None:
+            management_interface = await _ensure_interface_primary_mac(
+                client,
+                management_interface,
+                payload.mac_address,
+                dry_run=dry_run,
+                warnings=warnings,
+            )
         created_interface = True
         interface = management_interface or interface
     elif management_interface is None:
         warnings.append("Interface mgmt0 would be created.")
-    if payload.mac_address and mac_interface is not None and not dry_run:
-        current_mac = str(mac_interface.get("mac_address") or "").strip().upper()
-        desired_mac = str(payload.mac_address).strip().upper()
-        if current_mac != desired_mac:
-            mac_interface = await client.update_interface(mac_interface["id"], {"mac_address": desired_mac})
+    if payload.mac_address and mac_interface is not None:
+        mac_interface = await _ensure_interface_primary_mac(
+            client,
+            mac_interface,
+            payload.mac_address,
+            dry_run=dry_run,
+            warnings=warnings,
+        )
     elif payload.mac_address:
         warnings.append("Interface mgmt0 would receive the discovered MAC address.")
 
@@ -394,9 +408,15 @@ async def _sync_snmp_interfaces(
             }
             if desired_description:
                 interface_payload["description"] = desired_description
-            if desired_mac:
-                interface_payload["mac_address"] = desired_mac
             interface = await client.create_interface(interface_payload)
+            if desired_mac:
+                interface = await _ensure_interface_primary_mac(
+                    client,
+                    interface,
+                    desired_mac,
+                    dry_run=dry_run,
+                    warnings=warnings,
+                )
         else:
             update_payload: dict[str, Any] = {}
             current_description = str(interface.get("description") or "").strip()
@@ -407,16 +427,99 @@ async def _sync_snmp_interfaces(
                 update_payload["enabled"] = desired_enabled
             elif current_enabled is None:
                 update_payload["enabled"] = desired_enabled
-            current_mac = str(interface.get("mac_address") or "").strip().upper()
-            if desired_mac and current_mac != desired_mac:
-                update_payload["mac_address"] = desired_mac
             if update_payload and not dry_run:
                 interface = await client.update_interface(interface["id"], update_payload)
             elif update_payload:
                 warnings.append(f"Interface {interface_name} would be updated.")
+            if desired_mac:
+                interface = await _ensure_interface_primary_mac(
+                    client,
+                    interface,
+                    desired_mac,
+                    dry_run=dry_run,
+                    warnings=warnings,
+                )
         if isinstance(interface, dict):
             synced_interfaces.append(interface)
     return synced_interfaces, warnings
+
+
+async def _ensure_interface_primary_mac(
+    client: NetBoxClient,
+    interface: dict[str, Any],
+    desired_mac: str,
+    *,
+    dry_run: bool,
+    warnings: list[str],
+) -> dict[str, Any]:
+    desired_mac = str(desired_mac).strip().upper()
+    if not desired_mac:
+        return interface
+    current_mac = _extract_interface_mac(interface)
+    if current_mac == desired_mac:
+        return interface
+    interface_id = _extract_related_id(interface.get("id"))
+    if interface_id is None:
+        return interface
+    if dry_run:
+        warnings.append(f"Interface {interface.get('name') or interface.get('display') or interface_id} would receive the discovered MAC address.")
+        return interface
+
+    mac_record = await _ensure_mac_address_record(client, desired_mac, interface_id)
+    if mac_record is None:
+        warnings.append(f"MAC {desired_mac} could not be linked to interface {interface_id}.")
+        return interface
+    return await client.update_interface(interface_id, {"primary_mac_address": {"id": mac_record["id"]}})
+
+
+async def _ensure_mac_address_record(client: NetBoxClient, mac_address: str, interface_id: int) -> dict[str, Any] | None:
+    find_mac_addresses = getattr(client, "find_mac_addresses", None)
+    if find_mac_addresses is not None:
+        try:
+            existing_records = await find_mac_addresses(mac_address)
+        except Exception:
+            existing_records = []
+        for record in existing_records:
+            if not isinstance(record, dict):
+                continue
+            assigned_object = record.get("assigned_object")
+            if _extract_related_id(assigned_object) == interface_id:
+                return record
+            update_mac_address = getattr(client, "update_mac_address", None)
+            if update_mac_address is not None:
+                try:
+                    return await update_mac_address(
+                        int(record["id"]),
+                        {
+                            "assigned_object_type": "dcim.interface",
+                            "assigned_object_id": interface_id,
+                        },
+                    )
+                except Exception:
+                    continue
+    create_mac_address = getattr(client, "create_mac_address", None)
+    if create_mac_address is None:
+        return None
+    return await create_mac_address(
+        {
+            "mac_address": mac_address,
+            "assigned_object_type": "dcim.interface",
+            "assigned_object_id": interface_id,
+            "description": "synced by infra-sync-api",
+        }
+    )
+
+
+def _extract_interface_mac(interface: dict[str, Any]) -> str:
+    primary_mac_address = interface.get("primary_mac_address")
+    if isinstance(primary_mac_address, dict):
+        mac_address = primary_mac_address.get("mac_address")
+        if isinstance(mac_address, str):
+            return mac_address.strip().upper()
+    mac_address = interface.get("mac_address")
+    if isinstance(mac_address, str):
+        return mac_address.strip().upper()
+    return ""
 
 
 def _normalize_snmp_ports(ports: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -560,6 +663,27 @@ async def _validate_site_and_role(client: NetBoxClient, site_id: int, role_id: i
         if exc.status_code == 404:
             raise SyncError(f"Device role {role_id} was not found in NetBox", status_code=404) from exc
         raise
+
+
+async def _device_name_is_available(client: NetBoxClient, device_id: int, device_name: str, site_id: int | None) -> bool:
+    if not device_name:
+        return True
+    find_devices_by_name = getattr(client, "find_devices_by_name", None)
+    if find_devices_by_name is None:
+        return True
+    try:
+        matches = await find_devices_by_name(device_name)
+    except Exception:
+        return True
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        if match.get("id") == device_id:
+            continue
+        match_site_id = _extract_related_id(match.get("site"))
+        if site_id is None or match_site_id is None or match_site_id == site_id:
+            return False
+    return True
 
 
 def merge_sync_marker(existing_value: Any, hostid: str, device_name: str, action: str) -> str:

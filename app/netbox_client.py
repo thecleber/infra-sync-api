@@ -195,6 +195,15 @@ class NetBoxClient:
     async def update_interface(self, interface_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.update(f"/api/dcim/interfaces/{interface_id}/", payload)
 
+    async def find_mac_addresses(self, mac_address: str) -> list[dict[str, Any]]:
+        return await self.list("/api/dcim/mac-addresses/", params={"mac_address": mac_address})
+
+    async def create_mac_address(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.create("/api/dcim/mac-addresses/", payload)
+
+    async def update_mac_address(self, mac_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.update(f"/api/dcim/mac-addresses/{mac_id}/", payload)
+
     async def list_vlans(self, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         return await self.list("/api/ipam/vlans/", params=params)
 
