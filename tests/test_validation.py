@@ -558,6 +558,120 @@ def test_discovery_progress_endpoint(monkeypatch):
     assert response.json()["processed_hosts"] == 10
 
 
+def test_discovery_scan_marks_updated_and_pending_inventory_status(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    saved_payloads = {}
+
+    async def fake_scan_network(network, community, **kwargs):
+        return {
+            "network": network,
+            "count": 2,
+            "alive_hosts": 2,
+            "snmp_devices": 2,
+            "scanned_at": "2026-08-06T18:30:00Z",
+            "devices": [
+                {
+                    "ip": "10.0.0.24",
+                    "sys_name": "SW-ACCESS-LAN",
+                    "manufacturer": "Intelbras",
+                    "model": "S2328G-A",
+                    "device_type": "switch",
+                    "sys_descr": "INTELBRAS Platform Software",
+                    "group": "switches",
+                    "subgroup": "access",
+                    "include": True,
+                    "sys_object_id": "1.3.6.1.4.1.26138",
+                    "mac_address": "AA:BB:CC:DD:EE:FF",
+                },
+                {
+                    "ip": "10.0.0.25",
+                    "sys_name": "AP-01",
+                    "manufacturer": "Grandstream",
+                    "model": "GWN7630",
+                    "device_type": "wireless_ap",
+                    "sys_descr": "Grandstream GWN access point",
+                    "group": "aps",
+                    "subgroup": "indoor",
+                    "include": True,
+                    "sys_object_id": "1.3.6.1.4.1.42397",
+                    "mac_address": "11:22:33:44:55:66",
+                },
+            ],
+        }
+
+    async def fake_find_devices_by_ip(ip_value: str):
+        if ip_value == "10.0.0.24":
+            return [
+                {
+                    "id": 101,
+                    "name": "SW-ACCESS-LAN",
+                    "device_type": {
+                        "manufacturer": {"name": "Intelbras"},
+                        "model": "S2328G-A",
+                    },
+                    "interface_count": 24,
+                }
+            ]
+        if ip_value == "10.0.0.25":
+            return [
+                {
+                    "id": 202,
+                    "name": "AP-01",
+                    "device_type": {
+                        "manufacturer": {"name": "Grandstream"},
+                        "model": "GWN7630",
+                    },
+                    "interface_count": 8,
+                }
+            ]
+        return []
+
+    async def fake_find_devices_by_name(name: str):
+        if name == "SW-ACCESS-LAN":
+            return await fake_find_devices_by_ip("10.0.0.24")
+        if name == "AP-01":
+            return await fake_find_devices_by_ip("10.0.0.25")
+        return []
+
+    async def fake_list_interfaces(params=None):
+        if params and str(params.get("device_id")) == "101":
+            return [{"id": 501, "name": "mgmt0", "mac_address": "AA:BB:CC:DD:EE:FF"}]
+        if params and str(params.get("device_id")) == "202":
+            return [{"id": 601, "name": "mgmt0", "mac_address": "00:11:22:33:44:00"}]
+        return []
+
+    monkeypatch.setattr(new_main, "scan_network", fake_scan_network)
+    monkeypatch.setattr(NetBoxClient, "find_devices_by_ip", AsyncMock(side_effect=fake_find_devices_by_ip))
+    monkeypatch.setattr(NetBoxClient, "find_devices_by_name", AsyncMock(side_effect=fake_find_devices_by_name))
+    monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(side_effect=fake_list_interfaces))
+    monkeypatch.setattr(new_main, "save_last_scan", lambda payload: saved_payloads.__setitem__("scan", payload))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/discovery/scan",
+            data={
+                "network": "10.0.0.0/24",
+                "community": "public",
+                "timeout": "1.0",
+                "retries": "0",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200
+    assert "Atualizado" in response.text
+    assert "Pendente atualização" in response.text
+    assert saved_payloads["scan"]["devices"][0]["inventory_status"] == "Atualizado"
+    assert saved_payloads["scan"]["devices"][1]["inventory_status"] == "Pendente atualização"
+
+
 def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")

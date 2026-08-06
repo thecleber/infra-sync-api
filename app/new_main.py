@@ -2665,6 +2665,26 @@ async def _discover_device_mac(client: NetBoxClient | None, device_id: Any) -> s
     return ""
 
 
+async def _discover_device_interface_count(client: NetBoxClient | None, device_id: Any) -> int:
+    if client is None:
+        return 0
+    related_id = _related_id(device_id)
+    if not related_id:
+        return 0
+    with suppress(Exception):
+        details = await client.get_device(int(related_id))
+        interface_count = details.get("interface_count")
+        if isinstance(interface_count, int):
+            return interface_count
+    list_interfaces = getattr(client, "list_interfaces", None)
+    if list_interfaces is None:
+        return 0
+    with suppress(Exception):
+        interfaces = await list_interfaces({"device_id": related_id, "limit": 1000})
+        return len([interface for interface in interfaces if isinstance(interface, dict)])
+    return 0
+
+
 def _discover_snmp_ports_for_ip(ip: str) -> list[dict[str, Any]]:
     last_probe = load_last_probe()
     probe = last_probe.get("last_probe") if isinstance(last_probe.get("last_probe"), dict) else None
@@ -2707,6 +2727,61 @@ def _discovery_device_status(device: dict[str, Any], existing: dict[str, Any] | 
     return "Novo", "Pronto para criar no inventário"
 
 
+def _existing_device_identity(existing: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(existing, dict):
+        return "", ""
+    device_type = existing.get("device_type")
+    manufacturer = ""
+    model = ""
+    if isinstance(device_type, dict):
+        manufacturer = _relation_label(device_type.get("manufacturer"))
+        model = _normalize_text(device_type.get("model"))
+    elif device_type is not None:
+        model = _relation_label(device_type)
+    return manufacturer, model
+
+
+def _normalized_comparison_text(value: Any) -> str:
+    return _normalize_text(value).lower()
+
+
+def _discovery_inventory_status(
+    device: dict[str, Any],
+    existing: dict[str, Any] | None,
+    *,
+    discovered_mac: str,
+    existing_mac: str,
+    discovered_interface_count: int,
+    existing_interface_count: int,
+) -> tuple[str, str]:
+    if existing is None:
+        return "Novo", "Ainda não cadastrado no inventário"
+
+    expected_name = _normalize_text(device.get("sys_name")) or _discovery_device_label(device)
+    current_name = _normalize_text(existing.get("name")) or _normalize_text(existing.get("display_name")) or expected_name
+    expected_manufacturer = _normalized_comparison_text(device.get("manufacturer"))
+    expected_model = _normalized_comparison_text(device.get("model") or device.get("device_type"))
+    current_manufacturer, current_model = _existing_device_identity(existing)
+    current_manufacturer = _normalized_comparison_text(current_manufacturer)
+    current_model = _normalized_comparison_text(current_model)
+
+    diffs: list[str] = []
+    if expected_name and _normalized_comparison_text(current_name) != _normalized_comparison_text(expected_name):
+        diffs.append("nome")
+    if discovered_mac and existing_mac and _normalized_comparison_text(discovered_mac) != _normalized_comparison_text(existing_mac):
+        diffs.append("MAC")
+    if expected_manufacturer and current_manufacturer and expected_manufacturer != current_manufacturer:
+        diffs.append("fabricante")
+    if expected_model and current_model and expected_model != current_model:
+        diffs.append("modelo")
+    if discovered_interface_count and existing_interface_count and discovered_interface_count != existing_interface_count:
+        diffs.append("interfaces")
+
+    if diffs:
+        return "Pendente atualização", f"Encontrado no inventário como {current_name}; diferenças: {', '.join(diffs)}"
+    return "Atualizado", f"Encontrado no inventário como {current_name}; dados já estão atualizados no inventário"
+
+
 async def _annotate_discovered_device(
     request: Request,
     device: dict[str, Any],
@@ -2729,10 +2804,21 @@ async def _annotate_discovered_device(
     annotated["netbox_device_name"] = _normalize_text(existing.get("name")) if isinstance(existing, dict) else ""
     discovered_mac = _normalize_mac_text(annotated.get("mac_address"))
     existing_mac = await _discover_device_mac(client, existing.get("id")) if isinstance(existing, dict) else ""
+    discovered_ports = _discover_snmp_ports_for_ip(ip)
+    existing_interface_count = await _discover_device_interface_count(client, existing.get("id")) if isinstance(existing, dict) else 0
+    inventory_status, inventory_message = _discovery_inventory_status(
+        annotated,
+        existing,
+        discovered_mac=discovered_mac,
+        existing_mac=existing_mac,
+        discovered_interface_count=len(discovered_ports),
+        existing_interface_count=existing_interface_count,
+    )
+    annotated["inventory_status"] = inventory_status
+    annotated["inventory_message"] = inventory_message
     annotated["discovered_mac_address"] = discovered_mac
     annotated["netbox_mac_address"] = existing_mac
     annotated["mac_address"] = discovered_mac or existing_mac
-    discovered_ports = _discover_snmp_ports_for_ip(ip)
     if discovered_ports:
         annotated["ports"] = discovered_ports
 
@@ -3267,6 +3353,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
                   {_discovery_subgroup_select_options(str(device.get("group") or "hosts"), str(device.get("subgroup") or "fixed"))}
                 </select>
               </td>
+              <td>{_render_status_badge(str(device.get("inventory_status") or "Novo"), str(device.get("inventory_message") or ""))}</td>
               <td>{_render_status_badge(str(device.get("system_status") or "Novo"), str(device.get("system_message") or ""))}</td>
               <td>
                 <label class="check" style="margin:0;">
@@ -3420,6 +3507,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
                 <th>Descrição</th>
                 <th>Grupo</th>
                 <th>Subgrupo</th>
+                <th>Inventário</th>
                 <th>Status sistema</th>
                 <th>Incluir</th>
               </tr>
@@ -3494,6 +3582,8 @@ def _render_status_badge(label: str, title: str = "") -> str:
         color = "#16a34a"
     elif normalized in {"atualizado"}:
         color = "#7c3aed"
+    elif normalized in {"pendente atualização", "pendente atualizacao", "pendente"}:
+        color = "#f59e0b"
     elif normalized in {"novo"}:
         color = "#f59e0b"
     elif normalized in {"criado"}:
