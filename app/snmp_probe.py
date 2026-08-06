@@ -327,11 +327,35 @@ def _clean_text(value: Any) -> str:
     return cleaned
 
 
+def _clean_value(var_bind: Any) -> str:
+    value: Any | None = None
+    if isinstance(var_bind, (tuple, list)) and len(var_bind) >= 2:
+        value = var_bind[1]
+    else:
+        try:
+            value = var_bind[1]
+        except Exception:
+            value = None
+    if value is not None:
+        if hasattr(value, "prettyPrint"):
+            return _clean_text(value.prettyPrint())
+        return _clean_text(value)
+    if hasattr(var_bind, "prettyPrint"):
+        pretty = _clean_text(var_bind.prettyPrint())
+        if " = " in pretty:
+            return _clean_text(pretty.split(" = ", 1)[1])
+        return pretty
+    return _clean_text(var_bind)
+
+
 def _normalize_mac(value: str) -> str:
     cleaned = _clean_text(value)
     if not cleaned:
         return ""
     lowered = cleaned.lower()
+    if lowered.startswith("0x"):
+        cleaned = cleaned[2:]
+        lowered = cleaned.lower()
     if lowered in {"00:00:00:00:00:00", "000000000000"}:
         return ""
     hex_only = "".join(ch for ch in cleaned if ch.isalnum())

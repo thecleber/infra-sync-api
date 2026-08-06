@@ -489,6 +489,12 @@ def _normalize_snmp_mac(value: Any) -> str:
     cleaned = str(value or "").strip()
     if not cleaned:
         return ""
+    lowered = cleaned.lower()
+    if lowered.startswith("0x"):
+        cleaned = cleaned[2:]
+        lowered = cleaned.lower()
+    if lowered in {"00:00:00:00:00:00", "000000000000", "ff:ff:ff:ff:ff:ff"}:
+        return ""
     normalized = "".join(ch for ch in cleaned if ch.isalnum())
     if len(normalized) == 12:
         return ":".join(normalized[i:i + 2] for i in range(0, 12, 2)).upper()
