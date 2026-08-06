@@ -735,6 +735,27 @@ def test_discovery_save_prefers_scanned_mac_for_existing_devices(monkeypatch):
     monkeypatch.setattr(new_main, "sync_device", AsyncMock(side_effect=fake_sync_device))
     monkeypatch.setattr(new_main, "save_group_selections", lambda payload: saved_payloads.__setitem__("groups", payload))
     monkeypatch.setattr(new_main, "save_last_scan", lambda payload: saved_payloads.__setitem__("scan", payload))
+    monkeypatch.setattr(
+        new_main,
+        "load_last_probe",
+        lambda: {
+            "last_probe": {
+                "ip": "10.0.0.18",
+                "ports": [
+                    {
+                        "index": "1",
+                        "name": "ge-0/0/1",
+                        "description": "uplink core",
+                        "alias": "uplink core",
+                        "admin_status": "up",
+                        "oper_status": "up",
+                        "mac_address": "aa:bb:cc:dd:ee:ff",
+                        "speed_bps": "1.00 Gbps",
+                    }
+                ],
+            }
+        },
+    )
 
     with TestClient(app) as client:
         response = client.post(
@@ -749,6 +770,7 @@ def test_discovery_save_prefers_scanned_mac_for_existing_devices(monkeypatch):
     assert len(synced_payloads) == 1
     assert synced_payloads[0].netbox_device_id == 321
     assert synced_payloads[0].mac_address == "AA:BB:CC:DD:EE:FF"
+    assert synced_payloads[0].ports and synced_payloads[0].ports[0]["name"] == "ge-0/0/1"
     assert saved_payloads["scan"]["devices"][0]["discovered_mac_address"] == "AA:BB:CC:DD:EE:FF"
     assert saved_payloads["scan"]["devices"][0]["netbox_mac_address"] == "00:11:22:33:44:55"
 

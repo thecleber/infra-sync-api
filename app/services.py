@@ -423,7 +423,7 @@ def _normalize_snmp_ports(ports: list[dict[str, Any]] | None) -> list[dict[str, 
 
 
 def _snmp_interface_name(port: dict[str, Any]) -> str:
-    for key in ("name", "description", "alias", "index"):
+    for key in ("name", "index"):
         value = str(port.get(key) or "").strip()
         if value:
             return value

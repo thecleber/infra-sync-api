@@ -2665,6 +2665,15 @@ async def _discover_device_mac(client: NetBoxClient | None, device_id: Any) -> s
     return ""
 
 
+def _discover_snmp_ports_for_ip(ip: str) -> list[dict[str, Any]]:
+    last_probe = load_last_probe()
+    probe = last_probe.get("last_probe") if isinstance(last_probe.get("last_probe"), dict) else None
+    if not probe or _normalize_text(probe.get("ip")) != _normalize_text(ip):
+        return []
+    ports = probe.get("ports") if isinstance(probe.get("ports"), list) else []
+    return [port for port in ports if isinstance(port, dict)]
+
+
 async def _lookup_discovery_netbox_device(client: NetBoxClient | None, ip: str, name: str) -> dict[str, Any] | None:
     if client is None:
         return None
@@ -2723,6 +2732,9 @@ async def _annotate_discovered_device(
     annotated["discovered_mac_address"] = discovered_mac
     annotated["netbox_mac_address"] = existing_mac
     annotated["mac_address"] = discovered_mac or existing_mac
+    discovered_ports = _discover_snmp_ports_for_ip(ip)
+    if discovered_ports:
+        annotated["ports"] = discovered_ports
 
     if not sync_with_netbox:
         return annotated
@@ -2760,6 +2772,7 @@ async def _annotate_discovered_device(
         ),
         comments_summary=_normalize_text(annotated.get("notes")) or "Descoberto por ARP/Nmap + SNMP",
         netbox_status="active",
+        ports=annotated.get("ports") if isinstance(annotated.get("ports"), list) else None,
     )
     try:
         outcome = await sync_device(payload, client, settings.default_site_id, dry_run=False)
