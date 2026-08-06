@@ -570,10 +570,13 @@ def merge_sync_marker(existing_value: Any, hostid: str, device_name: str, action
     )
     existing = str(existing_value).strip() if existing_value else ""
     if not existing:
-        return marker
+        return marker[:200]
     if marker in existing:
-        return existing
-    return f"{existing} | {marker}"
+        return existing[:200]
+    combined = f"{existing} | {marker}"
+    if len(combined) <= 200:
+        return combined
+    return marker[:200]
 
 
 def _extract_related_id(value: Any) -> int | None:

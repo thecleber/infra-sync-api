@@ -4,7 +4,7 @@ import pytest
 
 from app.models import SyncDeviceRequest
 from app.netbox_client import NetBoxClientError
-from app.services import SyncError, sync_device, sync_zabbix_host
+from app.services import SyncError, merge_sync_marker, sync_device, sync_zabbix_host
 from app.zabbix_client import ZabbixHostSnapshot
 
 
@@ -358,3 +358,9 @@ def test_sync_device_rejects_missing_site_in_netbox():
 
     with pytest.raises(SyncError, match="Site 999 was not found in NetBox"):
         asyncio.run(sync_device(payload, MissingSiteClient(), default_site_id=1, dry_run=False))
+
+
+def test_merge_sync_marker_stays_within_netbox_description_limit():
+    marker = merge_sync_marker("x" * 500, "10.0.0.19", "SW-BILHETERIA", "updated")
+    assert len(marker) <= 200
+    assert "[infra-sync-api] updated at " in marker
