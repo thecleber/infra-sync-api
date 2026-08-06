@@ -533,11 +533,43 @@ def _normalize_snmp_ports(ports: list[dict[str, Any]] | None) -> list[dict[str, 
 
 
 def _snmp_interface_name(port: dict[str, Any]) -> str:
-    for key in ("name", "index"):
-        value = str(port.get(key) or "").strip()
+    for key in ("name", "description", "alias"):
+        value = _snmp_interface_label(str(port.get(key) or "").strip())
         if value:
             return value
+    value = str(port.get("index") or "").strip()
+    if value:
+        return value
     return ""
+
+
+def _snmp_interface_label(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if not cleaned:
+        return ""
+    first_token = cleaned.split(" ", 1)[0].strip()
+    if _looks_like_interface_name(first_token):
+        return first_token
+    if _looks_like_interface_name(cleaned):
+        return cleaned
+    return ""
+
+
+def _looks_like_interface_name(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", value).strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"mgmt0", "management0", "loopback0", "null0"}:
+        return True
+    if re.match(
+        r"^(?:"
+        r"gigabitethernet|fastethernet|tengigabitethernet|ethernet|port-channel|portchannel|lag|ae|"
+        r"ge-|xe-|et-|fa|gi|te|lo|vlan|vlan-interface|svi|mgmt|management|loopback|null|tunnel"
+        r")",
+        normalized,
+    ):
+        return True
+    return bool(re.search(r"\d", normalized) and any(sep in normalized for sep in ("/", "-", ".", "_")))
 
 
 def _snmp_interface_description(port: dict[str, Any]) -> str:
@@ -571,6 +603,12 @@ def _snmp_interface_type(port: dict[str, Any]) -> str:
     if speed >= 1:
         return "1000base-t"
     if speed >= 0.1:
+        return "100base-tx"
+    if any(token in text for token in ("tengigabitethernet", "ten-gigabitethernet", "xe-", "et-")):
+        return "10gbase-t"
+    if any(token in text for token in ("gigabitethernet", "ge-", "gi")):
+        return "1000base-t"
+    if any(token in text for token in ("fastethernet", "fa-")):
         return "100base-tx"
     return "virtual"
 

@@ -12,6 +12,7 @@ class FakeClient:
     def __init__(self) -> None:
         self.created_device_payload = None
         self.created_interface_payload = None
+        self.created_interface_payloads = []
         self.created_ip_payload = None
         self.created_mac_payloads = []
         self.updated_interface_payloads = []
@@ -76,6 +77,7 @@ class FakeClient:
 
     async def create_interface(self, payload):
         self.created_interface_payload = payload
+        self.created_interface_payloads.append(payload)
         return {"id": 44, **payload}
 
     async def list_interfaces(self, params=None):
@@ -371,6 +373,40 @@ def test_sync_device_updates_switch_ports_from_snmp_snapshot():
         for payload in client.updated_device_payloads
     )
     assert client.updated_device_payloads
+
+
+def test_sync_device_prefers_switch_port_labels_and_types_when_ifname_is_missing():
+    payload = SyncDeviceRequest(
+        hostid="switch-02",
+        hostname="SW-ACCESS-02",
+        display_name="SW-ACCESS-02",
+        ip="10.0.0.56",
+        fabricante="Intelbras",
+        modelo="S2328G-A",
+        site_id=1,
+        role_id=2,
+        mac_address="00:11:22:33:44:66",
+        ports=[
+            {
+                "index": "1",
+                "name": "",
+                "description": "GigabitEthernet1/0/1 Interface",
+                "alias": "uplink core",
+                "admin_status": "up",
+                "oper_status": "up",
+                "speed_bps": "",
+                "mac_address": "00:11:22:33:44:66",
+            }
+        ],
+    )
+    client = FakeClient()
+
+    outcome = asyncio.run(sync_device(payload, client, default_site_id=1, dry_run=False))
+
+    assert outcome.action == "created"
+    assert any(entry.get("name") == "GigabitEthernet1/0/1" for entry in client.created_interface_payloads)
+    assert any(entry.get("type") == "1000base-t" for entry in client.created_interface_payloads)
+    assert any(entry.get("description") == "uplink core" for entry in client.created_interface_payloads)
 
 
 def test_sync_device_skips_duplicate_name_when_site_has_collision():
