@@ -2532,6 +2532,7 @@ async def discovery_scan(request: Request):
             payload.get("devices") if isinstance(payload.get("devices"), list) else [],
             sync_with_netbox=False,
         )
+        payload["ipam_prefix_status"] = await _ensure_discovery_prefix_in_netbox(request, payload.get("network", network))
         save_last_scan(payload)
         return HTMLResponse(_render_discovery_page(payload, saved=True))
     except Exception as exc:
@@ -2956,6 +2957,7 @@ async def _annotate_discovered_devices(
 def _render_discovery_page(state: dict[str, Any], error: str | None = None, saved: bool = False) -> str:
     devices = state.get("devices") if isinstance(state.get("devices"), list) else []
     progress = state.get("progress") if isinstance(state.get("progress"), dict) else {}
+    ipam_prefix_status = _normalize_text(state.get("ipam_prefix_status"))
     progress_status = str(progress.get("status") or "idle")
     progress_message = str(progress.get("message") or "Pronto para iniciar")
     progress_total = int(progress.get("total_hosts") or 0)
@@ -3450,6 +3452,7 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       </section>
       {"<div class='hero'><small>Salvo</small><strong>Classificacao gravada com sucesso.</strong><div class='sub' style='margin: 6px 0 0;'>Os dispositivos selecionados foram registrados localmente.</div></div>" if saved else ""}
       {f"<div class='hero'><small>Erro</small><strong>{escape(error)}</strong></div>" if error else ""}
+      {f"<div class='hero'><small>IPAM</small><strong>{escape(ipam_prefix_status)}</strong><div class='sub' style='margin: 6px 0 0;'>O prefixo da rede descoberta foi sincronizado no NetBox.</div></div>" if ipam_prefix_status else ""}
       <div class="panel" style="margin-bottom:14px;">
         <h2>Executar varredura</h2>
         <p>Use uma rede privada como 10.0.0.0/24. O sistema consulta SNMP e monta uma lista de dispositivos com sugestao de grupo.</p>
@@ -3597,7 +3600,7 @@ def _management_nav(active: str) -> str:
         ("overview", "/", "Dashboard", "Resumo operacional"),
         ("devices", "/devices", "Devices", "Criar e editar equipamentos"),
         ("vlans", "/vlans", "VLANs", "Segmentacao e tags"),
-        ("networks", "/networks", "Redes", "Prefixes e blocos IP"),
+        ("networks", "/networks", "IPAM", "Prefixes, IPs e blocos IP"),
         ("snmp", "/snmp", "SNMP", "Portas, CPU e tráfego"),
         ("alerts", "/alerts", "Alertas", "Problemas em tempo real"),
         ("reports", "/reports", "Relatorios", "Impressao e exportacao"),
@@ -3675,6 +3678,97 @@ def _related_id(value: Any) -> str:
         text = value.get("id")
         return str(text) if text is not None else ""
     return _normalize_text(value)
+
+
+async def _ensure_discovery_prefix_in_netbox(request: Request, network: str) -> str:
+    client = request.app.state.netbox_client
+    network_value = _normalize_text(network)
+    if client is None or not network_value:
+        return ""
+
+    try:
+        existing_prefixes = await client.list_prefixes(params={"prefix": network_value, "limit": 10})
+    except Exception as exc:
+        return f"Nao foi possivel consultar o IPAM para criar o prefixo {network_value}: {exc}"
+
+    for prefix in existing_prefixes:
+        if isinstance(prefix, dict) and _normalize_text(prefix.get("prefix")) == network_value:
+            return f"Prefixo {network_value} ja estava cadastrado no IPAM."
+
+    payload = {
+        "prefix": network_value,
+        "status": "active",
+        "description": f"Rede criada automaticamente pela descoberta SNMP em {datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')}",
+    }
+    try:
+        await client.create_prefix(payload)
+        return f"Prefixo {network_value} criado no IPAM a partir da varredura."
+    except Exception as exc:
+        return f"Nao foi possivel criar o prefixo {network_value} no IPAM: {exc}"
+
+
+async def _collect_ipam_address_rows(client: NetBoxClient | None, search: str = "") -> list[dict[str, Any]]:
+    if client is None:
+        return []
+
+    params: dict[str, Any] = {"limit": 100}
+    search_value = _normalize_text(search)
+    if search_value:
+        params["q"] = search_value
+
+    try:
+        ip_addresses = await client.list_ip_addresses(params=params)
+    except Exception:
+        return []
+
+    interface_cache: dict[str, dict[str, Any] | None] = {}
+    rows: list[dict[str, Any]] = []
+    for ip_address in ip_addresses:
+        if not isinstance(ip_address, dict):
+            continue
+
+        assigned_object = ip_address.get("assigned_object") if isinstance(ip_address.get("assigned_object"), dict) else None
+        assigned_type = _normalize_text(ip_address.get("assigned_object_type"))
+        assigned_id = _related_id(ip_address.get("assigned_object_id"))
+        interface = assigned_object
+
+        if interface is None and assigned_type == "dcim.interface" and assigned_id:
+            cached_interface = interface_cache.get(assigned_id)
+            if cached_interface is None:
+                try:
+                    cached_interface = await client.get_interface(int(assigned_id))
+                except Exception:
+                    cached_interface = None
+                interface_cache[assigned_id] = cached_interface
+            interface = cached_interface
+
+        device = None
+        if isinstance(interface, dict):
+            device = interface.get("device") if interface.get("device") is not None else None
+
+        device_id = _related_id(device)
+        device_name = _relation_label(device)
+        interface_name = _relation_label(interface) if isinstance(interface, dict) else ""
+        if isinstance(interface, dict) and not interface_name:
+            interface_name = _normalize_text(interface.get("name")) or _normalize_text(interface.get("display")) or "—"
+
+        assigned_label = assigned_type or "—"
+        rows.append(
+            {
+                "address": _normalize_text(ip_address.get("address")) or "—",
+                "status": _relation_label(ip_address.get("status")),
+                "assigned_label": assigned_label,
+                "device_id": device_id,
+                "device_name": device_name,
+                "device_link": f'<a href="/devices/view/{escape(device_id)}"><strong>{escape(device_name)}</strong></a>' if device_id else "—",
+                "interface_name": interface_name or "—",
+                "tenant": _relation_label(ip_address.get("tenant")),
+                "role": _relation_label(ip_address.get("role")),
+                "description": _normalize_text(ip_address.get("description")) or "—",
+            }
+        )
+
+    return rows
 
 
 def _custom_field_pairs(custom_fields: dict[str, Any] | None, limit: int = 6) -> list[tuple[str, str]]:
@@ -4754,6 +4848,7 @@ async def networks_page(request: Request, saved: int = 0, error: str | None = No
     client = request.app.state.netbox_client
     prefixes: list[dict[str, Any]] = []
     devices: list[dict[str, Any]] = []
+    ip_rows: list[dict[str, Any]] = []
     topology_state = load_network_topology()
     edit_prefix: dict[str, Any] | None = None
     edit_topology: dict[str, Any] | None = None
@@ -4766,6 +4861,7 @@ async def networks_page(request: Request, saved: int = 0, error: str | None = No
                 params["q"] = q
             prefixes = await client.list_prefixes(params=params)
             devices = await client.list_devices(params={"limit": 100})
+            ip_rows = await _collect_ipam_address_rows(client, q)
             if edit is not None:
                 edit_prefix = await client.get_prefix(edit)
                 edit_topology = _topology_entry_for_prefix(topology_state, edit)
@@ -4793,6 +4889,8 @@ async def networks_page(request: Request, saved: int = 0, error: str | None = No
         for device in devices
         if isinstance(device, dict)
     }
+    used_ip_rows = [row for row in ip_rows if _normalize_text(row.get("device_id")) or _normalize_text(row.get("assigned_label")) not in {"", "—"}]
+    used_ip_count = len([row for row in ip_rows if _normalize_text(row.get("device_id"))])
     body = f"""
     <div class="panels" style="grid-template-columns: 1fr 1.2fr;">
       {_prefix_form(edit_prefix, edit_topology, devices)}
@@ -4804,6 +4902,27 @@ async def networks_page(request: Request, saved: int = 0, error: str | None = No
           <tbody>{''.join(rows) if rows else _render_table_empty('Nenhuma rede encontrada.', 6)}</tbody>
         </table>
       </div>
+    </div>
+    <div class="panel" style="margin-top:14px;">
+      <h2>IPs em uso</h2>
+      <p>Quando o IP estiver associado a uma interface NetBox, o link leva diretamente ao device dono daquele endereço.</p>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; color:#cbd5e1;">
+        <span><strong>{used_ip_count}</strong> IPs vinculados a devices</span>
+        <span><strong>{len(ip_rows)}</strong> IPs carregados do IPAM</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>IP</th><th>Status</th><th>Device</th><th>Interface</th><th>Alocação</th><th>Tenant</th><th>Descrição</th>
+          </tr>
+        </thead>
+        <tbody>
+          {"".join(
+            f"<tr><td><strong>{escape(row['address'])}</strong></td><td>{escape(row['status'])}</td><td>{row['device_link']}</td><td>{escape(row['interface_name'])}</td><td>{escape(row['assigned_label'])}</td><td>{escape(row['tenant'])}</td><td>{escape(row['description'])}</td></tr>"
+            for row in used_ip_rows
+          ) if used_ip_rows else _render_table_empty('Nenhum IP vinculado encontrado.', 7)}
+        </tbody>
+      </table>
     </div>
     <div class="panel" style="margin-top:14px;">
       <h2>Mapa da rede</h2>
@@ -4820,10 +4939,10 @@ async def networks_page(request: Request, saved: int = 0, error: str | None = No
     """
     return HTMLResponse(
         _render_management_page(
-            title="Redes | infra-sync-api",
+            title="IPAM | infra-sync-api",
             active="networks",
-            heading="Redes",
-            subtitle="Criar, editar e revisar blocos IP e prefixes.",
+            heading="IPAM",
+            subtitle="Criar, editar e revisar prefixes, redes e IPs em uso.",
             actions='<a class="btn" href="/">Dashboard</a><a class="btn" href="/topology">Mapa</a><a class="btn" href="/reports">Imprimir relat?rio</a>',
             body=body,
             banner=banner,

@@ -118,6 +118,26 @@ def _mock_management_clients(monkeypatch):
         "untagged_vlan": {"id": 201, "vid": 10, "name": "CORP"},
         "mac_address": "00:11:22:33:44:55",
     }]))
+    monkeypatch.setattr(NetBoxClient, "list_ip_addresses", AsyncMock(return_value=[{
+        "id": 601,
+        "address": "10.0.0.24/32",
+        "status": {"value": "active"},
+        "assigned_object_type": "dcim.interface",
+        "assigned_object_id": 501,
+        "tenant": {"name": "Operacao"},
+        "role": {"name": "Primary"},
+        "description": "IP de gerencia",
+    }]))
+    monkeypatch.setattr(NetBoxClient, "get_interface", AsyncMock(return_value={
+        "id": 501,
+        "name": "mgmt0",
+        "device": {"id": 101, "name": "SW-ACCESS-LAN"},
+    }))
+    monkeypatch.setattr(NetBoxClient, "create_prefix", AsyncMock(return_value={
+        "id": 901,
+        "prefix": "10.0.0.0/24",
+        "status": {"value": "active"},
+    }))
 
 
 def test_request_validation_and_blocklist():
@@ -672,6 +692,56 @@ def test_discovery_scan_marks_updated_and_pending_inventory_status(monkeypatch):
     assert saved_payloads["scan"]["devices"][1]["inventory_status"] == "Pendente atualização"
 
 
+def test_discovery_scan_creates_ipam_prefix_from_network(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    created_prefixes = []
+
+    async def fake_scan_network(network, community, **kwargs):
+        return {
+            "network": network,
+            "count": 0,
+            "alive_hosts": 0,
+            "snmp_devices": 0,
+            "scanned_at": "2026-08-06T18:30:00Z",
+            "devices": [],
+        }
+
+    async def fake_list_prefixes(params=None):
+        return []
+
+    async def fake_create_prefix(payload):
+        created_prefixes.append(payload)
+        return {"id": 901, **payload}
+
+    monkeypatch.setattr(new_main, "scan_network", fake_scan_network)
+    monkeypatch.setattr(NetBoxClient, "list_prefixes", AsyncMock(side_effect=fake_list_prefixes))
+    monkeypatch.setattr(NetBoxClient, "create_prefix", AsyncMock(side_effect=fake_create_prefix))
+    monkeypatch.setattr(new_main, "save_last_scan", lambda payload: None)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/discovery/scan",
+            data={
+                "network": "10.0.0.0/24",
+                "community": "public",
+                "timeout": "1.0",
+                "retries": "0",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200
+    assert created_prefixes[0]["prefix"] == "10.0.0.0/24"
+    assert "criado no IPAM" in response.text
+
+
 def test_discovery_save_renders_success_and_persists_selection(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
@@ -1145,7 +1215,10 @@ def test_management_pages_render(monkeypatch):
     assert vlans.status_code == 200
     assert "VLANs cadastradas" in vlans.text
     assert networks.status_code == 200
+    assert "IPAM" in networks.text
     assert "Redes e prefixes" in networks.text
+    assert "IPs em uso" in networks.text
+    assert "/devices/view/101" in networks.text
     assert "Mapa da rede" in networks.text
     assert "Tipo da rede" in networks.text
     assert "Mapa da rota" in networks.text

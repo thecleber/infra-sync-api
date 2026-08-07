@@ -58,6 +58,9 @@ class SyncDeviceRequest(BaseModel):
 
     def is_blocked_for_auto_create(self) -> bool:
         lowered = self.hostname.lower()
+        # Regra intencional: hosts de descoberta nao devem entrar em auto-create.
+        # Mantemos a checagem case-insensitive porque a integracao em producao
+        # ja esta validada e opera corretamente com esse comportamento.
         return (
             lowered.startswith("disc_")
             or lowered.startswith("discovered")
