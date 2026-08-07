@@ -60,6 +60,13 @@ BRIDGE_PORT_INDEX_OID = "1.3.6.1.2.1.17.1.4.1.2"
 BRIDGE_FDB_PORT_OID = "1.3.6.1.2.1.17.4.3.1.2"
 BRIDGE_FDB_STATUS_OID = "1.3.6.1.2.1.17.4.3.1.3"
 
+CDP_REMOTE_COLUMNS = {
+    "local_ifindex": "1.3.6.1.4.1.9.9.23.1.2.1.1.1",
+    "remote_device_id": "1.3.6.1.4.1.9.9.23.1.2.1.1.6",
+    "remote_port_id": "1.3.6.1.4.1.9.9.23.1.2.1.1.7",
+    "remote_sys_name": "1.3.6.1.4.1.9.9.23.1.2.1.1.17",
+}
+
 
 STATUS_MAP = {
     "1": "up",
@@ -104,6 +111,7 @@ class SnmpDeviceSnapshot:
     processor_loads: list[str] = field(default_factory=list)
     ports: list[SnmpPortSnapshot] = field(default_factory=list)
     lldp_neighbors: list[dict[str, Any]] = field(default_factory=list)
+    cdp_neighbors: list[dict[str, Any]] = field(default_factory=list)
     bridge_port_map: list[dict[str, Any]] = field(default_factory=list)
     bridge_fdb: list[dict[str, Any]] = field(default_factory=list)
     collected_at: str = ""
@@ -139,6 +147,7 @@ async def probe_device(
     scalar_values = await _fetch_scalar_values(address, community, timeout=timeout, retries=retries)
     ports = await _fetch_ports(address, community, timeout=timeout, retries=retries, max_ports=max_ports)
     lldp_neighbors = await _fetch_lldp_neighbors(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
+    cdp_neighbors = await _fetch_cdp_neighbors(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
     bridge_port_map = await _fetch_bridge_port_map(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
     bridge_fdb = await _fetch_bridge_fdb(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
     processor_loads = await _fetch_column(address, community, WALK_COLUMNS["hr_processor_load"], timeout=timeout, retries=retries, max_rows=max_ports)
@@ -159,10 +168,11 @@ async def probe_device(
         processor_loads=processor_values,
         ports=ports,
         lldp_neighbors=lldp_neighbors,
+        cdp_neighbors=cdp_neighbors,
         bridge_port_map=bridge_port_map,
         bridge_fdb=bridge_fdb,
         collected_at=datetime.now(timezone.utc).isoformat(),
-        notes=_build_notes(scalar_values, ports, processor_values, lldp_neighbors, bridge_fdb),
+        notes=_build_notes(scalar_values, ports, processor_values, lldp_neighbors, cdp_neighbors, bridge_fdb),
     )
     payload = snapshot.as_dict()
     _persist_probe_snapshot(payload)
@@ -256,6 +266,13 @@ def _lldp_index_key(oid: str) -> tuple[str, str] | None:
     return parts[-2], parts[-1]
 
 
+def _cdp_index_key(oid: str) -> tuple[str, str] | None:
+    parts = oid.split(".")
+    if len(parts) < 2:
+        return None
+    return parts[-2], parts[-1]
+
+
 async def _fetch_lldp_neighbors(
     ip: str,
     community: str,
@@ -298,6 +315,47 @@ async def _fetch_lldp_neighbors(
                 "remote_chassis_id": remote_chassis_id,
                 "remote_chassis_id_subtype": remote_chassis_id_subtype,
                 "remote_port_id_subtype": remote_port_id_subtype,
+            }
+        )
+    return payload
+
+
+async def _fetch_cdp_neighbors(
+    ip: str,
+    community: str,
+    *,
+    timeout: float,
+    retries: int,
+    max_rows: int,
+) -> list[dict[str, Any]]:
+    columns: dict[str, list[tuple[tuple[str, str], str]]] = {}
+    for key, oid in CDP_REMOTE_COLUMNS.items():
+        try:
+            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_cdp_index_key)
+        except Exception:
+            columns[key] = []
+
+    neighbors: dict[tuple[str, str], dict[str, str]] = {}
+    for key, rows in columns.items():
+        for index, value in rows:
+            if not index:
+                continue
+            neighbors.setdefault(index, {})[key] = value
+
+    payload: list[dict[str, Any]] = []
+    for (local_ifindex, remote_index), data in neighbors.items():
+        remote_sys_name = _clean_text(data.get("remote_sys_name"))
+        remote_port_id = _clean_text(data.get("remote_port_id"))
+        remote_device_id = _clean_text(data.get("remote_device_id"))
+        if not any((remote_sys_name, remote_port_id, remote_device_id)):
+            continue
+        payload.append(
+            {
+                "local_ifindex": local_ifindex,
+                "remote_index": remote_index,
+                "remote_sys_name": remote_sys_name,
+                "remote_port_id": remote_port_id,
+                "remote_device_id": remote_device_id,
             }
         )
     return payload
@@ -463,7 +521,7 @@ async def _fetch_column(
         engine.close_dispatcher()
 
 
-def _build_notes(scalars: dict[str, str], ports: list[SnmpPortSnapshot], processor_values: list[str], lldp_neighbors: list[dict[str, Any]], bridge_fdb: list[dict[str, Any]]) -> str:
+def _build_notes(scalars: dict[str, str], ports: list[SnmpPortSnapshot], processor_values: list[str], lldp_neighbors: list[dict[str, Any]], cdp_neighbors: list[dict[str, Any]], bridge_fdb: list[dict[str, Any]]) -> str:
     parts = []
     if scalars.get("sys_name"):
         parts.append(f"sysName={scalars['sys_name']}")
@@ -477,6 +535,8 @@ def _build_notes(scalars: dict[str, str], ports: list[SnmpPortSnapshot], process
         parts.append(f"active_ports={active_ports}")
     if lldp_neighbors:
         parts.append(f"lldp_neighbors={len(lldp_neighbors)}")
+    if cdp_neighbors:
+        parts.append(f"cdp_neighbors={len(cdp_neighbors)}")
     if bridge_fdb:
         parts.append(f"bridge_fdb={len(bridge_fdb)}")
     return " | ".join(parts)
@@ -621,6 +681,7 @@ def _persist_probe_snapshot(snapshot: dict[str, Any]) -> None:
     ip = str(snapshot.get("ip", "")).strip()
     ports = snapshot.get("ports") if isinstance(snapshot.get("ports"), list) else []
     lldp_neighbors = snapshot.get("lldp_neighbors") if isinstance(snapshot.get("lldp_neighbors"), list) else []
+    cdp_neighbors = snapshot.get("cdp_neighbors") if isinstance(snapshot.get("cdp_neighbors"), list) else []
     bridge_port_map = snapshot.get("bridge_port_map") if isinstance(snapshot.get("bridge_port_map"), list) else []
     bridge_fdb = snapshot.get("bridge_fdb") if isinstance(snapshot.get("bridge_fdb"), list) else []
     timestamp = snapshot.get("collected_at") or datetime.now(timezone.utc).isoformat()
@@ -635,6 +696,7 @@ def _persist_probe_snapshot(snapshot: dict[str, Any]) -> None:
                 "ip": ip,
                 "ports": ports,
                 "lldp_neighbors": lldp_neighbors,
+                "cdp_neighbors": cdp_neighbors,
                 "bridge_port_map": bridge_port_map,
                 "bridge_fdb": bridge_fdb,
                 "collected_at": timestamp,
@@ -649,6 +711,7 @@ def _persist_probe_snapshot(snapshot: dict[str, Any]) -> None:
             "ip": ip,
             "ports": ports,
             "lldp_neighbors": lldp_neighbors,
+            "cdp_neighbors": cdp_neighbors,
             "bridge_port_map": bridge_port_map,
             "bridge_fdb": bridge_fdb,
             "collected_at": timestamp,

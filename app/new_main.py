@@ -5301,6 +5301,42 @@ async def _collect_topology_connection_edges(
                         "remote_chassis_id": remote_chassis_id,
                     }
                 )
+            for neighbor in probe_device.get("cdp_neighbors", []) if isinstance(probe_device.get("cdp_neighbors"), list) else []:
+                if not isinstance(neighbor, dict):
+                    continue
+                remote_name = _normalize_text(neighbor.get("remote_sys_name")) or _normalize_text(neighbor.get("remote_device_id"))
+                target_node = _resolve_inventory_target_by_lldp(remote_name, "")
+                if not isinstance(target_node, dict):
+                    continue
+                source_key = str(node["id"])
+                target_key = str(target_node["id"])
+                if not source_key or not target_key or source_key == target_key:
+                    continue
+                pair_key = "::".join(sorted([source_key, target_key]))
+                if pair_key in seen:
+                    continue
+                source_port_name = _probe_port_name(probe_device, _normalize_text(neighbor.get("local_ifindex")))
+                target_port_name = _normalize_text(neighbor.get("remote_port_id"))
+                label_bits = ["CDP"]
+                if source_port_name or target_port_name:
+                    label_bits.append(f"{source_port_name or 'porta'} ↔ {target_port_name or 'porta remota'}")
+                if remote_name:
+                    label_bits.append(remote_name)
+                seen.add(pair_key)
+                edges.append(
+                    {
+                        "source": source_key,
+                        "target": target_key,
+                        "edge_type": "cdp-link",
+                        "label": " • ".join(label_bits),
+                        "source_port": source_port_name,
+                        "target_port": target_port_name,
+                        "peer_name": _normalize_text(target_node.get("label")) or _normalize_text(target_node.get("netbox_device_name")) or target_key,
+                        "peer_device_id": _related_id(target_node.get("netbox_device_id")) or _related_id(target_node.get("id")),
+                        "remote_sys_name": remote_name,
+                        "remote_port_id": target_port_name,
+                    }
+                )
             for fdb_entry in probe_device.get("bridge_fdb", []) if isinstance(probe_device.get("bridge_fdb"), list) else []:
                 if not isinstance(fdb_entry, dict):
                     continue
@@ -6076,9 +6112,9 @@ def _render_topology_graph_page(
             d: '',
             class: 'edge',
             fill: 'none',
-            stroke: edge.edge_type === 'lldp-link' ? '#60a5fa' : edge.edge_type === 'mac-link' ? '#22c55e' : edge.edge_type === 'device-link' ? '#34d399' : 'url(#topology-edge-prefix)',
-            'stroke-width': edge.edge_type === 'lldp-link' ? '3.1' : edge.edge_type === 'mac-link' ? '3.2' : edge.edge_type === 'device-link' ? '2.8' : '2.2',
-            'stroke-dasharray': edge.edge_type === 'lldp-link' ? '9 4' : edge.edge_type === 'mac-link' ? '' : edge.edge_type === 'device-link' ? '6 4' : '10 7',
+            stroke: edge.edge_type === 'lldp-link' ? '#60a5fa' : edge.edge_type === 'cdp-link' ? '#f59e0b' : edge.edge_type === 'bridge-link' ? '#a78bfa' : edge.edge_type === 'mac-link' ? '#22c55e' : edge.edge_type === 'device-link' ? '#34d399' : 'url(#topology-edge-prefix)',
+            'stroke-width': edge.edge_type === 'lldp-link' ? '3.1' : edge.edge_type === 'cdp-link' ? '3.1' : edge.edge_type === 'bridge-link' ? '2.9' : edge.edge_type === 'mac-link' ? '3.2' : edge.edge_type === 'device-link' ? '2.8' : '2.2',
+            'stroke-dasharray': edge.edge_type === 'lldp-link' ? '9 4' : edge.edge_type === 'cdp-link' ? '7 4' : edge.edge_type === 'bridge-link' ? '4 4' : edge.edge_type === 'mac-link' ? '' : edge.edge_type === 'device-link' ? '6 4' : '10 7',
             'marker-end': 'url(#topology-arrow)',
             'data-source': edge.source,
             'data-target': edge.target,
