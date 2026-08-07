@@ -139,7 +139,7 @@ def test_request_validation_and_blocklist():
 
 @pytest.mark.parametrize(
     "hostname",
-    ["DISC_01", "Discovered Something", "10.0.0.24"],
+    ["DISC_01", "disc_01", "Discovered Something", "10.0.0.24"],
 )
 def test_blocklist_hostnames(hostname):
     payload = SyncDeviceRequest(

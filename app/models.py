@@ -59,7 +59,7 @@ class SyncDeviceRequest(BaseModel):
     def is_blocked_for_auto_create(self) -> bool:
         lowered = self.hostname.lower()
         return (
-            self.hostname.startswith("DISC_")
+            lowered.startswith("disc_")
             or lowered.startswith("discovered")
             or is_ipv4_only_hostname(self.hostname)
         )
