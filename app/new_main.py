@@ -4718,6 +4718,883 @@ def _render_topology_rows(
     return "".join(rows) if rows else _render_table_empty("Nenhuma rota cadastrada ainda.", 10)
 
 
+def _topology_device_kind_label(device: dict[str, Any] | None, label: str = "") -> str:
+    if isinstance(device, dict):
+        kind = _inventory_kind_for_device(device)
+        if kind in {"network"}:
+            return "Rede"
+        if kind in {"servers"}:
+            return "Servidor"
+        if kind in {"wireless"}:
+            return "Wireless"
+        if kind in {"computers", "phones", "printers", "monitors"}:
+            return "Usuario"
+        return "Outro"
+
+    text = _normalize_text(label).lower()
+    if any(token in text for token in ("router", "gateway", "firewall", "core", "distribution", "backbone", "uplink")):
+        return "Rede"
+    if any(token in text for token in ("server", "vm", "hyper", "host", "esxi", "proxmox")):
+        return "Servidor"
+    if any(token in text for token in ("wireless", "access point", "ap", "wifi")):
+        return "Wireless"
+    if any(token in text for token in ("printer", "mfp", "camera", "phone", "laptop", "desktop", "pc")):
+        return "Usuario"
+    return "Outro"
+
+
+def _topology_graph_payload(
+    prefixes: list[dict[str, Any]],
+    topology_state: dict[str, Any] | None,
+    devices: list[dict[str, Any]],
+) -> dict[str, Any]:
+    # The graph is built from the same persisted topology data already used by the
+    # textual IPAM view, so future changes can keep this screen aligned with the data model.
+    prefix_lookup = {str(prefix.get("id")): prefix for prefix in prefixes if isinstance(prefix, dict)}
+    device_lookup = {str(device.get("id")): device for device in devices if isinstance(device, dict) and _related_id(device.get("id"))}
+
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    degree_map: dict[str, int] = {}
+    adjacency: dict[str, set[str]] = {}
+
+    def ensure_node(node_id: str) -> dict[str, Any]:
+        node = nodes.get(node_id)
+        if node is not None:
+            return node
+        device = device_lookup.get(node_id)
+        label = _normalize_text(device.get("name")) if isinstance(device, dict) else ""
+        if not label:
+            label = f"Device {node_id}"
+        kind = _topology_device_kind_label(device, label)
+        node = {
+            "id": node_id,
+            "label": label,
+            "kind": kind,
+            "kind_class": _inventory_kind_for_device(device) if isinstance(device, dict) else "other",
+            "site": _relation_label(device.get("site")) if isinstance(device, dict) else "—",
+            "role": _relation_label(device.get("role")) if isinstance(device, dict) else "—",
+            "status": _relation_label(device.get("status")) if isinstance(device, dict) else "—",
+            "primary_ip": _relation_label(device.get("primary_ip4")) if isinstance(device, dict) else "—",
+            "manufacturer": _relation_label(device.get("device_type", {}).get("manufacturer")) if isinstance(device, dict) and isinstance(device.get("device_type"), dict) else "—",
+            "model": _normalize_text(device.get("device_type", {}).get("model")) if isinstance(device, dict) and isinstance(device.get("device_type"), dict) else "—",
+            "device_link": f"/devices/view/{node_id}" if isinstance(device, dict) else "",
+            "search_text": " ".join(
+                text for text in (
+                    label,
+                    node_id,
+                    _relation_label(device.get("site")) if isinstance(device, dict) else "",
+                    _relation_label(device.get("role")) if isinstance(device, dict) else "",
+                    _relation_label(device.get("status")) if isinstance(device, dict) else "",
+                    _relation_label(device.get("primary_ip4")) if isinstance(device, dict) else "",
+                ) if _normalize_text(text)
+            ).lower(),
+            "degree": 0,
+            "x": 0,
+            "y": 0,
+        }
+        nodes[node_id] = node
+        degree_map[node_id] = 0
+        adjacency[node_id] = set()
+        return node
+
+    for entry in _network_topology_entries(topology_state):
+        origin_id = _normalize_text(entry.get("origin_device_id"))
+        next_id = _normalize_text(entry.get("next_device_id"))
+        prefix = prefix_lookup.get(_normalize_text(entry.get("prefix_id")))
+        if not origin_id or not next_id:
+            continue
+        origin_node = ensure_node(origin_id)
+        next_node = ensure_node(next_id)
+        prefix_label = _normalize_text(prefix.get("prefix")) if isinstance(prefix, dict) else ""
+        edge = {
+            "source": origin_id,
+            "target": next_id,
+            "prefix": prefix_label or f"Prefixo {entry.get('prefix_id')}",
+            "network_kind": _normalize_text(entry.get("network_kind")) or ("vlan" if prefix and _related_id(prefix.get("vlan")) else "prefix"),
+            "vlan": _related_id(prefix.get("vlan")) if isinstance(prefix, dict) else "",
+            "origin_interface": _normalize_text(entry.get("origin_interface")),
+            "origin_mode": _normalize_text(entry.get("origin_mode")),
+            "next_interface": _normalize_text(entry.get("next_interface")),
+            "next_mode": _normalize_text(entry.get("next_mode")),
+            "route_notes": _normalize_text(entry.get("route_notes")),
+        }
+        edges.append(edge)
+        degree_map[origin_id] = degree_map.get(origin_id, 0) + 1
+        degree_map[next_id] = degree_map.get(next_id, 0) + 1
+        adjacency[origin_id].add(next_id)
+        adjacency[next_id].add(origin_id)
+
+    for node_id, node in nodes.items():
+        node["degree"] = degree_map.get(node_id, 0)
+        node["neighbors"] = sorted(adjacency.get(node_id, set()))
+        node["prefix_count"] = len([edge for edge in edges if edge["source"] == node_id or edge["target"] == node_id])
+
+    ordered_nodes = sorted(nodes.values(), key=lambda item: (-int(item.get("degree") or 0), item.get("label", "")))
+    ordered_edges = sorted(edges, key=lambda item: (item["source"], item["target"], item["prefix"]))
+    core_nodes = [node["id"] for node in ordered_nodes[:5]]
+
+    return {
+        "nodes": ordered_nodes,
+        "edges": ordered_edges,
+        "core_nodes": core_nodes,
+        "node_count": len(ordered_nodes),
+        "edge_count": len(ordered_edges),
+    }
+
+
+def _render_topology_graph_page(
+    prefixes: list[dict[str, Any]],
+    topology_state: dict[str, Any] | None,
+    devices: list[dict[str, Any]],
+    page_error: str | None = None,
+) -> str:
+    # The interactive canvas is the primary view, while the table below remains as a safe
+    # textual fallback for operations and troubleshooting.
+    graph = _topology_graph_payload(prefixes, topology_state, devices)
+    graph_json = json.dumps(graph, ensure_ascii=False).replace("</", "<\\/")
+    route_rows = _render_topology_rows(
+        prefixes,
+        topology_state,
+        {str(device.get("id")): _normalize_text(device.get("name")) for device in devices if isinstance(device, dict)},
+    )
+
+    body = f"""
+    <style>
+      .topology-shell {{
+        display: grid;
+        gap: 14px;
+      }}
+      .topology-hero {{
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }}
+      .topology-kicker {{
+        text-transform: uppercase;
+        letter-spacing: .08em;
+        color: #86efac;
+        font-size: 12px;
+        font-weight: 800;
+      }}
+      .topology-title {{
+        margin: 6px 0 0;
+        font-size: 30px;
+        line-height: 1.05;
+      }}
+      .topology-sub {{
+        margin: 8px 0 0;
+        color: #cbd5e1;
+        max-width: 880px;
+        line-height: 1.45;
+      }}
+      .topology-stats {{
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }}
+      .topology-stat {{
+        background: linear-gradient(180deg, rgba(15, 23, 42, .92), rgba(15, 23, 42, .78));
+        border: 1px solid rgba(148, 163, 184, .14);
+        border-radius: 16px;
+        padding: 14px;
+      }}
+      .topology-stat .label {{
+        display: block;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+        color: #94a3b8;
+        font-size: 11px;
+        font-weight: 800;
+      }}
+      .topology-stat strong {{
+        display: block;
+        margin-top: 10px;
+        font-size: 28px;
+      }}
+      .topology-workspace {{
+        display: grid;
+        grid-template-columns: minmax(0, 1.65fr) minmax(300px, .85fr);
+        gap: 14px;
+        align-items: start;
+      }}
+      .topology-panel {{
+        background: linear-gradient(180deg, rgba(9, 15, 30, .95), rgba(7, 10, 19, .96));
+        border: 1px solid rgba(148, 163, 184, .15);
+        border-radius: 20px;
+        overflow: hidden;
+        box-shadow: 0 28px 60px rgba(0, 0, 0, .30);
+      }}
+      .topology-toolbar {{
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding: 16px 18px;
+        border-bottom: 1px solid rgba(148, 163, 184, .12);
+        background: rgba(15, 23, 42, .70);
+      }}
+      .topology-toolbar .field {{
+        min-width: 220px;
+        margin: 0;
+      }}
+      .topology-toolbar input {{
+        background: rgba(2, 6, 23, .65);
+      }}
+      .topology-controls {{
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }}
+      .topology-graph-wrap {{
+        position: relative;
+        min-height: 760px;
+        background:
+          radial-gradient(circle at top left, rgba(16, 185, 129, .10), transparent 30%),
+          radial-gradient(circle at bottom right, rgba(59, 130, 246, .09), transparent 34%),
+          linear-gradient(180deg, rgba(2, 6, 23, .30), rgba(2, 6, 23, .68));
+      }}
+      .topology-legend {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 0 18px 16px;
+      }}
+      .topology-legend span {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 999px;
+        padding: 7px 12px;
+        background: rgba(15, 23, 42, .72);
+        border: 1px solid rgba(148, 163, 184, .12);
+        color: #e2e8f0;
+        font-size: 12px;
+      }}
+      .topology-legend i {{
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        display: inline-block;
+      }}
+      .topology-detail {{
+        position: sticky;
+        top: 16px;
+      }}
+      .topology-detail-card {{
+        display: grid;
+        gap: 12px;
+      }}
+      .topology-node-list {{
+        display: grid;
+        gap: 10px;
+      }}
+      .topology-node-item {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, .12);
+        background: rgba(15, 23, 42, .52);
+        color: #e2e8f0;
+      }}
+      .topology-node-item strong {{
+        display: block;
+        font-size: 13px;
+      }}
+      .topology-node-item small {{
+        display: block;
+        color: #94a3b8;
+        margin-top: 2px;
+      }}
+      .topology-node-item a {{
+        color: #86efac;
+        text-decoration: none;
+        font-weight: 700;
+        font-size: 12px;
+      }}
+      .topology-node-item.active {{
+        border-color: rgba(134, 239, 172, .55);
+        box-shadow: 0 0 0 1px rgba(134, 239, 172, .20);
+      }}
+      #topology-svg {{
+        width: 100%;
+        height: 760px;
+        display: block;
+        touch-action: none;
+        user-select: none;
+      }}
+      .edge {{
+        stroke-linecap: round;
+        transition: opacity .2s ease, stroke .2s ease, stroke-width .2s ease;
+      }}
+      .node circle {{
+        transition: transform .15s ease, stroke .15s ease, fill .15s ease, opacity .15s ease;
+      }}
+      .node text {{
+        font-family: inherit;
+      }}
+      .node-label {{
+        fill: #e2e8f0;
+        font-size: 12px;
+        font-weight: 700;
+        text-anchor: middle;
+      }}
+      .node-mini {{
+        fill: #94a3b8;
+        font-size: 10px;
+        text-anchor: middle;
+      }}
+      .node-badge {{
+        fill: #0f172a;
+        stroke-width: 1;
+      }}
+      .node[data-kind="Rede"] circle {{ fill: #14b8a6; stroke: #86efac; }}
+      .node[data-kind="Servidor"] circle {{ fill: #2563eb; stroke: #93c5fd; }}
+      .node[data-kind="Wireless"] circle {{ fill: #7c3aed; stroke: #c4b5fd; }}
+      .node[data-kind="Usuario"] circle {{ fill: #f97316; stroke: #fdba74; }}
+      .node[data-kind="Outro"] circle {{ fill: #475569; stroke: #cbd5e1; }}
+      .node.selected circle {{
+        stroke-width: 4;
+        filter: drop-shadow(0 0 12px rgba(134, 239, 172, .35));
+      }}
+      .node.dimmed {{
+        opacity: .18;
+      }}
+      .edge.dimmed {{
+        opacity: .10;
+      }}
+      .edge-label {{
+        fill: #cbd5e1;
+        font-size: 10px;
+        font-weight: 700;
+        text-anchor: middle;
+        opacity: .75;
+        pointer-events: none;
+      }}
+      @media (max-width: 1180px) {{
+        .topology-workspace {{
+          grid-template-columns: 1fr;
+        }}
+        .topology-detail {{
+          position: static;
+        }}
+        .topology-stats {{
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }}
+      }}
+      @media (max-width: 760px) {{
+        .topology-stats {{
+          grid-template-columns: 1fr;
+        }}
+        #topology-svg {{
+          height: 620px;
+        }}
+      }}
+    </style>
+    <div class="topology-shell">
+      <section class="topology-hero">
+        <div>
+          <div class="topology-kicker">Mapa interativo</div>
+          <h2 class="topology-title">Topologia da rede</h2>
+          <p class="topology-sub">Visualização interativa das conexões entre devices, VLANs e prefixos com base nas ligações salvas no IPAM. Clique em um nó para ver detalhes, filtre por nome e arraste os equipamentos para reorganizar o mapa.</p>
+        </div>
+        <div class="topology-controls">
+          <a class="btn" href="/networks">IPAM</a>
+          <a class="btn" href="/devices">Devices</a>
+          <a class="btn" href="/discovery">Descoberta</a>
+          <a class="btn primary" href="/networks#results">Abrir roteamento</a>
+        </div>
+      </section>
+      {f'<div class="hero"><small>Erro</small><strong>{escape(page_error)}</strong></div>' if page_error else ''}
+      <section class="topology-stats">
+        <div class="topology-stat"><span class="label">Devices</span><strong>{len(graph["nodes"])}</strong></div>
+        <div class="topology-stat"><span class="label">Ligações</span><strong>{len(graph["edges"])}</strong></div>
+        <div class="topology-stat"><span class="label">Nó central</span><strong>{escape(_normalize_text(graph["nodes"][0]["label"]) if graph["nodes"] else "—")}</strong></div>
+        <div class="topology-stat"><span class="label">Prefixos</span><strong>{len(prefixes)}</strong></div>
+      </section>
+      <section class="topology-workspace">
+        <div class="topology-panel">
+          <div class="topology-toolbar">
+            <div class="field" style="flex:1 1 280px;">
+              <label for="topology-search">Filtrar device</label>
+              <input id="topology-search" type="text" placeholder="Digite um nome, site, role ou IP..." />
+            </div>
+            <div class="topology-controls">
+              <button class="btn" type="button" id="topology-relayout">Reorganizar</button>
+              <button class="btn" type="button" id="topology-reset">Limpar filtro</button>
+            </div>
+          </div>
+          <div class="topology-graph-wrap">
+            <svg id="topology-svg" viewBox="0 0 1600 760" preserveAspectRatio="xMidYMid meet" aria-label="Mapa de topologia">
+              <defs>
+                <pattern id="topology-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+                  <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(148,163,184,.10)" stroke-width="1" />
+                </pattern>
+                <linearGradient id="topology-edge-prefix" x1="0" x2="1" y1="0" y2="0">
+                  <stop offset="0%" stop-color="#38bdf8" />
+                  <stop offset="100%" stop-color="#34d399" />
+                </linearGradient>
+                <marker id="topology-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#34d399" />
+                </marker>
+              </defs>
+              <rect width="1600" height="760" fill="url(#topology-grid)" opacity=".35"></rect>
+              <g id="topology-links"></g>
+              <g id="topology-nodes"></g>
+              <g id="topology-overlay"></g>
+            </svg>
+          </div>
+          <div class="topology-legend">
+            <span><i style="background:#14b8a6"></i>Rede</span>
+            <span><i style="background:#2563eb"></i>Servidor</span>
+            <span><i style="background:#7c3aed"></i>Wireless</span>
+            <span><i style="background:#f97316"></i>Usuário</span>
+            <span><i style="background:#34d399"></i>Ligação ativa</span>
+          </div>
+        </div>
+        <aside class="topology-panel topology-detail">
+          <div style="padding:16px 18px; border-bottom:1px solid rgba(148,163,184,.12);">
+            <div class="topology-kicker">Detalhes</div>
+            <h3 id="topology-detail-title" style="margin:6px 0 0;">Selecione um device</h3>
+            <p id="topology-detail-sub" style="margin:8px 0 0; color:#cbd5e1; line-height:1.45;">Clique em um nó do grafo para visualizar site, IP, função e vizinhos.</p>
+          </div>
+          <div style="padding:18px;" class="topology-detail-card">
+            <div class="panel" style="margin:0; background:rgba(15,23,42,.65);">
+              <div class="glpi-info-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+                <div class="glpi-info-item"><span class="label">Status</span><strong id="topology-detail-status">—</strong></div>
+                <div class="glpi-info-item"><span class="label">Site</span><strong id="topology-detail-site">—</strong></div>
+                <div class="glpi-info-item"><span class="label">Role</span><strong id="topology-detail-role">—</strong></div>
+                <div class="glpi-info-item"><span class="label">IP</span><strong id="topology-detail-ip">—</strong></div>
+              </div>
+            </div>
+            <div class="panel" style="margin:0; background:rgba(15,23,42,.65);">
+              <div class="glpi-info-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+                <div class="glpi-info-item"><span class="label">Grau</span><strong id="topology-detail-degree">0</strong></div>
+                <div class="glpi-info-item"><span class="label">Prefixos</span><strong id="topology-detail-prefixes">0</strong></div>
+              </div>
+            </div>
+            <div class="panel" style="margin:0; background:rgba(15,23,42,.65);">
+              <h4 style="margin:0 0 10px;">Vizinhos</h4>
+              <div id="topology-neighbors" class="topology-node-list"></div>
+            </div>
+          </div>
+        </aside>
+      </section>
+      <div class="panel">
+        <h2>Mapa da rede</h2>
+        <p>Visualização textual de apoio com as rotas e vínculos persistidos no IPAM.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Rede</th><th>Tipo</th><th>VLAN</th><th>Origem</th><th>Porta origem</th><th>Modo origem</th><th>Proximo salto</th><th>Porta destino</th><th>Modo destino</th><th>Observacoes</th>
+            </tr>
+          </thead>
+          <tbody>{route_rows}</tbody>
+        </table>
+      </div>
+    </div>
+    <script id="topology-data" type="application/json">{graph_json}</script>
+    <script>
+      const topologyData = JSON.parse(document.getElementById('topology-data').textContent);
+      const svg = document.getElementById('topology-svg');
+      const linksLayer = document.getElementById('topology-links');
+      const nodesLayer = document.getElementById('topology-nodes');
+      const detailTitle = document.getElementById('topology-detail-title');
+      const detailSub = document.getElementById('topology-detail-sub');
+      const detailStatus = document.getElementById('topology-detail-status');
+      const detailSite = document.getElementById('topology-detail-site');
+      const detailRole = document.getElementById('topology-detail-role');
+      const detailIp = document.getElementById('topology-detail-ip');
+      const detailDegree = document.getElementById('topology-detail-degree');
+      const detailPrefixes = document.getElementById('topology-detail-prefixes');
+      const neighborsList = document.getElementById('topology-neighbors');
+      const searchInput = document.getElementById('topology-search');
+      const relayoutButton = document.getElementById('topology-relayout');
+      const resetButton = document.getElementById('topology-reset');
+      const nodeMap = new Map();
+      const edgeElements = new Map();
+      const colors = {{
+        'Rede': '#14b8a6',
+        'Servidor': '#2563eb',
+        'Wireless': '#7c3aed',
+        'Usuario': '#f97316',
+        'Outro': '#64748b',
+      }};
+      const state = {{
+        selectedId: topologyData.core_nodes && topologyData.core_nodes.length ? topologyData.core_nodes[0] : '',
+        query: '',
+        draggingId: '',
+        viewBox: {{ x: 0, y: 0, width: 1600, height: 760 }},
+      }};
+
+      function escapeHtml(value) {{
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }}
+
+      function toTitle(value) {{
+        return String(value || '').trim() || '—';
+      }}
+
+      function kindColor(kind) {{
+        return colors[kind] || colors.Outro;
+      }}
+
+      function createSvgElement(tag, attrs = {{}}) {{
+        const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (const [key, value] of Object.entries(attrs)) {{
+          element.setAttribute(key, value);
+        }}
+        return element;
+      }}
+
+      function buildSearchText(node) {{
+        return String(node.search_text || '').toLowerCase();
+      }}
+
+      function initializePositions() {{
+        const nodes = topologyData.nodes || [];
+        const centerX = 800;
+        const centerY = 380;
+        const root = nodes[0];
+        const baseRadius = 220;
+        nodes.forEach((node, index) => {{
+          if (root && node.id === root.id) {{
+            node.x = centerX;
+            node.y = centerY;
+            node.fx = centerX;
+            node.fy = centerY;
+            return;
+          }}
+          const ring = baseRadius + Math.min(260, (node.degree || 0) * 34);
+          const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2;
+          node.x = centerX + Math.cos(angle) * ring;
+          node.y = centerY + Math.sin(angle) * ring;
+        }});
+
+        for (let iteration = 0; iteration < 150; iteration += 1) {{
+          for (const edge of topologyData.edges || []) {{
+            const source = nodes.find((node) => node.id === edge.source);
+            const target = nodes.find((node) => node.id === edge.target);
+            if (!source || !target) continue;
+            const dx = target.x - source.x;
+            const dy = target.y - source.y;
+            const distance = Math.max(20, Math.hypot(dx, dy));
+            const ideal = 130 + Math.min(160, ((source.degree || 0) + (target.degree || 0)) * 8);
+            const force = (distance - ideal) * 0.0012;
+            const fx = (dx / distance) * force;
+            const fy = (dy / distance) * force;
+            if (!source.fx) {{
+              source.x += fx * 6;
+              source.y += fy * 6;
+            }}
+            if (!target.fx) {{
+              target.x -= fx * 6;
+              target.y -= fy * 6;
+            }}
+          }}
+          for (let a = 0; a < nodes.length; a += 1) {{
+            for (let b = a + 1; b < nodes.length; b += 1) {{
+              const left = nodes[a];
+              const right = nodes[b];
+              const dx = right.x - left.x;
+              const dy = right.y - left.y;
+              const distance = Math.max(18, Math.hypot(dx, dy));
+              const repulsion = 22000 / (distance * distance);
+              const fx = (dx / distance) * repulsion;
+              const fy = (dy / distance) * repulsion;
+              if (!left.fx) {{
+                left.x -= fx;
+                left.y -= fy;
+              }}
+              if (!right.fx) {{
+                right.x += fx;
+                right.y += fy;
+              }}
+            }}
+          }}
+          nodes.forEach((node) => {{
+            if (node.fx) {{
+              node.x = node.fx;
+            }}
+            if (node.fy) {{
+              node.y = node.fy;
+            }}
+            node.x = Math.max(80, Math.min(1520, node.x));
+            node.y = Math.max(70, Math.min(690, node.y));
+          }});
+        }}
+      }}
+
+      function nodeRadius(node) {{
+        const degree = Number(node.degree || 0);
+        return Math.max(26, Math.min(46, 24 + degree * 2));
+      }}
+
+      function edgePath(source, target) {{
+        const dx = target.x - source.x;
+        const dy = target.y - source.y;
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const nx = -dy / distance;
+        const ny = dx / distance;
+        const bend = Math.min(120, distance * 0.22);
+        const mx = (source.x + target.x) / 2 + nx * bend;
+        const my = (source.y + target.y) / 2 + ny * bend;
+        return 'M ' + source.x + ' ' + source.y + ' Q ' + mx + ' ' + my + ' ' + target.x + ' ' + target.y;
+      }}
+
+      function renderGraph() {{
+        nodesLayer.innerHTML = '';
+        linksLayer.innerHTML = '';
+        nodeMap.clear();
+        edgeElements.clear();
+
+        for (const edge of topologyData.edges || []) {{
+          const path = createSvgElement('path', {{
+            d: '',
+            class: 'edge',
+            fill: 'none',
+            stroke: edge.network_kind === 'vlan' ? '#38bdf8' : 'url(#topology-edge-prefix)',
+            'stroke-width': edge.network_kind === 'vlan' ? '2.6' : '2.2',
+            'stroke-dasharray': edge.network_kind === 'vlan' ? '5 6' : '10 7',
+            'marker-end': 'url(#topology-arrow)',
+            'data-source': edge.source,
+            'data-target': edge.target,
+          }});
+          path.appendChild(createSvgElement('title'));
+          path.querySelector('title').textContent = `${{edge.prefix}}`;
+          linksLayer.appendChild(path);
+          edgeElements.set(`${{edge.source}}::${{edge.target}}::${{edge.prefix}}`, path);
+        }}
+
+        for (const node of topologyData.nodes || []) {{
+          const group = createSvgElement('g', {{
+            class: 'node',
+            'data-id': node.id,
+            'data-kind': node.kind || 'Outro',
+            transform: `translate(${{node.x}}, ${{node.y}})`,
+          }});
+
+          const radius = nodeRadius(node);
+          group.appendChild(createSvgElement('circle', {{
+            r: radius,
+            fill: kindColor(node.kind),
+            stroke: '#d1d5db',
+            'stroke-width': node.id === state.selectedId ? '4' : '2',
+          }}));
+          group.appendChild(createSvgElement('circle', {{
+            class: 'node-badge',
+            r: Math.max(10, radius * .32),
+            cx: radius * .35,
+            cy: -radius * .32,
+            fill: '#0f172a',
+          }}));
+
+          const labelParts = String(node.label || node.id).split(' ');
+          const topLabel = labelParts.slice(0, 2).join(' ').slice(0, 18);
+          const mini = String(node.kind || 'Outro').slice(0, 10);
+
+          const text = createSvgElement('text', {{
+            class: 'node-label',
+            y: radius + 18,
+          }});
+          text.textContent = topLabel;
+          group.appendChild(text);
+
+          const miniText = createSvgElement('text', {{
+            class: 'node-mini',
+            y: -radius - 8,
+          }});
+          miniText.textContent = mini;
+          group.appendChild(miniText);
+
+          group.appendChild(createSvgElement('title'));
+          group.querySelector('title').textContent = `${{node.label}} | ${{node.site}} | ${{node.primary_ip}}`;
+
+          group.addEventListener('pointerdown', (event) => {{
+            event.preventDefault();
+            state.selectedId = node.id;
+            state.draggingId = node.id;
+            const pointerMove = (moveEvent) => {{
+              if (state.draggingId !== node.id) {{
+                return;
+              }}
+              const point = svg.createSVGPoint();
+              point.x = moveEvent.clientX;
+              point.y = moveEvent.clientY;
+              const cursor = point.matrixTransform(svg.getScreenCTM().inverse());
+              node.x = Math.max(80, Math.min(1520, cursor.x));
+              node.y = Math.max(70, Math.min(690, cursor.y));
+              node.fx = node.x;
+              node.fy = node.y;
+              updateGraph();
+            }};
+            const pointerUp = () => {{
+              state.draggingId = '';
+              node.fx = node.x;
+              node.fy = node.y;
+              window.removeEventListener('pointermove', pointerMove);
+              window.removeEventListener('pointerup', pointerUp);
+            }};
+            window.addEventListener('pointermove', pointerMove);
+            window.addEventListener('pointerup', pointerUp);
+            updateDetails(node);
+            updateGraph();
+          }});
+
+          nodeMap.set(node.id, {{ node, element: group }});
+          nodesLayer.appendChild(group);
+        }}
+      }}
+
+      function neighborsFor(nodeId) {{
+        const neighbors = [];
+        for (const edge of topologyData.edges || []) {{
+          if (edge.source === nodeId) {{
+            neighbors.push({{ id: edge.target, prefix: edge.prefix, direction: 'saida' }});
+          }} else if (edge.target === nodeId) {{
+            neighbors.push({{ id: edge.source, prefix: edge.prefix, direction: 'entrada' }});
+          }}
+        }}
+        return neighbors;
+      }}
+
+      function updateDetails(node) {{
+        if (!node) {{
+          detailTitle.textContent = 'Selecione um device';
+          detailSub.textContent = 'Clique em um nó do grafo para visualizar site, IP, função e vizinhos.';
+          detailStatus.textContent = '—';
+          detailSite.textContent = '—';
+          detailRole.textContent = '—';
+          detailIp.textContent = '—';
+          detailDegree.textContent = '0';
+          detailPrefixes.textContent = '0';
+          neighborsList.innerHTML = '<div class="topology-node-item"><div><strong>Nenhum nó selecionado</strong><small>Use o filtro ou clique em um device no mapa.</small></div></div>';
+          return;
+        }}
+
+        detailTitle.textContent = node.label;
+        detailSub.textContent = `${{node.manufacturer || 'Fabricante não informado'}} ${{node.model && node.model !== '—' ? '• ' + node.model : ''}}`.trim();
+        detailStatus.textContent = toTitle(node.status);
+        detailSite.textContent = toTitle(node.site);
+        detailRole.textContent = toTitle(node.role);
+        detailIp.textContent = toTitle(node.primary_ip);
+        detailDegree.textContent = String(node.degree || 0);
+        detailPrefixes.textContent = String(node.prefix_count || 0);
+
+        const neighbors = neighborsFor(node.id);
+        neighborsList.innerHTML = neighbors.length ? neighbors.map((neighbor) => {{
+          const linked = topologyData.nodes.find((item) => item.id === neighbor.id);
+          const label = linked ? linked.label : neighbor.id;
+          const href = linked && linked.device_link ? linked.device_link : '';
+          return `<div class="topology-node-item"><div><strong>${{escapeHtml(label)}}</strong><small>${{escapeHtml(neighbor.prefix)}} • ${{escapeHtml(neighbor.direction)}}</small></div>${{href ? `<a href="${{escapeHtml(href)}}">Abrir</a>` : ''}}</div>`;
+        }}).join('') : '<div class="topology-node-item"><div><strong>Sem vizinhos</strong><small>Este device nao possui ligacoes registradas.</small></div></div>';
+      }}
+
+      function updateGraph() {{
+        const query = String(state.query || '').trim().toLowerCase();
+        const selected = topologyData.nodes.find((node) => node.id === state.selectedId) || topologyData.nodes[0] || null;
+        if (selected) {{
+          state.selectedId = selected.id;
+          updateDetails(selected);
+        }}
+        const matchedIds = new Set();
+        if (query) {{
+          for (const node of topologyData.nodes || []) {{
+            if (buildSearchText(node).includes(query)) {{
+              matchedIds.add(node.id);
+            }}
+          }}
+        }}
+        const activeNeighborIds = new Set();
+        if (state.selectedId) {{
+          activeNeighborIds.add(state.selectedId);
+          for (const neighbor of neighborsFor(state.selectedId)) {{
+            activeNeighborIds.add(neighbor.id);
+          }}
+        }}
+
+        for (const [nodeId, item] of nodeMap.entries()) {{
+          const {{ node, element }} = item;
+          element.setAttribute('transform', `translate(${{node.x}}, ${{node.y}})`);
+          const activeByQuery = !query || matchedIds.has(nodeId);
+          const activeBySelection = !state.selectedId || activeNeighborIds.has(nodeId);
+          element.classList.toggle('dimmed', !(activeByQuery && activeBySelection));
+          element.classList.toggle('selected', nodeId === state.selectedId);
+          const circle = element.querySelector('circle');
+          if (circle) {{
+            circle.setAttribute('stroke-width', nodeId === state.selectedId ? '4' : '2');
+          }}
+          const textElements = element.querySelectorAll('text');
+          textElements.forEach((text) => {{
+            text.style.opacity = (activeByQuery && activeBySelection) ? '1' : '.25';
+          }});
+        }}
+
+        for (const edge of topologyData.edges || []) {{
+          const element = linksLayer.querySelector(`[data-source="${{edge.source}}"][data-target="${{edge.target}}"]`);
+          if (!element) continue;
+          const source = topologyData.nodes.find((node) => node.id === edge.source);
+          const target = topologyData.nodes.find((node) => node.id === edge.target);
+          if (!source || !target) continue;
+          element.setAttribute('d', edgePath(source, target));
+          const activeByQuery = !query || matchedIds.has(edge.source) || matchedIds.has(edge.target) || String(edge.prefix || '').toLowerCase().includes(query);
+          const activeBySelection = !state.selectedId || activeNeighborIds.has(edge.source) || activeNeighborIds.has(edge.target);
+          element.classList.toggle('dimmed', !(activeByQuery && activeBySelection));
+        }}
+      }}
+
+      function fitToScreen() {{
+        initializePositions();
+        updateGraph();
+      }}
+
+      searchInput.addEventListener('input', () => {{
+        state.query = searchInput.value;
+        updateGraph();
+      }});
+
+      relayoutButton.addEventListener('click', () => {{
+        fitToScreen();
+      }});
+
+      resetButton.addEventListener('click', () => {{
+        searchInput.value = '';
+        state.query = '';
+        const defaultNode = topologyData.nodes.find((node) => topologyData.core_nodes.includes(node.id)) || topologyData.nodes[0] || null;
+        state.selectedId = defaultNode ? defaultNode.id : '';
+        fitToScreen();
+      }});
+
+      initializePositions();
+      renderGraph();
+      updateGraph();
+      if (!state.selectedId && topologyData.nodes.length) {{
+        state.selectedId = topologyData.nodes[0].id;
+      }}
+      updateGraph();
+    </script>
+    """
+    return _render_management_page(
+        title="Mapa interativo | infra-sync-api",
+        active="networks",
+        heading="Mapa interativo",
+        subtitle="Ligacoes entre equipamentos, portas, VLANs e prefixes em uma visualizacao navegavel.",
+        actions='<a class="btn" href="/networks">IPAM</a><a class="btn" href="/devices">Devices</a><a class="btn" href="/reports">Relatorios</a>',
+        body=body,
+    )
+
+
 @app.post("/devices/save", include_in_schema=False)
 async def save_device_page(request: Request):
     form = await _read_form(request)
@@ -5020,36 +5897,7 @@ async def topology_page(request: Request):
             devices = await client.list_devices(params={"limit": 100})
     except Exception as exc:
         page_error = str(exc)
-    device_lookup = {
-        _related_id(device.get("id")): _normalize_text(device.get("name"))
-        for device in devices
-        if isinstance(device, dict)
-    }
-    body = f"""
-    <div class="panel">
-      <h2>Mapa da rede</h2>
-      <p>Visualizacao central das rotas entre redes, VLANs, switches e equipamentos.</p>
-      {f'<div class="hero"><small>Erro</small><strong>{escape(page_error)}</strong></div>' if page_error else ''}
-      <table>
-        <thead>
-          <tr>
-            <th>Rede</th><th>Tipo</th><th>VLAN</th><th>Origem</th><th>Porta origem</th><th>Modo origem</th><th>Proximo salto</th><th>Porta destino</th><th>Modo destino</th><th>Observacoes</th>
-          </tr>
-        </thead>
-        <tbody>{_render_topology_rows(prefixes, topology_state, device_lookup)}</tbody>
-      </table>
-    </div>
-    """
-    return HTMLResponse(
-        _render_management_page(
-            title="Mapa | infra-sync-api",
-            active="networks",
-            heading="Mapa da rede",
-            subtitle="Ligacoes entre equipamentos, portas, VLANs e prefixes.",
-            actions='<a class="btn" href="/networks">Redes</a><a class="btn" href="/devices">Devices</a>',
-            body=body,
-        )
-    )
+    return HTMLResponse(_render_topology_graph_page(prefixes, topology_state, devices, page_error=page_error))
 
 
 @app.get("/api/alerts")

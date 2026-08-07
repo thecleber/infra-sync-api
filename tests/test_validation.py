@@ -1200,6 +1200,7 @@ def test_management_pages_render(monkeypatch):
         device_detail = client.get("/devices/view/101", follow_redirects=False)
         vlans = client.get("/vlans", follow_redirects=False)
         networks = client.get("/networks", follow_redirects=False)
+        topology = client.get("/topology", follow_redirects=False)
         alerts = client.get("/alerts", follow_redirects=False)
         reports = client.get("/reports", follow_redirects=False)
         cpd = client.get("/cpd", follow_redirects=False)
@@ -1222,6 +1223,10 @@ def test_management_pages_render(monkeypatch):
     assert "Mapa da rede" in networks.text
     assert "Tipo da rede" in networks.text
     assert "Mapa da rota" in networks.text
+    assert topology.status_code == 200
+    assert "Mapa interativo" in topology.text
+    assert "topology-svg" in topology.text
+    assert "Filtrar device" in topology.text
     assert alerts.status_code == 200
     assert "Alertas ativos" in alerts.text
     assert "Enviar e-mail de alertas" in alerts.text
