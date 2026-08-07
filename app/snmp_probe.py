@@ -59,6 +59,8 @@ LLDP_REMOTE_COLUMNS = {
 BRIDGE_PORT_INDEX_OID = "1.3.6.1.2.1.17.1.4.1.2"
 BRIDGE_FDB_PORT_OID = "1.3.6.1.2.1.17.4.3.1.2"
 BRIDGE_FDB_STATUS_OID = "1.3.6.1.2.1.17.4.3.1.3"
+QBRIDGE_FDB_PORT_OID = "1.3.6.1.2.1.17.7.1.2.2.1.2"
+QBRIDGE_FDB_STATUS_OID = "1.3.6.1.2.1.17.7.1.2.2.1.3"
 
 CDP_REMOTE_COLUMNS = {
     "local_ifindex": "1.3.6.1.4.1.9.9.23.1.2.1.1.1",
@@ -150,6 +152,19 @@ async def probe_device(
     cdp_neighbors = await _fetch_cdp_neighbors(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
     bridge_port_map = await _fetch_bridge_port_map(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
     bridge_fdb = await _fetch_bridge_fdb(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
+    qbridge_fdb = await _fetch_qbridge_fdb(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
+    if not bridge_fdb and qbridge_fdb:
+        bridge_fdb = qbridge_fdb
+    elif qbridge_fdb:
+        existing = {entry.get("mac_address"): entry for entry in bridge_fdb if isinstance(entry, dict) and _clean_text(entry.get("mac_address"))}
+        for entry in qbridge_fdb:
+            if not isinstance(entry, dict):
+                continue
+            mac_address = _clean_text(entry.get("mac_address"))
+            if not mac_address:
+                continue
+            existing.setdefault(mac_address, entry)
+        bridge_fdb = list(existing.values())
     processor_loads = await _fetch_column(address, community, WALK_COLUMNS["hr_processor_load"], timeout=timeout, retries=retries, max_rows=max_ports)
     processor_values = [value for _, value in processor_loads if value.isdigit()]
     cpu_average = ""
@@ -428,6 +443,59 @@ async def _fetch_bridge_fdb(
             continue
         payload.append(
             {
+                "mac_address": mac_address,
+                "bridge_port": bridge_port,
+                "status": _clean_text(data.get("status")),
+            }
+        )
+    return payload
+
+
+async def _fetch_qbridge_fdb(
+    ip: str,
+    community: str,
+    *,
+    timeout: float,
+    retries: int,
+    max_rows: int,
+) -> list[dict[str, Any]]:
+    def _qbridge_index(oid: str) -> str | None:
+        parts = oid.split(".")
+        if len(parts) < 7:
+            return None
+        tail = parts[-7:]
+        if not all(part.isdigit() for part in tail):
+            return None
+        vlan = int(tail[0])
+        mac = ":".join(f"{int(part):02X}" for part in tail[1:])
+        return f"{vlan}:{mac}"
+
+    columns: dict[str, list[tuple[str, str]]] = {}
+    for key, oid in {
+        "bridge_port": QBRIDGE_FDB_PORT_OID,
+        "status": QBRIDGE_FDB_STATUS_OID,
+    }.items():
+        try:
+            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_qbridge_index)
+        except Exception:
+            columns[key] = []
+
+    rows: dict[str, dict[str, str]] = {}
+    for key, values in columns.items():
+        for index, value in values:
+            if not index:
+                continue
+            rows.setdefault(index, {})[key] = value
+
+    payload: list[dict[str, Any]] = []
+    for index, data in rows.items():
+        vlan_id, _, mac_address = index.partition(":")
+        bridge_port = _clean_text(data.get("bridge_port"))
+        if not bridge_port:
+            continue
+        payload.append(
+            {
+                "vlan_id": vlan_id,
                 "mac_address": mac_address,
                 "bridge_port": bridge_port,
                 "status": _clean_text(data.get("status")),
