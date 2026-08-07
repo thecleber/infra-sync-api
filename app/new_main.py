@@ -5081,9 +5081,17 @@ async def _collect_topology_connection_edges(
     inventory_by_name: dict[str, dict[str, Any]] = {}
     inventory_by_mac: dict[str, dict[str, Any]] = {}
     inventory_by_ip: dict[str, dict[str, Any]] = {}
+    inventory_by_node_id: dict[str, dict[str, Any]] = {}
+    inventory_by_netbox_id: dict[str, dict[str, Any]] = {}
     for node in inventory_devices:
         if not isinstance(node, dict):
             continue
+        node_id = _normalize_text(node.get("id")).lower()
+        if node_id:
+            inventory_by_node_id[node_id] = node
+        netbox_id = _related_id(node.get("netbox_device_id"))
+        if netbox_id:
+            inventory_by_netbox_id[netbox_id.lower()] = node
         for name_key in (_normalize_text(node.get("label")).lower(), _normalize_text(node.get("netbox_device_name")).lower(), _normalize_text(node.get("sys_name")).lower()):
             if name_key:
                 inventory_by_name[name_key] = node
@@ -5188,6 +5196,11 @@ async def _collect_topology_connection_edges(
 
     def _resolve_inventory_target_by_lldp(remote_sys_name: str, remote_chassis_id: str) -> dict[str, Any] | None:
         if remote_sys_name:
+            candidate_id = _normalize_text(remote_sys_name).lower()
+            if candidate_id in inventory_by_node_id:
+                return inventory_by_node_id[candidate_id]
+            if candidate_id in inventory_by_netbox_id:
+                return inventory_by_netbox_id[candidate_id]
             candidate = inventory_by_name.get(remote_sys_name.lower())
             if candidate is not None:
                 return candidate
