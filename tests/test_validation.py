@@ -1518,27 +1518,53 @@ def test_topology_page_renders(monkeypatch):
             return [{
                 "id": 501,
                 "name": "ge-0/0/1",
-                "connected_endpoints": [
-                    {
-                        "device": {"id": 102, "name": "SW-CORE-01"},
-                        "name": "ge-0/0/24",
-                    }
-                ],
+                "mac_address": "00:11:22:33:44:55",
             }]
         if device_id == "102":
             return [{
                 "id": 601,
                 "name": "ge-0/0/24",
-                "connected_endpoints": [
-                    {
-                        "device": {"id": 101, "name": "SW-ACCESS-LAN"},
-                        "name": "ge-0/0/1",
-                    }
-                ],
+                "mac_address": "00:11:22:33:44:66",
             }]
         return []
 
     monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(side_effect=fake_list_interfaces))
+    async def fake_find_mac_addresses(mac_address):
+        mac = str(mac_address).upper()
+        if mac == "00:11:22:33:44:55":
+            return [{
+                "id": 701,
+                "mac_address": mac,
+                "assigned_object_type": "dcim.interface",
+                "assigned_object_id": 601,
+            }]
+        if mac == "00:11:22:33:44:66":
+            return [{
+                "id": 702,
+                "mac_address": mac,
+                "assigned_object_type": "dcim.interface",
+                "assigned_object_id": 501,
+            }]
+        return []
+
+    monkeypatch.setattr(NetBoxClient, "find_mac_addresses", AsyncMock(side_effect=fake_find_mac_addresses))
+    async def fake_get_interface(interface_id):
+        interface_id = int(interface_id)
+        if interface_id == 501:
+            return {
+                "id": 501,
+                "name": "ge-0/0/1",
+                "device": {"id": 101, "name": "SW-ACCESS-LAN"},
+            }
+        if interface_id == 601:
+            return {
+                "id": 601,
+                "name": "ge-0/0/24",
+                "device": {"id": 102, "name": "SW-CORE-01"},
+            }
+        return {}
+
+    monkeypatch.setattr(NetBoxClient, "get_interface", AsyncMock(side_effect=fake_get_interface))
     monkeypatch.setattr(
         new_main,
         "load_network_topology",
@@ -1568,6 +1594,7 @@ def test_topology_page_renders(monkeypatch):
     assert "Ligações físicas" in response.text
     assert "SW-ACCESS-LAN" in response.text
     assert "SW-CORE-01" in response.text
+    assert "MAC 00:11:22:33:44:55" in response.text
 
 
 def test_api_alerts_returns_json(monkeypatch):

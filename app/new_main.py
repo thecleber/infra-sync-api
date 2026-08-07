@@ -6,6 +6,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import re
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from html import escape
@@ -4949,6 +4950,58 @@ def _topology_extract_interface_peer(interface: dict[str, Any]) -> tuple[str, st
     return None
 
 
+def _topology_extract_interface_mac(interface: dict[str, Any]) -> str:
+    if not isinstance(interface, dict):
+        return ""
+    candidates = (
+        interface.get("mac_address"),
+        interface.get("primary_mac_address"),
+        interface.get("l2address"),
+        interface.get("l2_address"),
+        interface.get("address"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            for key in ("mac_address", "address", "value", "label"):
+                mac = _normalize_mac_text(candidate.get(key))
+                if mac:
+                    return mac
+            continue
+        mac = _normalize_mac_text(candidate)
+        if mac:
+            return mac
+    return ""
+
+
+def _topology_node_mac_candidates(node: dict[str, Any], interfaces: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    candidates: dict[str, str] = {}
+
+    def add_candidate(value: Any, source_port: str = "") -> None:
+        mac = _normalize_mac_text(value)
+        if not mac:
+            return
+        port_name = _normalize_text(source_port)
+        if mac not in candidates or (port_name and not candidates[mac]):
+            candidates[mac] = port_name
+
+    ports = node.get("ports")
+    if isinstance(ports, list):
+        for port in ports:
+            if not isinstance(port, dict):
+                continue
+            add_candidate(port.get("mac_address"), port.get("name"))
+
+    for interface in interfaces:
+        if not isinstance(interface, dict):
+            continue
+        add_candidate(_topology_extract_interface_mac(interface), interface.get("name"))
+
+    for key in ("mac_address", "discovered_mac_address", "netbox_mac_address", "snmp_mac_address"):
+        add_candidate(node.get(key))
+
+    return [(mac, source_port) for mac, source_port in candidates.items()]
+
+
 def _topology_should_probe_interfaces(device: dict[str, Any]) -> bool:
     group = _normalize_text(device.get("group")).lower()
     kind = _normalize_text(device.get("kind")).lower()
@@ -5016,8 +5069,72 @@ async def _collect_topology_connection_edges(
         return []
 
     netbox_by_id = {str(device.get("id")): device for device in netbox_devices if isinstance(device, dict) and _related_id(device.get("id"))}
+    netbox_by_name = {_normalize_text(device.get("name")).lower(): device for device in netbox_devices if isinstance(device, dict) and _normalize_text(device.get("name"))}
     edges: list[dict[str, Any]] = []
     seen: set[str] = set()
+    interfaces_by_device: dict[str, list[dict[str, Any]]] = {}
+    interface_cache: dict[str, dict[str, Any]] = {}
+    mac_records_cache: dict[str, list[dict[str, Any]]] = {}
+
+    async def _load_interfaces(device_id: str) -> list[dict[str, Any]]:
+        if device_id in interfaces_by_device:
+            return interfaces_by_device[device_id]
+        try:
+            interfaces = await client.list_interfaces(params={"device_id": int(device_id), "limit": 200})
+        except Exception:
+            interfaces = []
+        interfaces_by_device[device_id] = [interface for interface in interfaces if isinstance(interface, dict)]
+        return interfaces_by_device[device_id]
+
+    async def _load_interface(interface_id: str) -> dict[str, Any] | None:
+        if interface_id in interface_cache:
+            return interface_cache[interface_id] or None
+        try:
+            interface = await client.get_interface(int(interface_id))
+        except Exception:
+            interface = {}
+        interface_cache[interface_id] = interface if isinstance(interface, dict) else {}
+        return interface_cache[interface_id] or None
+
+    async def _resolve_mac_peer(record: dict[str, Any]) -> tuple[str, str, str] | None:
+        if not isinstance(record, dict):
+            return None
+        interface_data: dict[str, Any] | None = None
+        assigned_object = record.get("assigned_object")
+        if isinstance(assigned_object, dict):
+            if isinstance(assigned_object.get("device"), dict):
+                interface_data = assigned_object
+            else:
+                assigned_object_id = _related_id(assigned_object.get("id"))
+                if assigned_object_id:
+                    interface_data = await _load_interface(assigned_object_id)
+        if interface_data is None and _normalize_text(record.get("assigned_object_type")).lower() == "dcim.interface":
+            assigned_object_id = _related_id(record.get("assigned_object_id"))
+            if assigned_object_id:
+                interface_data = await _load_interface(assigned_object_id)
+        if not isinstance(interface_data, dict):
+            return None
+        device = interface_data.get("device")
+        if not isinstance(device, dict):
+            return None
+        target_device_id = _related_id(device.get("id"))
+        target_device_name = _normalize_text(device.get("name"))
+        target_interface_name = _normalize_text(interface_data.get("name")) or _normalize_text(interface_data.get("display"))
+        if not target_device_id and target_device_name:
+            target_device_id = _normalize_text(target_device_name).lower()
+        if not target_device_id:
+            return None
+        return target_device_id, target_device_name, target_interface_name
+
+    async def _query_mac_records(mac_address: str) -> list[dict[str, Any]]:
+        if mac_address in mac_records_cache:
+            return mac_records_cache[mac_address]
+        try:
+            records = await client.find_mac_addresses(mac_address)
+        except Exception:
+            records = []
+        mac_records_cache[mac_address] = [record for record in records if isinstance(record, dict)]
+        return mac_records_cache[mac_address]
 
     for node in inventory_devices:
         if not isinstance(node, dict) or not _topology_should_probe_interfaces(node):
@@ -5025,13 +5142,50 @@ async def _collect_topology_connection_edges(
         device_id = _related_id(node.get("netbox_device_id")) or _related_id(node.get("id"))
         if not device_id or not device_id.isdigit():
             continue
-        try:
-            interfaces = await client.list_interfaces(params={"device_id": int(device_id), "limit": 200})
-        except Exception:
-            continue
+        interfaces = await _load_interfaces(device_id)
+        mac_candidates = _topology_node_mac_candidates(node, interfaces)
+        for mac_address, source_port in mac_candidates:
+            records = await _query_mac_records(mac_address)
+            for record in records:
+                peer = await _resolve_mac_peer(record)
+                if peer is None:
+                    continue
+                peer_device_id, peer_device_name, peer_interface_name = peer
+                source_key = str(node["id"])
+                target_key = str(peer_device_id)
+                if not target_key or source_key == target_key:
+                    continue
+                pair_key = "::".join(sorted([source_key, target_key]))
+                if pair_key in seen:
+                    continue
+                target_device = netbox_by_id.get(target_key) or netbox_by_name.get(_normalize_text(peer_device_name).lower())
+                target_label = _normalize_text(peer_device_name) or (_normalize_text(target_device.get("name")) if isinstance(target_device, dict) else "") or f"Device {target_key}"
+                target_interface_name = peer_interface_name or _normalize_text(record.get("interface_name")) or _normalize_text(record.get("name"))
+                label_bits = [f"MAC {mac_address}"]
+                if source_port or target_interface_name:
+                    label_bits.append(f"{source_port or 'porta'} ↔ {target_interface_name or 'porta remota'}")
+                label = " • ".join(label_bits)
+                seen.add(pair_key)
+                edges.append(
+                    {
+                        "source": source_key,
+                        "target": target_key,
+                        "edge_type": "mac-link",
+                        "label": label,
+                        "source_port": source_port or mac_address,
+                        "target_port": target_interface_name,
+                        "peer_name": target_label,
+                        "peer_device_id": peer_device_id,
+                        "mac_address": mac_address,
+                    }
+                )
+                if peer_device_id and peer_device_id in netbox_by_id:
+                    target_device = netbox_by_id[peer_device_id]
+                    peer_node_id = _related_id(target_device.get("id"))
+                    if peer_node_id and peer_node_id not in {str(item.get("id")) for item in inventory_devices if isinstance(item, dict)}:
+                        inventory_devices.append(_topology_build_node({}, fallback_device=target_device))
+
         for interface in interfaces:
-            if not isinstance(interface, dict):
-                continue
             peer = _topology_extract_interface_peer(interface)
             if peer is None:
                 continue
@@ -5040,10 +5194,10 @@ async def _collect_topology_connection_edges(
             target_key = peer_device_id or _normalize_text(peer_device_name).lower()
             if not target_key:
                 continue
-            dedupe_key = "::".join(sorted([str(node["id"]), str(target_key)] + [source_label, peer_interface_name]))
-            if dedupe_key in seen:
+            pair_key = "::".join(sorted([str(node["id"]), str(target_key)]))
+            if pair_key in seen:
                 continue
-            seen.add(dedupe_key)
+            seen.add(pair_key)
             target_label = _normalize_text(peer_device_name) or f"Device {target_key}"
             edges.append(
                 {
@@ -5158,6 +5312,7 @@ def _topology_graph_payload(
             "source_port": _normalize_text(edge.get("source_port")),
             "target_port": _normalize_text(edge.get("target_port")),
             "peer_name": _normalize_text(edge.get("peer_name")),
+            "mac_address": _normalize_text(edge.get("mac_address")),
         })
         degree_map[source_id] = degree_map.get(source_id, 0) + 1
         degree_map[target_id] = degree_map.get(target_id, 0) + 1
@@ -5452,7 +5607,7 @@ def _render_topology_graph_page(
         <div>
           <div class="topology-kicker">Mapa interativo</div>
           <h2 class="topology-title">Topologia da rede</h2>
-          <p class="topology-sub">Visualização interativa dos dispositivos localizados na varredura, com destaque para switches ligados diretamente entre si e acesso rápido aos detalhes do device. Clique em um nó, filtre por nome e arraste para reorganizar o mapa.</p>
+          <p class="topology-sub">Visualização interativa dos dispositivos localizados na varredura, com destaque para os vínculos inferidos pelo MAC das interfaces e para switches ligados diretamente entre si. Clique em um nó, filtre por nome e arraste para reorganizar o mapa.</p>
         </div>
         <div class="topology-controls">
           <a class="btn" href="/networks">IPAM</a>
@@ -5715,17 +5870,17 @@ def _render_topology_graph_page(
             d: '',
             class: 'edge',
             fill: 'none',
-            stroke: edge.edge_type === 'device-link' ? '#34d399' : 'url(#topology-edge-prefix)',
-            'stroke-width': edge.edge_type === 'device-link' ? '2.8' : '2.2',
-            'stroke-dasharray': edge.edge_type === 'device-link' ? '6 4' : '10 7',
+            stroke: edge.edge_type === 'mac-link' ? '#22c55e' : edge.edge_type === 'device-link' ? '#34d399' : 'url(#topology-edge-prefix)',
+            'stroke-width': edge.edge_type === 'mac-link' ? '3.2' : edge.edge_type === 'device-link' ? '2.8' : '2.2',
+            'stroke-dasharray': edge.edge_type === 'mac-link' ? '' : edge.edge_type === 'device-link' ? '6 4' : '10 7',
             'marker-end': 'url(#topology-arrow)',
             'data-source': edge.source,
             'data-target': edge.target,
           }});
           path.appendChild(createSvgElement('title'));
-          path.querySelector('title').textContent = `${{edge.prefix || edge.label || 'Ligação'}}`;
+          path.querySelector('title').textContent = `${{edge.label || edge.prefix || 'Ligação'}}`;
           linksLayer.appendChild(path);
-          edgeElements.set(`${{edge.source}}::${{edge.target}}::${{edge.prefix || edge.label || ''}}`, path);
+          edgeElements.set(`${{edge.source}}::${{edge.target}}`, path);
         }}
 
         for (const node of topologyData.nodes || []) {{
@@ -5899,7 +6054,7 @@ def _render_topology_graph_page(
           const target = topologyData.nodes.find((node) => node.id === edge.target);
           if (!source || !target) continue;
           element.setAttribute('d', edgePath(source, target));
-          const edgeText = String(edge.prefix || edge.label || edge.source_port || edge.target_port || edge.peer_name || '').toLowerCase();
+          const edgeText = String(edge.label || edge.prefix || edge.mac_address || edge.source_port || edge.target_port || edge.peer_name || '').toLowerCase();
           const activeByQuery = !query || matchedIds.has(edge.source) || matchedIds.has(edge.target) || edgeText.includes(query);
           const activeBySelection = !state.selectedId || activeNeighborIds.has(edge.source) || activeNeighborIds.has(edge.target);
           element.classList.toggle('dimmed', !(activeByQuery && activeBySelection));
