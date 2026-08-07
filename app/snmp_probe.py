@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import re
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,15 @@ WALK_COLUMNS = {
     "if_hc_in_octets": ("1.3.6.1.2.1.31.1.1.1.6",),
     "if_hc_out_octets": ("1.3.6.1.2.1.31.1.1.1.10",),
     "hr_processor_load": ("1.3.6.1.2.1.25.3.3.1.2",),
+}
+
+LLDP_REMOTE_COLUMNS = {
+    "remote_chassis_id_subtype": "1.0.8802.1.1.2.1.4.1.1.4",
+    "remote_chassis_id": "1.0.8802.1.1.2.1.4.1.1.5",
+    "remote_port_id_subtype": "1.0.8802.1.1.2.1.4.1.1.6",
+    "remote_port_id": "1.0.8802.1.1.2.1.4.1.1.7",
+    "remote_port_desc": "1.0.8802.1.1.2.1.4.1.1.8",
+    "remote_sys_name": "1.0.8802.1.1.2.1.4.1.1.9",
 }
 
 
@@ -89,6 +99,7 @@ class SnmpDeviceSnapshot:
     processor_load_average: str = ""
     processor_loads: list[str] = field(default_factory=list)
     ports: list[SnmpPortSnapshot] = field(default_factory=list)
+    lldp_neighbors: list[dict[str, Any]] = field(default_factory=list)
     collected_at: str = ""
     notes: str = ""
 
@@ -121,6 +132,7 @@ async def probe_device(
     address = _normalize_private_ipv4(ip)
     scalar_values = await _fetch_scalar_values(address, community, timeout=timeout, retries=retries)
     ports = await _fetch_ports(address, community, timeout=timeout, retries=retries, max_ports=max_ports)
+    lldp_neighbors = await _fetch_lldp_neighbors(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
     processor_loads = await _fetch_column(address, community, WALK_COLUMNS["hr_processor_load"], timeout=timeout, retries=retries, max_rows=max_ports)
     processor_values = [value for _, value in processor_loads if value.isdigit()]
     cpu_average = ""
@@ -138,8 +150,9 @@ async def probe_device(
         processor_load_average=cpu_average,
         processor_loads=processor_values,
         ports=ports,
+        lldp_neighbors=lldp_neighbors,
         collected_at=datetime.now(timezone.utc).isoformat(),
-        notes=_build_notes(scalar_values, ports, processor_values),
+        notes=_build_notes(scalar_values, ports, processor_values, lldp_neighbors),
     )
     payload = snapshot.as_dict()
     _persist_probe_snapshot(payload)
@@ -226,6 +239,103 @@ async def _fetch_ports(
     return ports
 
 
+def _lldp_index_key(oid: str) -> tuple[str, str] | None:
+    parts = oid.split(".")
+    if len(parts) < 3:
+        return None
+    return parts[-2], parts[-1]
+
+
+async def _fetch_lldp_neighbors(
+    ip: str,
+    community: str,
+    *,
+    timeout: float,
+    retries: int,
+    max_rows: int,
+) -> list[dict[str, Any]]:
+    columns: dict[str, list[tuple[tuple[str, str], str]]] = {}
+    for key, oid in LLDP_REMOTE_COLUMNS.items():
+        try:
+            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_lldp_index_key)
+        except Exception:
+            columns[key] = []
+
+    neighbors: dict[tuple[str, str], dict[str, str]] = {}
+    for key, rows in columns.items():
+        for index, value in rows:
+            if not index:
+                continue
+            neighbors.setdefault(index, {})[key] = value
+
+    payload: list[dict[str, Any]] = []
+    for (local_port_index, remote_index), data in neighbors.items():
+        remote_sys_name = _clean_text(data.get("remote_sys_name"))
+        remote_port_id = _clean_text(data.get("remote_port_id"))
+        remote_port_desc = _clean_text(data.get("remote_port_desc"))
+        remote_chassis_id = _normalize_mac(_clean_text(data.get("remote_chassis_id")))
+        remote_chassis_id_subtype = _clean_text(data.get("remote_chassis_id_subtype"))
+        remote_port_id_subtype = _clean_text(data.get("remote_port_id_subtype"))
+        if not any((remote_sys_name, remote_port_id, remote_port_desc, remote_chassis_id)):
+            continue
+        payload.append(
+            {
+                "local_port_index": local_port_index,
+                "remote_index": remote_index,
+                "remote_sys_name": remote_sys_name,
+                "remote_port_id": remote_port_id,
+                "remote_port_desc": remote_port_desc,
+                "remote_chassis_id": remote_chassis_id,
+                "remote_chassis_id_subtype": remote_chassis_id_subtype,
+                "remote_port_id_subtype": remote_port_id_subtype,
+            }
+        )
+    return payload
+
+
+async def _fetch_indexed_column(
+    ip: str,
+    community: str,
+    oid: str,
+    *,
+    timeout: float,
+    retries: int,
+    max_rows: int,
+    index_parser,
+) -> list[tuple[Any, str]]:
+    engine = SnmpEngine()
+    try:
+        transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
+        results: list[tuple[Any, str]] = []
+        async for error_indication, error_status, error_index, var_binds in walk_cmd(
+            engine,
+            CommunityData(community, mpModel=1),
+            transport,
+            ContextData(),
+            ObjectType(ObjectIdentity(oid)),
+            lexicographicMode=False,
+            lookupMib=False,
+            maxRows=max_rows,
+        ):
+            if error_indication:
+                raise SnmpProbeError(str(error_indication))
+            if error_status:
+                raise SnmpProbeError(str(error_status))
+            for var_bind in var_binds:
+                if len(var_bind) < 2:
+                    continue
+                index = index_parser(var_bind[0].prettyPrint())
+                value = _clean_value(var_bind[1])
+                if index is None or not value:
+                    continue
+                results.append((index, value))
+                if len(results) >= max_rows:
+                    return results
+        return results
+    finally:
+        engine.close_dispatcher()
+
+
 async def _fetch_column(
     ip: str,
     community: str,
@@ -268,7 +378,7 @@ async def _fetch_column(
         engine.close_dispatcher()
 
 
-def _build_notes(scalars: dict[str, str], ports: list[SnmpPortSnapshot], processor_values: list[str]) -> str:
+def _build_notes(scalars: dict[str, str], ports: list[SnmpPortSnapshot], processor_values: list[str], lldp_neighbors: list[dict[str, Any]]) -> str:
     parts = []
     if scalars.get("sys_name"):
         parts.append(f"sysName={scalars['sys_name']}")
@@ -280,6 +390,8 @@ def _build_notes(scalars: dict[str, str], ports: list[SnmpPortSnapshot], process
     if ports:
         active_ports = len([port for port in ports if port.oper_status == "up"])
         parts.append(f"active_ports={active_ports}")
+    if lldp_neighbors:
+        parts.append(f"lldp_neighbors={len(lldp_neighbors)}")
     return " | ".join(parts)
 
 
@@ -421,19 +533,36 @@ def _persist_probe_snapshot(snapshot: dict[str, Any]) -> None:
     devices = state.get("devices") if isinstance(state.get("devices"), list) else []
     ip = str(snapshot.get("ip", "")).strip()
     ports = snapshot.get("ports") if isinstance(snapshot.get("ports"), list) else []
+    lldp_neighbors = snapshot.get("lldp_neighbors") if isinstance(snapshot.get("lldp_neighbors"), list) else []
     timestamp = snapshot.get("collected_at") or datetime.now(timezone.utc).isoformat()
+    snmp_mac_address = next(
+        (_normalize_mac(port.get("mac_address")) for port in ports if isinstance(port, dict) and _normalize_mac(port.get("mac_address"))),
+        "",
+    )
     updated = False
     for device in devices:
         if isinstance(device, dict) and device.get("ip") == ip:
             device.update({
                 "ip": ip,
                 "ports": ports,
+                "lldp_neighbors": lldp_neighbors,
                 "collected_at": timestamp,
+                "sys_name": _clean_text(snapshot.get("sys_name")),
+                "sys_descr": _clean_text(snapshot.get("sys_descr")),
+                "snmp_mac_address": snmp_mac_address,
             })
             updated = True
             break
     if not updated:
-        devices.append({"ip": ip, "ports": ports, "collected_at": timestamp})
+        devices.append({
+            "ip": ip,
+            "ports": ports,
+            "lldp_neighbors": lldp_neighbors,
+            "collected_at": timestamp,
+            "sys_name": _clean_text(snapshot.get("sys_name")),
+            "sys_descr": _clean_text(snapshot.get("sys_descr")),
+            "snmp_mac_address": snmp_mac_address,
+        })
     state["devices"] = devices
     save_last_probe(state)
 

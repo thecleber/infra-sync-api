@@ -4760,7 +4760,7 @@ def _topology_device_key(device: dict[str, Any]) -> str:
         value = _related_id(device.get(key))
         if value:
             return value
-    for key in ("netbox_device_name", "name", "sys_name", "ip", "primary_ip4"):
+    for key in ("netbox_device_name", "name", "sys_name", "snmp_mac_address", "mac_address", "ip", "primary_ip4"):
         value = _normalize_text(device.get(key))
         if value:
             if key == "primary_ip4":
@@ -4827,6 +4827,9 @@ def _topology_build_node(
         primary_ip = _normalize_text(netbox_device.get("primary_ip4"))
     if primary_ip and "/" in primary_ip:
         primary_ip = primary_ip.split("/", 1)[0]
+    snmp_mac_address = _normalize_mac_text(discovered.get("snmp_mac_address")) or _normalize_mac_text(discovered.get("mac_address"))
+    if not snmp_mac_address and isinstance(discovered.get("ports"), list):
+        snmp_mac_address = next((_normalize_mac_text(port.get("mac_address")) for port in discovered.get("ports", []) if isinstance(port, dict) and _normalize_mac_text(port.get("mac_address"))), "")
 
     group = _normalize_text(discovered.get("group")).lower()
     subgroup = _normalize_text(discovered.get("subgroup")).lower()
@@ -4862,8 +4865,11 @@ def _topology_build_node(
         "system_message": _normalize_text(discovered.get("system_message")),
         "reachable": bool(discovered.get("reachable")),
         "ports_count": len(discovered.get("ports")) if isinstance(discovered.get("ports"), list) else 0,
+        "ports": [port for port in discovered.get("ports", []) if isinstance(port, dict)] if isinstance(discovered.get("ports"), list) else [],
         "netbox_device_id": _related_id(discovered.get("netbox_device_id")) or _related_id(netbox_device.get("id")),
         "netbox_device_name": _normalize_text(netbox_device.get("name")) or _normalize_text(discovered.get("netbox_device_name")),
+        "snmp_mac_address": snmp_mac_address,
+        "mac_address": snmp_mac_address,
         "device_link": f"/devices/view/{_related_id(discovered.get('netbox_device_id')) or _related_id(netbox_device.get('id'))}" if (_related_id(discovered.get("netbox_device_id")) or _related_id(netbox_device.get("id"))) else "",
         "search_text": " ".join(
             text for text in (
@@ -4876,6 +4882,7 @@ def _topology_build_node(
                 _normalize_text(discovered.get("group")),
                 _normalize_text(discovered.get("subgroup")),
                 _normalize_text(system_status),
+                snmp_mac_address,
                 _normalize_text(netbox_device.get("name")),
                 _relation_label(netbox_device.get("site")) if isinstance(netbox_device.get("site"), dict) else "",
                 _relation_label(netbox_device.get("role")) if isinstance(netbox_device.get("role"), dict) else "",
@@ -5064,12 +5071,46 @@ async def _collect_topology_connection_edges(
     client: NetBoxClient | None,
     inventory_devices: list[dict[str, Any]],
     netbox_devices: list[dict[str, Any]],
+    probe_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    if client is None:
+    if client is None and not isinstance(probe_state, dict):
         return []
 
     netbox_by_id = {str(device.get("id")): device for device in netbox_devices if isinstance(device, dict) and _related_id(device.get("id"))}
     netbox_by_name = {_normalize_text(device.get("name")).lower(): device for device in netbox_devices if isinstance(device, dict) and _normalize_text(device.get("name"))}
+    inventory_by_name: dict[str, dict[str, Any]] = {}
+    inventory_by_mac: dict[str, dict[str, Any]] = {}
+    inventory_by_ip: dict[str, dict[str, Any]] = {}
+    for node in inventory_devices:
+        if not isinstance(node, dict):
+            continue
+        for name_key in (_normalize_text(node.get("label")).lower(), _normalize_text(node.get("netbox_device_name")).lower(), _normalize_text(node.get("sys_name")).lower()):
+            if name_key:
+                inventory_by_name[name_key] = node
+        for mac_key in (_normalize_mac_text(node.get("snmp_mac_address")), _normalize_mac_text(node.get("mac_address"))):
+            if mac_key:
+                inventory_by_mac[mac_key] = node
+        ip_key = _normalize_text(node.get("primary_ip")).split("/", 1)[0].lower()
+        if ip_key and ip_key != "—":
+            inventory_by_ip[ip_key] = node
+
+    probe_devices = [device for device in (probe_state.get("devices") if isinstance(probe_state, dict) and isinstance(probe_state.get("devices"), list) else []) if isinstance(device, dict)]
+    probe_by_ip: dict[str, dict[str, Any]] = {}
+    probe_by_name: dict[str, dict[str, Any]] = {}
+    probe_by_mac: dict[str, dict[str, Any]] = {}
+    for device in probe_devices:
+        ip_key = _normalize_text(device.get("ip")).split("/", 1)[0].lower()
+        if ip_key:
+            probe_by_ip[ip_key] = device
+        name_key = _normalize_text(device.get("sys_name")).lower()
+        if name_key:
+            probe_by_name[name_key] = device
+        mac_key = _normalize_mac_text(device.get("snmp_mac_address"))
+        if not mac_key and isinstance(device.get("ports"), list):
+            mac_key = next((_normalize_mac_text(port.get("mac_address")) for port in device.get("ports", []) if isinstance(port, dict) and _normalize_mac_text(port.get("mac_address"))), "")
+        if mac_key:
+            probe_by_mac[mac_key] = device
+
     edges: list[dict[str, Any]] = []
     seen: set[str] = set()
     interfaces_by_device: dict[str, list[dict[str, Any]]] = {}
@@ -5136,47 +5177,167 @@ async def _collect_topology_connection_edges(
         mac_records_cache[mac_address] = [record for record in records if isinstance(record, dict)]
         return mac_records_cache[mac_address]
 
+    def _probe_port_name(probe_device: dict[str, Any], port_index: str) -> str:
+        ports = probe_device.get("ports") if isinstance(probe_device.get("ports"), list) else []
+        for port in ports:
+            if not isinstance(port, dict):
+                continue
+            if _normalize_text(port.get("index")) == _normalize_text(port_index):
+                return _normalize_text(port.get("name")) or _normalize_text(port.get("description"))
+        return ""
+
+    def _resolve_inventory_target_by_lldp(remote_sys_name: str, remote_chassis_id: str) -> dict[str, Any] | None:
+        if remote_sys_name:
+            candidate = inventory_by_name.get(remote_sys_name.lower())
+            if candidate is not None:
+                return candidate
+            candidate_probe = probe_by_name.get(remote_sys_name.lower())
+            if candidate_probe is not None:
+                ip_key = _normalize_text(candidate_probe.get("ip")).split("/", 1)[0].lower()
+                if ip_key and ip_key in inventory_by_ip:
+                    return inventory_by_ip[ip_key]
+        if remote_chassis_id:
+            candidate = inventory_by_mac.get(remote_chassis_id)
+            if candidate is not None:
+                return candidate
+            candidate_probe = probe_by_mac.get(remote_chassis_id)
+            if candidate_probe is not None:
+                ip_key = _normalize_text(candidate_probe.get("ip")).split("/", 1)[0].lower()
+                if ip_key and ip_key in inventory_by_ip:
+                    return inventory_by_ip[ip_key]
+        return None
+
+    def _resolve_source_probe(node: dict[str, Any]) -> dict[str, Any] | None:
+        for candidate in (
+            _normalize_text(node.get("primary_ip")).split("/", 1)[0].lower(),
+            _normalize_text(node.get("netbox_device_name")).lower(),
+            _normalize_text(node.get("label")).lower(),
+            _normalize_mac_text(node.get("snmp_mac_address")),
+            _normalize_mac_text(node.get("mac_address")),
+        ):
+            if not candidate:
+                continue
+            if candidate in probe_by_ip:
+                return probe_by_ip[candidate]
+            if candidate in probe_by_name:
+                return probe_by_name[candidate]
+            if candidate in probe_by_mac:
+                return probe_by_mac[candidate]
+        return None
+
     for node in inventory_devices:
         if not isinstance(node, dict) or not _topology_should_probe_interfaces(node):
             continue
         device_id = _related_id(node.get("netbox_device_id")) or _related_id(node.get("id"))
         if not device_id or not device_id.isdigit():
             continue
-        interfaces = await _load_interfaces(device_id)
-        mac_candidates = _topology_node_mac_candidates(node, interfaces)
-        for mac_address, source_port in mac_candidates:
-            records = await _query_mac_records(mac_address)
-            for record in records:
-                peer = await _resolve_mac_peer(record)
-                if peer is None:
+        probe_device = _resolve_source_probe(node)
+        if isinstance(probe_device, dict):
+            for neighbor in probe_device.get("lldp_neighbors", []) if isinstance(probe_device.get("lldp_neighbors"), list) else []:
+                if not isinstance(neighbor, dict):
                     continue
-                peer_device_id, peer_device_name, peer_interface_name = peer
+                remote_sys_name = _normalize_text(neighbor.get("remote_sys_name"))
+                remote_chassis_id = _normalize_mac_text(neighbor.get("remote_chassis_id"))
+                target_node = _resolve_inventory_target_by_lldp(remote_sys_name, remote_chassis_id)
+                if not isinstance(target_node, dict):
+                    continue
                 source_key = str(node["id"])
-                target_key = str(peer_device_id)
-                if not target_key or source_key == target_key:
+                target_key = str(target_node["id"])
+                if not source_key or not target_key or source_key == target_key:
                     continue
                 pair_key = "::".join(sorted([source_key, target_key]))
                 if pair_key in seen:
                     continue
-                target_device = netbox_by_id.get(target_key) or netbox_by_name.get(_normalize_text(peer_device_name).lower())
-                target_label = _normalize_text(peer_device_name) or (_normalize_text(target_device.get("name")) if isinstance(target_device, dict) else "") or f"Device {target_key}"
-                target_interface_name = peer_interface_name or _normalize_text(record.get("interface_name")) or _normalize_text(record.get("name"))
-                label_bits = [f"MAC {mac_address}"]
-                if source_port or target_interface_name:
-                    label_bits.append(f"{source_port or 'porta'} ↔ {target_interface_name or 'porta remota'}")
-                label = " • ".join(label_bits)
+                source_port_name = _probe_port_name(probe_device, _normalize_text(neighbor.get("local_port_index")))
+                target_port_name = _normalize_text(neighbor.get("remote_port_desc")) or _normalize_text(neighbor.get("remote_port_id"))
+                label_bits = ["LLDP"]
+                if source_port_name or target_port_name:
+                    label_bits.append(f"{source_port_name or 'porta'} ↔ {target_port_name or 'porta remota'}")
+                if remote_sys_name:
+                    label_bits.append(remote_sys_name)
                 seen.add(pair_key)
                 edges.append(
                     {
                         "source": source_key,
                         "target": target_key,
-                        "edge_type": "mac-link",
-                        "label": label,
-                        "source_port": source_port or mac_address,
-                        "target_port": target_interface_name,
+                        "edge_type": "lldp-link",
+                        "label": " • ".join(label_bits),
+                        "source_port": source_port_name,
+                        "target_port": target_port_name,
+                        "peer_name": _normalize_text(target_node.get("label")) or _normalize_text(target_node.get("netbox_device_name")) or target_key,
+                        "peer_device_id": _related_id(target_node.get("netbox_device_id")) or _related_id(target_node.get("id")),
+                        "remote_sys_name": remote_sys_name,
+                        "remote_chassis_id": remote_chassis_id,
+                    }
+                )
+        if client is not None:
+            interfaces = await _load_interfaces(device_id)
+            mac_candidates = _topology_node_mac_candidates(node, interfaces)
+            for mac_address, source_port in mac_candidates:
+                records = await _query_mac_records(mac_address)
+                for record in records:
+                    peer = await _resolve_mac_peer(record)
+                    if peer is None:
+                        continue
+                    peer_device_id, peer_device_name, peer_interface_name = peer
+                    source_key = str(node["id"])
+                    target_key = str(peer_device_id)
+                    if not target_key or source_key == target_key:
+                        continue
+                    pair_key = "::".join(sorted([source_key, target_key]))
+                    if pair_key in seen:
+                        continue
+                    target_device = netbox_by_id.get(target_key) or netbox_by_name.get(_normalize_text(peer_device_name).lower())
+                    target_label = _normalize_text(peer_device_name) or (_normalize_text(target_device.get("name")) if isinstance(target_device, dict) else "") or f"Device {target_key}"
+                    target_interface_name = peer_interface_name or _normalize_text(record.get("interface_name")) or _normalize_text(record.get("name"))
+                    label_bits = [f"MAC {mac_address}"]
+                    if source_port or target_interface_name:
+                        label_bits.append(f"{source_port or 'porta'} ↔ {target_interface_name or 'porta remota'}")
+                    label = " • ".join(label_bits)
+                    seen.add(pair_key)
+                    edges.append(
+                        {
+                            "source": source_key,
+                            "target": target_key,
+                            "edge_type": "mac-link",
+                            "label": label,
+                            "source_port": source_port or mac_address,
+                            "target_port": target_interface_name,
+                            "peer_name": target_label,
+                            "peer_device_id": peer_device_id,
+                            "mac_address": mac_address,
+                        }
+                    )
+                    if peer_device_id and peer_device_id in netbox_by_id:
+                        target_device = netbox_by_id[peer_device_id]
+                        peer_node_id = _related_id(target_device.get("id"))
+                        if peer_node_id and peer_node_id not in {str(item.get("id")) for item in inventory_devices if isinstance(item, dict)}:
+                            inventory_devices.append(_topology_build_node({}, fallback_device=target_device))
+
+            for interface in interfaces:
+                peer = _topology_extract_interface_peer(interface)
+                if peer is None:
+                    continue
+                peer_device_id, peer_device_name, peer_interface_name = peer
+                source_label = _normalize_text(interface.get("name")) or _normalize_text(interface.get("display")) or f"port {device_id}"
+                target_key = peer_device_id or _normalize_text(peer_device_name).lower()
+                if not target_key:
+                    continue
+                pair_key = "::".join(sorted([str(node["id"]), str(target_key)]))
+                if pair_key in seen:
+                    continue
+                seen.add(pair_key)
+                target_label = _normalize_text(peer_device_name) or f"Device {target_key}"
+                edges.append(
+                    {
+                        "source": str(node["id"]),
+                        "target": str(target_key),
+                        "edge_type": "device-link",
+                        "label": f"{source_label} ↔ {peer_interface_name}" if peer_interface_name else source_label,
+                        "source_port": source_label,
+                        "target_port": peer_interface_name,
                         "peer_name": target_label,
                         "peer_device_id": peer_device_id,
-                        "mac_address": mac_address,
                     }
                 )
                 if peer_device_id and peer_device_id in netbox_by_id:
@@ -5184,38 +5345,6 @@ async def _collect_topology_connection_edges(
                     peer_node_id = _related_id(target_device.get("id"))
                     if peer_node_id and peer_node_id not in {str(item.get("id")) for item in inventory_devices if isinstance(item, dict)}:
                         inventory_devices.append(_topology_build_node({}, fallback_device=target_device))
-
-        for interface in interfaces:
-            peer = _topology_extract_interface_peer(interface)
-            if peer is None:
-                continue
-            peer_device_id, peer_device_name, peer_interface_name = peer
-            source_label = _normalize_text(interface.get("name")) or _normalize_text(interface.get("display")) or f"port {device_id}"
-            target_key = peer_device_id or _normalize_text(peer_device_name).lower()
-            if not target_key:
-                continue
-            pair_key = "::".join(sorted([str(node["id"]), str(target_key)]))
-            if pair_key in seen:
-                continue
-            seen.add(pair_key)
-            target_label = _normalize_text(peer_device_name) or f"Device {target_key}"
-            edges.append(
-                {
-                    "source": str(node["id"]),
-                    "target": str(target_key),
-                    "edge_type": "device-link",
-                    "label": f"{source_label} ↔ {peer_interface_name}" if peer_interface_name else source_label,
-                    "source_port": source_label,
-                    "target_port": peer_interface_name,
-                    "peer_name": target_label,
-                    "peer_device_id": peer_device_id,
-                }
-            )
-            if peer_device_id and peer_device_id in netbox_by_id:
-                target_device = netbox_by_id[peer_device_id]
-                peer_node_id = _related_id(target_device.get("id"))
-                if peer_node_id and peer_node_id not in {str(item.get("id")) for item in inventory_devices if isinstance(item, dict)}:
-                    inventory_devices.append(_topology_build_node({}, fallback_device=target_device))
 
     return edges
 
@@ -5870,9 +5999,9 @@ def _render_topology_graph_page(
             d: '',
             class: 'edge',
             fill: 'none',
-            stroke: edge.edge_type === 'mac-link' ? '#22c55e' : edge.edge_type === 'device-link' ? '#34d399' : 'url(#topology-edge-prefix)',
-            'stroke-width': edge.edge_type === 'mac-link' ? '3.2' : edge.edge_type === 'device-link' ? '2.8' : '2.2',
-            'stroke-dasharray': edge.edge_type === 'mac-link' ? '' : edge.edge_type === 'device-link' ? '6 4' : '10 7',
+            stroke: edge.edge_type === 'lldp-link' ? '#60a5fa' : edge.edge_type === 'mac-link' ? '#22c55e' : edge.edge_type === 'device-link' ? '#34d399' : 'url(#topology-edge-prefix)',
+            'stroke-width': edge.edge_type === 'lldp-link' ? '3.1' : edge.edge_type === 'mac-link' ? '3.2' : edge.edge_type === 'device-link' ? '2.8' : '2.2',
+            'stroke-dasharray': edge.edge_type === 'lldp-link' ? '9 4' : edge.edge_type === 'mac-link' ? '' : edge.edge_type === 'device-link' ? '6 4' : '10 7',
             'marker-end': 'url(#topology-arrow)',
             'data-source': edge.source,
             'data-target': edge.target,
@@ -6054,7 +6183,7 @@ def _render_topology_graph_page(
           const target = topologyData.nodes.find((node) => node.id === edge.target);
           if (!source || !target) continue;
           element.setAttribute('d', edgePath(source, target));
-          const edgeText = String(edge.label || edge.prefix || edge.mac_address || edge.source_port || edge.target_port || edge.peer_name || '').toLowerCase();
+          const edgeText = String(edge.label || edge.prefix || edge.mac_address || edge.remote_sys_name || edge.source_port || edge.target_port || edge.peer_name || '').toLowerCase();
           const activeByQuery = !query || matchedIds.has(edge.source) || matchedIds.has(edge.target) || edgeText.includes(query);
           const activeBySelection = !state.selectedId || activeNeighborIds.has(edge.source) || activeNeighborIds.has(edge.target);
           element.classList.toggle('dimmed', !(activeByQuery && activeBySelection));
@@ -6399,6 +6528,7 @@ async def topology_page(request: Request):
     topology_state = load_network_topology()
     page_error: str | None = None
     discovery_state = load_last_scan()
+    probe_state = load_last_probe()
     try:
         if client is not None:
             prefixes = await client.list_prefixes(params={"limit": 100})
@@ -6407,7 +6537,7 @@ async def topology_page(request: Request):
         page_error = str(exc)
     inventory_devices = _topology_inventory_devices(discovery_state, devices)
     try:
-        connection_edges = await _collect_topology_connection_edges(client, inventory_devices, devices)
+        connection_edges = await _collect_topology_connection_edges(client, inventory_devices, devices, probe_state)
     except Exception:
         connection_edges = []
     graph = _topology_graph_payload(prefixes, topology_state, inventory_devices, devices, connection_edges)

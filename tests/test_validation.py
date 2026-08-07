@@ -1487,6 +1487,64 @@ def test_topology_page_renders(monkeypatch):
         },
     )
     monkeypatch.setattr(
+        new_main,
+        "load_last_probe",
+        lambda: {
+            "devices": [
+                {
+                    "ip": "10.0.0.24",
+                    "sys_name": "SW-ACCESS-LAN",
+                    "snmp_mac_address": "00:11:22:33:44:55",
+                    "ports": [
+                        {"index": "1", "name": "ge-0/0/1", "mac_address": "00:11:22:33:44:55"},
+                    ],
+                    "lldp_neighbors": [
+                        {
+                            "local_port_index": "1",
+                            "remote_sys_name": "SW-CORE-01",
+                            "remote_port_id": "ge-0/0/24",
+                            "remote_port_desc": "ge-0/0/24",
+                            "remote_chassis_id": "00:11:22:33:44:66",
+                        }
+                    ],
+                },
+                {
+                    "ip": "10.0.0.25",
+                    "sys_name": "SW-CORE-01",
+                    "snmp_mac_address": "00:11:22:33:44:66",
+                    "ports": [
+                        {"index": "24", "name": "ge-0/0/24", "mac_address": "00:11:22:33:44:66"},
+                    ],
+                    "lldp_neighbors": [
+                        {
+                            "local_port_index": "24",
+                            "remote_sys_name": "SW-ACCESS-LAN",
+                            "remote_port_id": "ge-0/0/1",
+                            "remote_port_desc": "ge-0/0/1",
+                            "remote_chassis_id": "00:11:22:33:44:55",
+                        }
+                    ],
+                },
+            ],
+            "last_probe": {
+                "ip": "10.0.0.24",
+                "sys_name": "SW-ACCESS-LAN",
+                "lldp_neighbors": [
+                    {
+                        "local_port_index": "1",
+                        "remote_sys_name": "SW-CORE-01",
+                        "remote_port_id": "ge-0/0/24",
+                        "remote_port_desc": "ge-0/0/24",
+                        "remote_chassis_id": "00:11:22:33:44:66",
+                    }
+                ],
+                "ports": [
+                    {"index": "1", "name": "ge-0/0/1", "mac_address": "00:11:22:33:44:55"},
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(
         NetBoxClient,
         "list_devices",
         AsyncMock(return_value=[
@@ -1512,59 +1570,6 @@ def test_topology_page_renders(monkeypatch):
             },
         ]),
     )
-    async def fake_list_interfaces(params=None):
-        device_id = str((params or {}).get("device_id") or "")
-        if device_id == "101":
-            return [{
-                "id": 501,
-                "name": "ge-0/0/1",
-                "mac_address": "00:11:22:33:44:55",
-            }]
-        if device_id == "102":
-            return [{
-                "id": 601,
-                "name": "ge-0/0/24",
-                "mac_address": "00:11:22:33:44:66",
-            }]
-        return []
-
-    monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(side_effect=fake_list_interfaces))
-    async def fake_find_mac_addresses(mac_address):
-        mac = str(mac_address).upper()
-        if mac == "00:11:22:33:44:55":
-            return [{
-                "id": 701,
-                "mac_address": mac,
-                "assigned_object_type": "dcim.interface",
-                "assigned_object_id": 601,
-            }]
-        if mac == "00:11:22:33:44:66":
-            return [{
-                "id": 702,
-                "mac_address": mac,
-                "assigned_object_type": "dcim.interface",
-                "assigned_object_id": 501,
-            }]
-        return []
-
-    monkeypatch.setattr(NetBoxClient, "find_mac_addresses", AsyncMock(side_effect=fake_find_mac_addresses))
-    async def fake_get_interface(interface_id):
-        interface_id = int(interface_id)
-        if interface_id == 501:
-            return {
-                "id": 501,
-                "name": "ge-0/0/1",
-                "device": {"id": 101, "name": "SW-ACCESS-LAN"},
-            }
-        if interface_id == 601:
-            return {
-                "id": 601,
-                "name": "ge-0/0/24",
-                "device": {"id": 102, "name": "SW-CORE-01"},
-            }
-        return {}
-
-    monkeypatch.setattr(NetBoxClient, "get_interface", AsyncMock(side_effect=fake_get_interface))
     monkeypatch.setattr(
         new_main,
         "load_network_topology",
@@ -1594,7 +1599,9 @@ def test_topology_page_renders(monkeypatch):
     assert "Ligações físicas" in response.text
     assert "SW-ACCESS-LAN" in response.text
     assert "SW-CORE-01" in response.text
-    assert "MAC 00:11:22:33:44:55" in response.text
+    assert "LLDP" in response.text
+    assert "ge-0/0/1" in response.text
+    assert "ge-0/0/24" in response.text
 
 
 def test_api_alerts_returns_json(monkeypatch):
