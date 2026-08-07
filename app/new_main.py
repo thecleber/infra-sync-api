@@ -4720,6 +4720,15 @@ def _render_topology_rows(
 
 def _topology_device_kind_label(device: dict[str, Any] | None, label: str = "") -> str:
     if isinstance(device, dict):
+        discovery_group = _normalize_text(device.get("group")).lower()
+        if discovery_group in {"switches", "routers", "network"}:
+            return "Rede"
+        if discovery_group in {"servers"}:
+            return "Servidor"
+        if discovery_group in {"aps", "wireless"}:
+            return "Wireless"
+        if discovery_group in {"hosts", "computers", "printers", "phones", "monitors"}:
+            return "Usuario"
         kind = _inventory_kind_for_device(device)
         if kind in {"network"}:
             return "Rede"
@@ -4743,96 +4752,435 @@ def _topology_device_kind_label(device: dict[str, Any] | None, label: str = "") 
     return "Outro"
 
 
+def _topology_device_key(device: dict[str, Any]) -> str:
+    if not isinstance(device, dict):
+        return ""
+    for key in ("netbox_device_id", "id", "device_id"):
+        value = _related_id(device.get(key))
+        if value:
+            return value
+    for key in ("netbox_device_name", "name", "sys_name", "ip", "primary_ip4"):
+        value = _normalize_text(device.get(key))
+        if value:
+            if key == "primary_ip4":
+                value = value.split("/", 1)[0]
+            return value.lower()
+    return ""
+
+
+def _topology_resolve_netbox_device(
+    device: dict[str, Any],
+    netbox_by_id: dict[str, dict[str, Any]],
+    netbox_by_name: dict[str, dict[str, Any]],
+    netbox_by_ip: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not isinstance(device, dict):
+        return None
+    candidates = [
+        _related_id(device.get("netbox_device_id")),
+        _related_id(device.get("id")),
+        _normalize_text(device.get("netbox_device_name")).lower(),
+        _normalize_text(device.get("name")).lower(),
+        _normalize_text(device.get("sys_name")).lower(),
+        _normalize_text(device.get("ip")).split("/", 1)[0].lower(),
+    ]
+    if isinstance(device.get("primary_ip4"), dict):
+        candidates.append(_normalize_text(device.get("primary_ip4", {}).get("address")).split("/", 1)[0].lower())
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if candidate in netbox_by_id:
+            return netbox_by_id[candidate]
+        if candidate in netbox_by_name:
+            return netbox_by_name[candidate]
+        if candidate in netbox_by_ip:
+            return netbox_by_ip[candidate]
+    return None
+
+
+def _topology_build_node(
+    device: dict[str, Any],
+    *,
+    fallback_device: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_device = fallback_device if isinstance(fallback_device, dict) else None
+    discovered = device if isinstance(device, dict) else {}
+    netbox_device = source_device or discovered
+    node_id = (
+        _related_id(discovered.get("netbox_device_id"))
+        or _related_id(netbox_device.get("id"))
+        or _topology_device_key(discovered)
+        or _topology_device_key(netbox_device)
+    )
+    label = (
+        _normalize_text(discovered.get("netbox_device_name"))
+        or _normalize_text(netbox_device.get("name"))
+        or _normalize_text(discovered.get("sys_name"))
+        or _normalize_text(discovered.get("ip"))
+        or f"Device {node_id}"
+    )
+    primary_ip = _normalize_text(discovered.get("ip"))
+    if not primary_ip and isinstance(netbox_device.get("primary_ip4"), dict):
+        primary_ip = _normalize_text(netbox_device.get("primary_ip4", {}).get("address")).split("/", 1)[0]
+    if not primary_ip:
+        primary_ip = _normalize_text(netbox_device.get("primary_ip4"))
+    if primary_ip and "/" in primary_ip:
+        primary_ip = primary_ip.split("/", 1)[0]
+
+    group = _normalize_text(discovered.get("group")).lower()
+    subgroup = _normalize_text(discovered.get("subgroup")).lower()
+    system_status = _normalize_text(discovered.get("system_status"))
+    inventory_kind = _inventory_kind_for_device(netbox_device) if isinstance(netbox_device, dict) else "other"
+    if group in {"switches", "routers", "network"}:
+        inventory_kind = "network"
+    elif group in {"servers"}:
+        inventory_kind = "servers"
+    elif group in {"aps", "wireless"}:
+        inventory_kind = "wireless"
+    elif group in {"printers"}:
+        inventory_kind = "printers"
+    elif group in {"phones"}:
+        inventory_kind = "phones"
+    elif group in {"hosts", "computers"}:
+        inventory_kind = "computers"
+
+    node = {
+        "id": node_id or label,
+        "label": label,
+        "kind": _topology_device_kind_label(discovered if discovered else netbox_device, label),
+        "inventory_kind": inventory_kind,
+        "group": group,
+        "subgroup": subgroup,
+        "status": _relation_label(netbox_device.get("status")) if isinstance(netbox_device.get("status"), (dict, str)) else system_status or "—",
+        "site": _relation_label(netbox_device.get("site")) if isinstance(netbox_device.get("site"), (dict, str)) else _normalize_text(discovered.get("site")) or "—",
+        "role": _relation_label(netbox_device.get("role")) if isinstance(netbox_device.get("role"), (dict, str)) else _normalize_text(discovered.get("role")) or "—",
+        "primary_ip": _relation_label(netbox_device.get("primary_ip4")) if isinstance(netbox_device.get("primary_ip4"), (dict, str)) else primary_ip or "—",
+        "manufacturer": _relation_label(netbox_device.get("device_type", {}).get("manufacturer")) if isinstance(netbox_device.get("device_type"), dict) else _normalize_text(discovered.get("manufacturer")) or "—",
+        "model": _normalize_text(netbox_device.get("device_type", {}).get("model")) if isinstance(netbox_device.get("device_type"), dict) else _normalize_text(discovered.get("model")) or "—",
+        "system_status": system_status or "—",
+        "system_message": _normalize_text(discovered.get("system_message")),
+        "reachable": bool(discovered.get("reachable")),
+        "ports_count": len(discovered.get("ports")) if isinstance(discovered.get("ports"), list) else 0,
+        "netbox_device_id": _related_id(discovered.get("netbox_device_id")) or _related_id(netbox_device.get("id")),
+        "netbox_device_name": _normalize_text(netbox_device.get("name")) or _normalize_text(discovered.get("netbox_device_name")),
+        "device_link": f"/devices/view/{_related_id(discovered.get('netbox_device_id')) or _related_id(netbox_device.get('id'))}" if (_related_id(discovered.get("netbox_device_id")) or _related_id(netbox_device.get("id"))) else "",
+        "search_text": " ".join(
+            text for text in (
+                label,
+                _normalize_text(discovered.get("ip")),
+                _normalize_text(discovered.get("sys_name")),
+                _normalize_text(discovered.get("manufacturer")),
+                _normalize_text(discovered.get("model")),
+                _normalize_text(discovered.get("device_type")),
+                _normalize_text(discovered.get("group")),
+                _normalize_text(discovered.get("subgroup")),
+                _normalize_text(system_status),
+                _normalize_text(netbox_device.get("name")),
+                _relation_label(netbox_device.get("site")) if isinstance(netbox_device.get("site"), dict) else "",
+                _relation_label(netbox_device.get("role")) if isinstance(netbox_device.get("role"), dict) else "",
+                _relation_label(netbox_device.get("primary_ip4")) if isinstance(netbox_device.get("primary_ip4"), dict) else "",
+            )
+            if _normalize_text(text)
+        ).lower(),
+        "degree": 0,
+        "prefix_count": 0,
+        "neighbors": [],
+        "x": 0,
+        "y": 0,
+    }
+    return node
+
+
+def _topology_extract_interface_peer(interface: dict[str, Any]) -> tuple[str, str, str] | None:
+    if not isinstance(interface, dict):
+        return None
+
+    def _candidate_device(candidate: Any) -> tuple[str, str, str] | None:
+        peer_device_id = ""
+        peer_device_name = ""
+        peer_interface_name = ""
+        if isinstance(candidate, dict):
+            peer_interface_name = _normalize_text(candidate.get("name")) or _normalize_text(candidate.get("display"))
+            peer_device = candidate.get("device") or candidate.get("remote_device") or candidate.get("connected_device")
+            if isinstance(peer_device, dict):
+                peer_device_id = _related_id(peer_device.get("id"))
+                peer_device_name = _normalize_text(peer_device.get("name"))
+            elif peer_device is not None:
+                peer_device_id = _related_id(peer_device) or _normalize_text(peer_device)
+            if not peer_device_id:
+                peer_device_id = _related_id(candidate.get("device_id")) or _related_id(candidate.get("device"))
+            if not peer_device_name:
+                peer_device_name = _normalize_text(candidate.get("device_name")) or _normalize_text(candidate.get("remote_device_name"))
+            if not peer_interface_name:
+                peer_interface_name = _normalize_text(candidate.get("interface_name")) or _normalize_text(candidate.get("label"))
+        else:
+            text = _normalize_text(candidate)
+            if not text:
+                return None
+            match = re.search(r"/interfaces?/(\d+)/?", text)
+            if match:
+                peer_device_id = match.group(1)
+            else:
+                match = re.search(r"dcim\.interface[:/](\d+)", text)
+                if match:
+                    peer_device_id = match.group(1)
+                else:
+                    match = re.search(r"(\d+)$", text)
+                    if match:
+                        peer_device_id = match.group(1)
+            peer_device_name = text
+        if peer_device_id:
+            return peer_device_id, peer_device_name, peer_interface_name
+        return None
+
+    for key in ("connected_endpoints", "connected_endpoint", "link_peers", "peer", "peers", "cable"):
+        value = interface.get(key)
+        if not value:
+            continue
+        if isinstance(value, list):
+            for candidate in value:
+                parsed = _candidate_device(candidate)
+                if parsed is not None:
+                    return parsed
+        else:
+            parsed = _candidate_device(value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _topology_should_probe_interfaces(device: dict[str, Any]) -> bool:
+    group = _normalize_text(device.get("group")).lower()
+    kind = _normalize_text(device.get("kind")).lower()
+    inventory_kind = _normalize_text(device.get("inventory_kind")).lower()
+    label = " ".join(
+        part for part in (
+            _normalize_text(device.get("label")),
+            _normalize_text(device.get("name")),
+            _normalize_text(device.get("netbox_device_name")),
+        )
+        if part
+    ).lower()
+    if group in {"switches", "routers", "network"}:
+        return True
+    if inventory_kind in {"network"}:
+        return True
+    if kind == "rede":
+        return True
+    return any(token in label for token in ("switch", "router", "firewall", "gateway", "core", "backbone", "uplink"))
+
+
+def _topology_inventory_devices(
+    discovery_state: dict[str, Any] | None,
+    netbox_devices: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    netbox_by_id = {str(device.get("id")): device for device in netbox_devices if isinstance(device, dict) and _related_id(device.get("id"))}
+    netbox_by_name = {_normalize_text(device.get("name")).lower(): device for device in netbox_devices if isinstance(device, dict) and _normalize_text(device.get("name"))}
+    netbox_by_ip: dict[str, dict[str, Any]] = {}
+    for device in netbox_devices:
+        if not isinstance(device, dict):
+            continue
+        primary_ip = device.get("primary_ip4")
+        primary_ip_text = ""
+        if isinstance(primary_ip, dict):
+            primary_ip_text = _normalize_text(primary_ip.get("address"))
+        else:
+            primary_ip_text = _normalize_text(primary_ip)
+        if primary_ip_text:
+            netbox_by_ip[primary_ip_text.split("/", 1)[0].lower()] = device
+
+    discovered_devices = []
+    if isinstance(discovery_state, dict) and isinstance(discovery_state.get("devices"), list):
+        discovered_devices = [device for device in discovery_state["devices"] if isinstance(device, dict)]
+
+    source_devices = discovered_devices or netbox_devices
+    inventory: dict[str, dict[str, Any]] = {}
+
+    for device in source_devices:
+        fallback = _topology_resolve_netbox_device(device, netbox_by_id, netbox_by_name, netbox_by_ip)
+        node = _topology_build_node(device, fallback_device=fallback)
+        inventory[node["id"]] = node
+
+    if not discovered_devices:
+        return list(inventory.values())
+
+    return list(inventory.values())
+
+
+async def _collect_topology_connection_edges(
+    client: NetBoxClient | None,
+    inventory_devices: list[dict[str, Any]],
+    netbox_devices: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if client is None:
+        return []
+
+    netbox_by_id = {str(device.get("id")): device for device in netbox_devices if isinstance(device, dict) and _related_id(device.get("id"))}
+    edges: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for node in inventory_devices:
+        if not isinstance(node, dict) or not _topology_should_probe_interfaces(node):
+            continue
+        device_id = _related_id(node.get("netbox_device_id")) or _related_id(node.get("id"))
+        if not device_id or not device_id.isdigit():
+            continue
+        try:
+            interfaces = await client.list_interfaces(params={"device_id": int(device_id), "limit": 200})
+        except Exception:
+            continue
+        for interface in interfaces:
+            if not isinstance(interface, dict):
+                continue
+            peer = _topology_extract_interface_peer(interface)
+            if peer is None:
+                continue
+            peer_device_id, peer_device_name, peer_interface_name = peer
+            source_label = _normalize_text(interface.get("name")) or _normalize_text(interface.get("display")) or f"port {device_id}"
+            target_key = peer_device_id or _normalize_text(peer_device_name).lower()
+            if not target_key:
+                continue
+            dedupe_key = "::".join(sorted([str(node["id"]), str(target_key)] + [source_label, peer_interface_name]))
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            target_label = _normalize_text(peer_device_name) or f"Device {target_key}"
+            edges.append(
+                {
+                    "source": str(node["id"]),
+                    "target": str(target_key),
+                    "edge_type": "device-link",
+                    "label": f"{source_label} ↔ {peer_interface_name}" if peer_interface_name else source_label,
+                    "source_port": source_label,
+                    "target_port": peer_interface_name,
+                    "peer_name": target_label,
+                    "peer_device_id": peer_device_id,
+                }
+            )
+            if peer_device_id and peer_device_id in netbox_by_id:
+                target_device = netbox_by_id[peer_device_id]
+                peer_node_id = _related_id(target_device.get("id"))
+                if peer_node_id and peer_node_id not in {str(item.get("id")) for item in inventory_devices if isinstance(item, dict)}:
+                    inventory_devices.append(_topology_build_node({}, fallback_device=target_device))
+
+    return edges
+
+
 def _topology_graph_payload(
     prefixes: list[dict[str, Any]],
     topology_state: dict[str, Any] | None,
-    devices: list[dict[str, Any]],
+    inventory_devices: list[dict[str, Any]],
+    netbox_devices: list[dict[str, Any]],
+    connection_edges: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    # The graph is built from the same persisted topology data already used by the
-    # textual IPAM view, so future changes can keep this screen aligned with the data model.
-    prefix_lookup = {str(prefix.get("id")): prefix for prefix in prefixes if isinstance(prefix, dict)}
-    device_lookup = {str(device.get("id")): device for device in devices if isinstance(device, dict) and _related_id(device.get("id"))}
-
     nodes: dict[str, dict[str, Any]] = {}
     edges: list[dict[str, Any]] = []
     degree_map: dict[str, int] = {}
     adjacency: dict[str, set[str]] = {}
+    node_sources: dict[str, dict[str, Any]] = {}
+    seen_edges: set[str] = set()
+    netbox_by_id = {str(device.get("id")): device for device in netbox_devices if isinstance(device, dict) and _related_id(device.get("id"))}
+    netbox_by_name = {_normalize_text(device.get("name")).lower(): device for device in netbox_devices if isinstance(device, dict) and _normalize_text(device.get("name"))}
+    netbox_by_ip: dict[str, dict[str, Any]] = {}
+    for device in netbox_devices:
+        if not isinstance(device, dict):
+            continue
+        primary_ip = device.get("primary_ip4")
+        if isinstance(primary_ip, dict):
+            primary_ip_text = _normalize_text(primary_ip.get("address"))
+        else:
+            primary_ip_text = _normalize_text(primary_ip)
+        if primary_ip_text:
+            netbox_by_ip[primary_ip_text.split("/", 1)[0].lower()] = device
 
-    def ensure_node(node_id: str) -> dict[str, Any]:
+    def ensure_node(node_id: str, *, source_device: dict[str, Any] | None = None, fallback_device: dict[str, Any] | None = None) -> dict[str, Any]:
+        node_id = _normalize_text(node_id)
+        if not node_id:
+            node_id = _topology_device_key(source_device or fallback_device or {})
+        if not node_id:
+            node_id = f"node-{len(nodes) + 1}"
         node = nodes.get(node_id)
         if node is not None:
+            if source_device is not None:
+                node_sources[node_id] = source_device
             return node
-        device = device_lookup.get(node_id)
-        label = _normalize_text(device.get("name")) if isinstance(device, dict) else ""
-        if not label:
-            label = f"Device {node_id}"
-        kind = _topology_device_kind_label(device, label)
-        node = {
-            "id": node_id,
-            "label": label,
-            "kind": kind,
-            "kind_class": _inventory_kind_for_device(device) if isinstance(device, dict) else "other",
-            "site": _relation_label(device.get("site")) if isinstance(device, dict) else "—",
-            "role": _relation_label(device.get("role")) if isinstance(device, dict) else "—",
-            "status": _relation_label(device.get("status")) if isinstance(device, dict) else "—",
-            "primary_ip": _relation_label(device.get("primary_ip4")) if isinstance(device, dict) else "—",
-            "manufacturer": _relation_label(device.get("device_type", {}).get("manufacturer")) if isinstance(device, dict) and isinstance(device.get("device_type"), dict) else "—",
-            "model": _normalize_text(device.get("device_type", {}).get("model")) if isinstance(device, dict) and isinstance(device.get("device_type"), dict) else "—",
-            "device_link": f"/devices/view/{node_id}" if isinstance(device, dict) else "",
-            "search_text": " ".join(
-                text for text in (
-                    label,
-                    node_id,
-                    _relation_label(device.get("site")) if isinstance(device, dict) else "",
-                    _relation_label(device.get("role")) if isinstance(device, dict) else "",
-                    _relation_label(device.get("status")) if isinstance(device, dict) else "",
-                    _relation_label(device.get("primary_ip4")) if isinstance(device, dict) else "",
-                ) if _normalize_text(text)
-            ).lower(),
-            "degree": 0,
-            "x": 0,
-            "y": 0,
-        }
+        source = source_device or fallback_device or {}
+        fallback = fallback_device or source_device or {}
+        node = _topology_build_node(source if source else {}, fallback_device=fallback if isinstance(fallback, dict) else None)
+        node["id"] = node_id
+        if fallback_device is not None and not _normalize_text(node.get("label")):
+            node["label"] = _normalize_text(fallback_device.get("name")) or f"Device {node_id}"
+        if source_device is not None:
+            node_sources[node_id] = source_device
         nodes[node_id] = node
         degree_map[node_id] = 0
         adjacency[node_id] = set()
         return node
 
-    for entry in _network_topology_entries(topology_state):
-        origin_id = _normalize_text(entry.get("origin_device_id"))
-        next_id = _normalize_text(entry.get("next_device_id"))
-        prefix = prefix_lookup.get(_normalize_text(entry.get("prefix_id")))
-        if not origin_id or not next_id:
+    for device in inventory_devices:
+        if not isinstance(device, dict):
             continue
-        origin_node = ensure_node(origin_id)
-        next_node = ensure_node(next_id)
-        prefix_label = _normalize_text(prefix.get("prefix")) if isinstance(prefix, dict) else ""
-        edge = {
-            "source": origin_id,
-            "target": next_id,
-            "prefix": prefix_label or f"Prefixo {entry.get('prefix_id')}",
-            "network_kind": _normalize_text(entry.get("network_kind")) or ("vlan" if prefix and _related_id(prefix.get("vlan")) else "prefix"),
-            "vlan": _related_id(prefix.get("vlan")) if isinstance(prefix, dict) else "",
-            "origin_interface": _normalize_text(entry.get("origin_interface")),
-            "origin_mode": _normalize_text(entry.get("origin_mode")),
-            "next_interface": _normalize_text(entry.get("next_interface")),
-            "next_mode": _normalize_text(entry.get("next_mode")),
-            "route_notes": _normalize_text(entry.get("route_notes")),
-        }
-        edges.append(edge)
-        degree_map[origin_id] = degree_map.get(origin_id, 0) + 1
-        degree_map[next_id] = degree_map.get(next_id, 0) + 1
-        adjacency[origin_id].add(next_id)
-        adjacency[next_id].add(origin_id)
+        fallback = _topology_resolve_netbox_device(device, netbox_by_id, netbox_by_name, netbox_by_ip)
+        ensure_node(_topology_device_key(device) or _related_id(device.get("netbox_device_id")) or _normalize_text(device.get("label")), source_device=device, fallback_device=fallback)
+
+    for edge in connection_edges:
+        if not isinstance(edge, dict):
+            continue
+        source_id = _normalize_text(edge.get("source"))
+        target_id = _normalize_text(edge.get("target"))
+        if not source_id or not target_id:
+            continue
+        source_device = node_sources.get(source_id)
+        if source_device is None and source_id in netbox_by_id:
+            source_device = netbox_by_id[source_id]
+        target_device = node_sources.get(target_id)
+        if target_device is None and target_id in netbox_by_id:
+            target_device = netbox_by_id[target_id]
+        if source_device is not None:
+            ensure_node(source_id, source_device=source_device, fallback_device=source_device)
+        else:
+            ensure_node(source_id, fallback_device=netbox_by_id.get(source_id))
+        if target_device is not None:
+            ensure_node(target_id, source_device=target_device, fallback_device=target_device)
+        else:
+            placeholder = {"id": target_id, "name": _normalize_text(edge.get("peer_name")) or f"Device {target_id}"}
+            ensure_node(target_id, source_device=placeholder, fallback_device=placeholder)
+        edge_key = "::".join(sorted((source_id, target_id)) + [_normalize_text(edge.get("source_port")), _normalize_text(edge.get("target_port")), _normalize_text(edge.get("edge_type"))])
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        edges.append({
+            "source": source_id,
+            "target": target_id,
+            "edge_type": _normalize_text(edge.get("edge_type")) or "device-link",
+            "prefix": _normalize_text(edge.get("label")) or _normalize_text(edge.get("source_port")) or _normalize_text(edge.get("target_port")) or _normalize_text(edge.get("peer_name")) or f"{source_id} -> {target_id}",
+            "label": _normalize_text(edge.get("label")),
+            "source_port": _normalize_text(edge.get("source_port")),
+            "target_port": _normalize_text(edge.get("target_port")),
+            "peer_name": _normalize_text(edge.get("peer_name")),
+        })
+        degree_map[source_id] = degree_map.get(source_id, 0) + 1
+        degree_map[target_id] = degree_map.get(target_id, 0) + 1
+        adjacency[source_id].add(target_id)
+        adjacency[target_id].add(source_id)
 
     for node_id, node in nodes.items():
         node["degree"] = degree_map.get(node_id, 0)
         node["neighbors"] = sorted(adjacency.get(node_id, set()))
         node["prefix_count"] = len([edge for edge in edges if edge["source"] == node_id or edge["target"] == node_id])
 
-    ordered_nodes = sorted(nodes.values(), key=lambda item: (-int(item.get("degree") or 0), item.get("label", "")))
-    ordered_edges = sorted(edges, key=lambda item: (item["source"], item["target"], item["prefix"]))
-    core_nodes = [node["id"] for node in ordered_nodes[:5]]
+    ordered_nodes = sorted(
+        nodes.values(),
+        key=lambda item: (
+            -int(item.get("degree") or 0),
+            0 if _normalize_text(item.get("group")).lower() in {"switches", "routers", "network"} else 1,
+            item.get("label", ""),
+        ),
+    )
+    ordered_edges = sorted(edges, key=lambda item: (item["source"], item["target"], item.get("edge_type", ""), item.get("label", "")))
+    core_nodes = [node["id"] for node in ordered_nodes if _normalize_text(node.get("group")).lower() in {"switches", "routers", "network"}][:5]
+    if not core_nodes:
+        core_nodes = [node["id"] for node in ordered_nodes[:5]]
 
     return {
         "nodes": ordered_nodes,
@@ -4840,23 +5188,25 @@ def _topology_graph_payload(
         "core_nodes": core_nodes,
         "node_count": len(ordered_nodes),
         "edge_count": len(ordered_edges),
+        "discovered_count": len([device for device in inventory_devices if isinstance(device, dict)]),
+        "network_count": len([node for node in ordered_nodes if _normalize_text(node.get("group")).lower() in {"switches", "routers", "network"}]),
+        "netbox_devices": netbox_devices,
     }
 
 
 def _render_topology_graph_page(
+    graph: dict[str, Any],
     prefixes: list[dict[str, Any]],
     topology_state: dict[str, Any] | None,
-    devices: list[dict[str, Any]],
     page_error: str | None = None,
 ) -> str:
     # The interactive canvas is the primary view, while the table below remains as a safe
     # textual fallback for operations and troubleshooting.
-    graph = _topology_graph_payload(prefixes, topology_state, devices)
     graph_json = json.dumps(graph, ensure_ascii=False).replace("</", "<\\/")
     route_rows = _render_topology_rows(
         prefixes,
         topology_state,
-        {str(device.get("id")): _normalize_text(device.get("name")) for device in devices if isinstance(device, dict)},
+        {str(device.get("id")): _normalize_text(device.get("name")) for device in graph.get("netbox_devices", []) if isinstance(device, dict)},
     )
 
     body = f"""
@@ -5102,7 +5452,7 @@ def _render_topology_graph_page(
         <div>
           <div class="topology-kicker">Mapa interativo</div>
           <h2 class="topology-title">Topologia da rede</h2>
-          <p class="topology-sub">Visualização interativa das conexões entre devices, VLANs e prefixos com base nas ligações salvas no IPAM. Clique em um nó para ver detalhes, filtre por nome e arraste os equipamentos para reorganizar o mapa.</p>
+          <p class="topology-sub">Visualização interativa dos dispositivos localizados na varredura, com destaque para switches ligados diretamente entre si e acesso rápido aos detalhes do device. Clique em um nó, filtre por nome e arraste para reorganizar o mapa.</p>
         </div>
         <div class="topology-controls">
           <a class="btn" href="/networks">IPAM</a>
@@ -5113,10 +5463,11 @@ def _render_topology_graph_page(
       </section>
       {f'<div class="hero"><small>Erro</small><strong>{escape(page_error)}</strong></div>' if page_error else ''}
       <section class="topology-stats">
-        <div class="topology-stat"><span class="label">Devices</span><strong>{len(graph["nodes"])}</strong></div>
-        <div class="topology-stat"><span class="label">Ligações</span><strong>{len(graph["edges"])}</strong></div>
+        <div class="topology-stat"><span class="label">Dispositivos localizados</span><strong>{graph.get("discovered_count", len(graph["nodes"]))}</strong></div>
+        <div class="topology-stat"><span class="label">Switches / rede</span><strong>{graph.get("network_count", 0)}</strong></div>
+        <div class="topology-stat"><span class="label">Ligações físicas</span><strong>{len(graph["edges"])}</strong></div>
         <div class="topology-stat"><span class="label">Nó central</span><strong>{escape(_normalize_text(graph["nodes"][0]["label"]) if graph["nodes"] else "—")}</strong></div>
-        <div class="topology-stat"><span class="label">Prefixos</span><strong>{len(prefixes)}</strong></div>
+        <div class="topology-stat"><span class="label">Prefixos IPAM</span><strong>{len(prefixes)}</strong></div>
       </section>
       <section class="topology-workspace">
         <div class="topology-panel">
@@ -5364,17 +5715,17 @@ def _render_topology_graph_page(
             d: '',
             class: 'edge',
             fill: 'none',
-            stroke: edge.network_kind === 'vlan' ? '#38bdf8' : 'url(#topology-edge-prefix)',
-            'stroke-width': edge.network_kind === 'vlan' ? '2.6' : '2.2',
-            'stroke-dasharray': edge.network_kind === 'vlan' ? '5 6' : '10 7',
+            stroke: edge.edge_type === 'device-link' ? '#34d399' : 'url(#topology-edge-prefix)',
+            'stroke-width': edge.edge_type === 'device-link' ? '2.8' : '2.2',
+            'stroke-dasharray': edge.edge_type === 'device-link' ? '6 4' : '10 7',
             'marker-end': 'url(#topology-arrow)',
             'data-source': edge.source,
             'data-target': edge.target,
           }});
           path.appendChild(createSvgElement('title'));
-          path.querySelector('title').textContent = `${{edge.prefix}}`;
+          path.querySelector('title').textContent = `${{edge.prefix || edge.label || 'Ligação'}}`;
           linksLayer.appendChild(path);
-          edgeElements.set(`${{edge.source}}::${{edge.target}}::${{edge.prefix}}`, path);
+          edgeElements.set(`${{edge.source}}::${{edge.target}}::${{edge.prefix || edge.label || ''}}`, path);
         }}
 
         for (const node of topologyData.nodes || []) {{
@@ -5548,7 +5899,8 @@ def _render_topology_graph_page(
           const target = topologyData.nodes.find((node) => node.id === edge.target);
           if (!source || !target) continue;
           element.setAttribute('d', edgePath(source, target));
-          const activeByQuery = !query || matchedIds.has(edge.source) || matchedIds.has(edge.target) || String(edge.prefix || '').toLowerCase().includes(query);
+          const edgeText = String(edge.prefix || edge.label || edge.source_port || edge.target_port || edge.peer_name || '').toLowerCase();
+          const activeByQuery = !query || matchedIds.has(edge.source) || matchedIds.has(edge.target) || edgeText.includes(query);
           const activeBySelection = !state.selectedId || activeNeighborIds.has(edge.source) || activeNeighborIds.has(edge.target);
           element.classList.toggle('dimmed', !(activeByQuery && activeBySelection));
         }}
@@ -5891,13 +6243,20 @@ async def topology_page(request: Request):
     devices: list[dict[str, Any]] = []
     topology_state = load_network_topology()
     page_error: str | None = None
+    discovery_state = load_last_scan()
     try:
         if client is not None:
             prefixes = await client.list_prefixes(params={"limit": 100})
             devices = await client.list_devices(params={"limit": 100})
     except Exception as exc:
         page_error = str(exc)
-    return HTMLResponse(_render_topology_graph_page(prefixes, topology_state, devices, page_error=page_error))
+    inventory_devices = _topology_inventory_devices(discovery_state, devices)
+    try:
+        connection_edges = await _collect_topology_connection_edges(client, inventory_devices, devices)
+    except Exception:
+        connection_edges = []
+    graph = _topology_graph_payload(prefixes, topology_state, inventory_devices, devices, connection_edges)
+    return HTMLResponse(_render_topology_graph_page(graph, prefixes, topology_state, page_error=page_error))
 
 
 @app.get("/api/alerts")

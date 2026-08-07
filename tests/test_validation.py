@@ -1458,6 +1458,89 @@ def test_topology_page_renders(monkeypatch):
     _mock_management_clients(monkeypatch)
     monkeypatch.setattr(
         new_main,
+        "load_last_scan",
+        lambda: {
+            "network": "10.0.0.0/24",
+            "scanned_at": "2026-08-07T17:55:55Z",
+            "devices": [
+                {
+                    "ip": "10.0.0.24",
+                    "sys_name": "SW-ACCESS-LAN",
+                    "group": "switches",
+                    "subgroup": "access",
+                    "netbox_device_id": "101",
+                    "system_status": "Atualizado",
+                    "manufacturer": "Intelbras",
+                    "model": "SF 2400 QR+",
+                },
+                {
+                    "ip": "10.0.0.25",
+                    "sys_name": "SW-CORE-01",
+                    "group": "switches",
+                    "subgroup": "core",
+                    "netbox_device_id": "102",
+                    "system_status": "Novo",
+                    "manufacturer": "Intelbras",
+                    "model": "SF 3200",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        NetBoxClient,
+        "list_devices",
+        AsyncMock(return_value=[
+            {
+                "id": 101,
+                "name": "SW-ACCESS-LAN",
+                "status": {"value": "active"},
+                "site": {"id": 1, "name": "ECVITORIA"},
+                "role": {"id": 2, "name": "Switch"},
+                "device_type": {"id": 3, "model": "Intelbras SF 2400 QR+"},
+                "primary_ip4": {"id": 77, "address": "10.0.0.24/32"},
+                "comments": "access switch",
+            },
+            {
+                "id": 102,
+                "name": "SW-CORE-01",
+                "status": {"value": "active"},
+                "site": {"id": 1, "name": "ECVITORIA"},
+                "role": {"id": 2, "name": "Switch"},
+                "device_type": {"id": 4, "model": "Intelbras SF 3200"},
+                "primary_ip4": {"id": 78, "address": "10.0.0.25/32"},
+                "comments": "core switch",
+            },
+        ]),
+    )
+    async def fake_list_interfaces(params=None):
+        device_id = str((params or {}).get("device_id") or "")
+        if device_id == "101":
+            return [{
+                "id": 501,
+                "name": "ge-0/0/1",
+                "connected_endpoints": [
+                    {
+                        "device": {"id": 102, "name": "SW-CORE-01"},
+                        "name": "ge-0/0/24",
+                    }
+                ],
+            }]
+        if device_id == "102":
+            return [{
+                "id": 601,
+                "name": "ge-0/0/24",
+                "connected_endpoints": [
+                    {
+                        "device": {"id": 101, "name": "SW-ACCESS-LAN"},
+                        "name": "ge-0/0/1",
+                    }
+                ],
+            }]
+        return []
+
+    monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(side_effect=fake_list_interfaces))
+    monkeypatch.setattr(
+        new_main,
         "load_network_topology",
         lambda: {
             "entries": [
@@ -1480,8 +1563,11 @@ def test_topology_page_renders(monkeypatch):
         response = client.get("/topology", follow_redirects=False)
 
     assert response.status_code == 200
-    assert "Mapa da rede" in response.text
-    assert "CCR trunk vlan 50" in response.text
+    assert "Mapa interativo" in response.text
+    assert "Dispositivos localizados" in response.text
+    assert "Ligações físicas" in response.text
+    assert "SW-ACCESS-LAN" in response.text
+    assert "SW-CORE-01" in response.text
 
 
 def test_api_alerts_returns_json(monkeypatch):
