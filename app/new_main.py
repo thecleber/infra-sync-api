@@ -5154,6 +5154,23 @@ def _topology_inventory_devices(
     def _merge_node(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
         if _topology_is_generic_label(existing.get("label")) and not _topology_is_generic_label(incoming.get("label")):
             existing["label"] = incoming["label"]
+        incoming_kind = _normalize_text(incoming.get("kind"))
+        existing_kind = _normalize_text(existing.get("kind"))
+        if incoming_kind and incoming_kind != existing_kind and incoming_kind in {"Rede", "Servidor", "Wireless", "Usuario"}:
+            existing["kind"] = incoming_kind
+        incoming_inventory_kind = _normalize_text(incoming.get("inventory_kind")).lower()
+        existing_inventory_kind = _normalize_text(existing.get("inventory_kind")).lower()
+        preferred_inventory_kinds = {"network", "servers", "wireless", "printers", "phones", "computers"}
+        if incoming_inventory_kind in preferred_inventory_kinds and (
+            existing_inventory_kind not in preferred_inventory_kinds
+            or incoming_inventory_kind == "network"
+            or (existing_inventory_kind in {"phones", "computers"} and incoming_inventory_kind in {"network", "servers", "wireless"})
+        ):
+            existing["inventory_kind"] = incoming_inventory_kind
+        incoming_group = _normalize_text(incoming.get("group")).lower()
+        if incoming_group and incoming_group != _normalize_text(existing.get("group")).lower():
+            if incoming_inventory_kind in {"network", "servers", "wireless"} or incoming_group in {"switches", "routers", "network"}:
+                existing["group"] = incoming_group
         for field in ("netbox_device_name", "primary_ip", "snmp_mac_address", "mac_address", "device_link"):
             if not _normalize_text(existing.get(field)) and _normalize_text(incoming.get(field)):
                 existing[field] = incoming[field]
