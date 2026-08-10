@@ -6177,6 +6177,7 @@ def _render_topology_graph_page(
       .topology-shell {{
         display: grid;
         gap: 14px;
+        min-height: calc(100vh - 40px);
       }}
       .topology-hero {{
         display: flex;
@@ -6232,6 +6233,7 @@ def _render_topology_graph_page(
         grid-template-columns: minmax(0, 1.65fr) minmax(300px, .85fr);
         gap: 14px;
         align-items: start;
+        min-height: 0;
       }}
       .topology-panel {{
         background: linear-gradient(180deg, rgba(9, 15, 30, .95), rgba(7, 10, 19, .96));
@@ -6239,6 +6241,7 @@ def _render_topology_graph_page(
         border-radius: 20px;
         overflow: hidden;
         box-shadow: 0 28px 60px rgba(0, 0, 0, .30);
+        min-height: 0;
       }}
       .topology-toolbar {{
         display: flex;
@@ -6264,7 +6267,7 @@ def _render_topology_graph_page(
       }}
       .topology-graph-wrap {{
         position: relative;
-        min-height: 760px;
+        height: clamp(620px, calc(100vh - 430px), 1200px);
         background:
           radial-gradient(circle at top left, rgba(16, 185, 129, .10), transparent 30%),
           radial-gradient(circle at bottom right, rgba(59, 130, 246, .09), transparent 34%),
@@ -6337,10 +6340,38 @@ def _render_topology_graph_page(
       }}
       #topology-svg {{
         width: 100%;
-        height: 760px;
+        height: 100%;
         display: block;
         touch-action: none;
         user-select: none;
+      }}
+      .topology-shell:fullscreen {{
+        background: #020617;
+        padding: 16px;
+        overflow: hidden;
+      }}
+      .topology-shell:fullscreen .topology-hero,
+      .topology-shell:fullscreen .topology-stats,
+      .topology-shell:fullscreen .topology-panel.topology-manual,
+      .topology-shell:fullscreen .foot,
+      .topology-shell:fullscreen > .panel:last-of-type {{
+        display: none;
+      }}
+      .topology-shell:fullscreen .topology-workspace {{
+        grid-template-columns: minmax(0, 1fr) minmax(0, 340px);
+        height: calc(100vh - 32px);
+      }}
+      .topology-shell:fullscreen .topology-panel {{
+        border-radius: 16px;
+      }}
+      .topology-shell:fullscreen .topology-graph-wrap {{
+        height: calc(100vh - 140px);
+      }}
+      .topology-map-toolbar {{
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
       }}
       .edge {{
         stroke-linecap: round;
@@ -6456,7 +6487,7 @@ def _render_topology_graph_page(
         <div class="topology-stat"><span class="label">Nó central</span><strong>{escape(_normalize_text(graph["nodes"][0]["label"]) if graph["nodes"] else "—")}</strong></div>
         <div class="topology-stat"><span class="label">Prefixos IPAM</span><strong>{len(prefixes)}</strong></div>
       </section>
-      <section class="topology-panel" style="padding:18px;">
+      <section class="topology-panel topology-manual" style="padding:18px;">
         <div class="topology-hero" style="margin-bottom:14px;">
           <div>
             <div class="topology-kicker">Ligação manual</div>
@@ -6506,9 +6537,13 @@ def _render_topology_graph_page(
               <label for="topology-search">Filtrar device</label>
               <input id="topology-search" type="text" placeholder="Digite um nome, site, role ou IP..." />
             </div>
-            <div class="topology-controls">
+            <div class="topology-map-toolbar">
               <button class="btn" type="button" id="topology-relayout">Reorganizar</button>
               <button class="btn" type="button" id="topology-reset">Limpar filtro</button>
+              <button class="btn" type="button" id="topology-zoom-out">-</button>
+              <button class="btn" type="button" id="topology-zoom-reset">100%</button>
+              <button class="btn" type="button" id="topology-zoom-in">+</button>
+              <button class="btn primary" type="button" id="topology-fullscreen">Tela cheia</button>
             </div>
           </div>
           <div class="topology-graph-wrap">
@@ -6612,6 +6647,10 @@ def _render_topology_graph_page(
       const searchInput = document.getElementById('topology-search');
       const relayoutButton = document.getElementById('topology-relayout');
       const resetButton = document.getElementById('topology-reset');
+      const zoomOutButton = document.getElementById('topology-zoom-out');
+      const zoomResetButton = document.getElementById('topology-zoom-reset');
+      const zoomInButton = document.getElementById('topology-zoom-in');
+      const fullscreenButton = document.getElementById('topology-fullscreen');
       const sourceDeviceSelect = document.getElementById('source_device_id');
       const targetDeviceSelect = document.getElementById('target_device_id');
       const sourceInterfaceSelect = document.getElementById('source_interface');
@@ -6631,6 +6670,7 @@ def _render_topology_graph_page(
         query: '',
         draggingId: '',
         viewBox: {{ x: 0, y: 0, width: 1600, height: 760 }},
+        zoom: 1,
       }};
 
       function escapeHtml(value) {{
@@ -6644,6 +6684,61 @@ def _render_topology_graph_page(
 
       function toTitle(value) {{
         return String(value || '').trim() || '—';
+      }}
+
+      const baseViewBox = {{ x: 0, y: 0, width: 1600, height: 760 }};
+      const minZoom = 0.45;
+      const maxZoom = 2.8;
+
+      function clamp(value, min, max) {{
+        return Math.min(max, Math.max(min, value));
+      }}
+
+      function applyViewBox() {{
+        svg.setAttribute(
+          'viewBox',
+          `${{state.viewBox.x}} ${{state.viewBox.y}} ${{state.viewBox.width}} ${{state.viewBox.height}}`
+        );
+      }}
+
+      function syncZoomLabel() {{
+        if (zoomResetButton) {{
+          zoomResetButton.textContent = `${{Math.round(state.zoom * 100)}}%`;
+        }}
+      }}
+
+      function setViewBox(nextBox) {{
+        const width = clamp(nextBox.width, baseViewBox.width / maxZoom, baseViewBox.width / minZoom);
+        const height = clamp(nextBox.height, baseViewBox.height / maxZoom, baseViewBox.height / minZoom);
+        const maxX = baseViewBox.width - width;
+        const maxY = baseViewBox.height - height;
+        state.viewBox = {{
+          x: clamp(nextBox.x, 0, maxX),
+          y: clamp(nextBox.y, 0, maxY),
+          width,
+          height,
+        }};
+        state.zoom = baseViewBox.width / width;
+        applyViewBox();
+        syncZoomLabel();
+      }}
+
+      function zoomAt(clientX, clientY, factor) {{
+        const point = svg.createSVGPoint();
+        point.x = clientX;
+        point.y = clientY;
+        const cursor = point.matrixTransform(svg.getScreenCTM().inverse());
+        const nextWidth = clamp(state.viewBox.width * factor, baseViewBox.width / maxZoom, baseViewBox.width / minZoom);
+        const nextHeight = nextWidth * (baseViewBox.height / baseViewBox.width);
+        const relX = (cursor.x - state.viewBox.x) / state.viewBox.width;
+        const relY = (cursor.y - state.viewBox.y) / state.viewBox.height;
+        const nextX = cursor.x - (relX * nextWidth);
+        const nextY = cursor.y - (relY * nextHeight);
+        setViewBox({{ x: nextX, y: nextY, width: nextWidth, height: nextHeight }});
+      }}
+
+      function resetZoom() {{
+        setViewBox({{ ...baseViewBox }});
       }}
 
       function renderInterfaceOptions(deviceId, currentValue) {{
@@ -7167,6 +7262,7 @@ def _render_topology_graph_page(
 
       function fitToScreen() {{
         initializePositions();
+        resetZoom();
         updateGraph();
       }}
 
@@ -7174,6 +7270,13 @@ def _render_topology_graph_page(
         state.query = searchInput.value;
         updateGraph();
       }});
+
+      svg.addEventListener('wheel', (event) => {{
+        event.preventDefault();
+        const delta = event.deltaY > 0 ? 1.12 : 0.89;
+        zoomAt(event.clientX, event.clientY, delta);
+        updateGraph();
+      }}, {{ passive: false }});
 
       if (sourceDeviceSelect && sourceInterfaceSelect) {{
         sourceDeviceSelect.addEventListener('change', () => syncInterfaceSelect(sourceInterfaceSelect, sourceDeviceSelect.value));
@@ -7183,6 +7286,46 @@ def _render_topology_graph_page(
         targetDeviceSelect.addEventListener('change', () => syncInterfaceSelect(targetInterfaceSelect, targetDeviceSelect.value));
         syncInterfaceSelect(targetInterfaceSelect, targetDeviceSelect.value);
       }}
+
+      if (zoomOutButton) {{
+        zoomOutButton.addEventListener('click', () => {{
+          zoomAt(svg.getBoundingClientRect().left + (svg.getBoundingClientRect().width / 2), svg.getBoundingClientRect().top + (svg.getBoundingClientRect().height / 2), 1.12);
+          updateGraph();
+        }});
+      }}
+      if (zoomInButton) {{
+        zoomInButton.addEventListener('click', () => {{
+          zoomAt(svg.getBoundingClientRect().left + (svg.getBoundingClientRect().width / 2), svg.getBoundingClientRect().top + (svg.getBoundingClientRect().height / 2), 0.89);
+          updateGraph();
+        }});
+      }}
+      if (zoomResetButton) {{
+        zoomResetButton.addEventListener('click', () => {{
+          resetZoom();
+          updateGraph();
+        }});
+      }}
+      if (fullscreenButton) {{
+        fullscreenButton.addEventListener('click', async () => {{
+          const shell = document.querySelector('.topology-shell');
+          if (!shell) {{
+            return;
+          }}
+          if (document.fullscreenElement) {{
+            await document.exitFullscreen();
+            fullscreenButton.textContent = 'Tela cheia';
+          }} else if (shell.requestFullscreen) {{
+            await shell.requestFullscreen();
+            fullscreenButton.textContent = 'Sair da tela cheia';
+          }}
+        }});
+      }}
+      document.addEventListener('fullscreenchange', () => {{
+        if (fullscreenButton) {{
+          fullscreenButton.textContent = document.fullscreenElement ? 'Sair da tela cheia' : 'Tela cheia';
+        }}
+        updateGraph();
+      }});
 
       relayoutButton.addEventListener('click', () => {{
         fitToScreen();

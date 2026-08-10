@@ -2136,6 +2136,8 @@ def test_topology_page_form_uses_interface_selects():
     assert 'id="source_interface"' in html
     assert 'id="target_interface"' in html
     assert "topology-interface-data" in html
+    assert "topology-zoom-in" in html
+    assert "topology-fullscreen" in html
 
 
 def test_topology_graph_payload_keeps_parallel_links_between_same_devices():
