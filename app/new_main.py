@@ -5767,7 +5767,17 @@ def _topology_graph_payload(
         else:
             placeholder = {"id": target_id, "name": _normalize_text(edge.get("peer_name")) or f"Device {target_id}"}
             ensure_node(target_id, source_device=placeholder, fallback_device=placeholder)
-        edge_key = "::".join(sorted((source_id, target_id)) + [_normalize_text(edge.get("source_port")), _normalize_text(edge.get("target_port")), _normalize_text(edge.get("edge_type"))])
+        edge_key = "::".join(
+            sorted((source_id, target_id))
+            + [
+                _normalize_text(edge.get("source_port")),
+                _normalize_text(edge.get("target_port")),
+                _normalize_text(edge.get("edge_type")),
+                _normalize_text(edge.get("mac_address")),
+                _normalize_text(edge.get("peer_name")),
+                _normalize_text(edge.get("label")),
+            ]
+        )
         if edge_key in seen_edges:
             continue
         seen_edges.add(edge_key)

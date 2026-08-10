@@ -1836,6 +1836,45 @@ def test_topology_graph_payload_merges_generic_label_with_better_device():
     assert node["snmp_mac_address"] == "00:11:22:33:44:55"
 
 
+def test_topology_graph_payload_keeps_parallel_links_between_same_devices():
+    prefixes = []
+    topology_state = None
+    inventory_devices = [
+        {
+            "id": "101",
+            "label": "SWC-01-CPD",
+            "group": "switches",
+            "subgroup": "core",
+            "netbox_device_id": "101",
+            "netbox_device_name": "SWC-01-CPD",
+            "primary_ip": "10.0.0.40/32",
+        },
+        {
+            "id": "102",
+            "label": "SW-EDGE-01",
+            "group": "switches",
+            "subgroup": "access",
+            "netbox_device_id": "102",
+            "netbox_device_name": "SW-EDGE-01",
+            "primary_ip": "10.0.0.41/32",
+        },
+    ]
+    netbox_devices = [
+        {"id": 101, "name": "SWC-01-CPD", "status": {"value": "active"}, "site": {"id": 1, "name": "ECVITORIA"}, "role": {"id": 2, "name": "Switch"}, "primary_ip4": {"id": 1, "address": "10.0.0.40/32"}},
+        {"id": 102, "name": "SW-EDGE-01", "status": {"value": "active"}, "site": {"id": 1, "name": "ECVITORIA"}, "role": {"id": 2, "name": "Switch"}, "primary_ip4": {"id": 2, "address": "10.0.0.41/32"}},
+    ]
+    connection_edges = [
+        {"source": "101", "target": "102", "edge_type": "bridge-link", "label": "FDB 00:11:22:33:44:55", "source_port": "Gi1/0/1", "target_port": "Gi1/0/24", "peer_name": "SW-EDGE-01", "mac_address": "00:11:22:33:44:55"},
+        {"source": "101", "target": "102", "edge_type": "bridge-link", "label": "FDB 00:11:22:33:44:66", "source_port": "Gi1/0/1", "target_port": "Gi1/0/24", "peer_name": "SW-EDGE-01", "mac_address": "00:11:22:33:44:66"},
+    ]
+
+    graph = new_main._topology_graph_payload(prefixes, topology_state, inventory_devices, netbox_devices, connection_edges, {"00:11:22:33:44:55": netbox_devices[1], "00:11:22:33:44:66": netbox_devices[1]})
+
+    bridge_edges = [edge for edge in graph["edges"] if edge["source"] == "101" and edge["target"] == "102" and edge["edge_type"] == "bridge-link"]
+    assert len(bridge_edges) == 2
+    assert {edge["mac_address"] for edge in bridge_edges} == {"00:11:22:33:44:55", "00:11:22:33:44:66"}
+
+
 def test_api_alerts_returns_json(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
