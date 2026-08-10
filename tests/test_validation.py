@@ -38,7 +38,7 @@ def _mock_dashboard_clients(monkeypatch):
 
 def _mock_management_clients(monkeypatch):
     _mock_dashboard_clients(monkeypatch)
-    monkeypatch.setattr(NetBoxClient, "list_devices", AsyncMock(return_value=[{
+    mock_devices = [{
         "id": 101,
         "name": "SW-ACCESS-LAN",
         "status": {"value": "active"},
@@ -64,7 +64,36 @@ def _mock_management_clients(monkeypatch):
         "serial": "PE0D7GMQ",
         "comments": "notebook corporativo",
         "custom_fields": {"zabbix_hostid": "11223"}
-    }]))
+    }]
+    mock_prefixes = [{
+        "id": 301,
+        "prefix": "10.0.0.0/24",
+        "status": {"value": "active"},
+        "site": {"id": 1, "name": "ECVITORIA"},
+        "vlan": {"id": 201, "vid": 10, "name": "CORP"},
+        "description": "main network",
+    }]
+    mock_interfaces = [{
+        "id": 501,
+        "name": "ge-0/0/1",
+        "description": "uplink core",
+        "enabled": True,
+        "type": {"value": "1000base-t"},
+        "mode": {"value": "tagged"},
+        "untagged_vlan": {"id": 201, "vid": 10, "name": "CORP"},
+        "mac_address": "00:11:22:33:44:55",
+    }]
+
+    async def _list_all(path: str, params: dict[str, object] | None = None):
+        if path == "/api/dcim/devices/":
+            return mock_devices
+        if path == "/api/dcim/interfaces/":
+            return mock_interfaces
+        if path == "/api/ipam/prefixes/":
+            return mock_prefixes
+        return []
+
+    monkeypatch.setattr(NetBoxClient, "list_devices", AsyncMock(return_value=mock_devices))
     monkeypatch.setattr(NetBoxClient, "get_device", AsyncMock(return_value={
         "id": 101,
         "name": "SW-ACCESS-LAN",
@@ -109,16 +138,8 @@ def _mock_management_clients(monkeypatch):
         "vlan": {"id": 201, "vid": 10, "name": "CORP"},
         "description": "main network",
     }))
-    monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(return_value=[{
-        "id": 501,
-        "name": "ge-0/0/1",
-        "description": "uplink core",
-        "enabled": True,
-        "type": {"value": "1000base-t"},
-        "mode": {"value": "tagged"},
-        "untagged_vlan": {"id": 201, "vid": 10, "name": "CORP"},
-        "mac_address": "00:11:22:33:44:55",
-    }]))
+    monkeypatch.setattr(NetBoxClient, "list_interfaces", AsyncMock(return_value=mock_interfaces))
+    monkeypatch.setattr(NetBoxClient, "list_all", AsyncMock(side_effect=_list_all))
     monkeypatch.setattr(NetBoxClient, "list_ip_addresses", AsyncMock(return_value=[{
         "id": 601,
         "address": "10.0.0.24/32",
@@ -156,6 +177,32 @@ def test_request_validation_and_blocklist():
     assert payload.ip == "10.0.0.24/32"
     assert payload.normalized_device_name() == "SW-CCO-GDS7830"
     assert payload.is_blocked_for_auto_create() is False
+
+
+@pytest.mark.anyio
+async def test_netbox_client_list_all_follows_pagination(monkeypatch):
+    client = NetBoxClient("http://netbox.local", "Bearer token", 5.0)
+
+    class DummyResponse:
+        def __init__(self, payload):
+            self._payload = payload
+            self.is_success = True
+
+        def json(self):
+            return self._payload
+
+    pages = [
+        DummyResponse({"results": [{"id": 1, "name": "SW-01"}], "next": "http://netbox.local/api/dcim/devices/?limit=1&offset=1"}),
+        DummyResponse({"results": [{"id": 2, "name": "SW-02"}], "next": None}),
+    ]
+
+    get_mock = AsyncMock(side_effect=pages)
+    monkeypatch.setattr(client._client, "get", get_mock)
+
+    results = await client.list_all("/api/dcim/devices/", params={"limit": 1})
+
+    assert [item["name"] for item in results] == ["SW-01", "SW-02"]
+    assert get_mock.call_count == 2
 
 
 @pytest.mark.parametrize(
@@ -1626,6 +1673,7 @@ def test_bridge_fdb_mac_records_create_edge(monkeypatch):
     _mock_management_clients(monkeypatch)
 
     client = type("DummyClient", (), {})()
+    client.list_all = AsyncMock(return_value=[])
     client.list_interfaces = AsyncMock(return_value=[])
     client.find_mac_addresses = AsyncMock(return_value=[
         {

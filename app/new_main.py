@@ -4945,7 +4945,7 @@ async def _build_topology_netbox_mac_index(
         if not device_id or device_id in mac_index:
             continue
         try:
-            interfaces = await client.list_interfaces(params={"device_id": int(device_id), "limit": 200})
+            interfaces = await client.list_all("/api/dcim/interfaces/", params={"device_id": int(device_id), "limit": 200})
         except Exception:
             continue
         for interface in interfaces:
@@ -5190,7 +5190,7 @@ async def _collect_topology_connection_edges(
         if device_id in interfaces_by_device:
             return interfaces_by_device[device_id]
         try:
-            interfaces = await client.list_interfaces(params={"device_id": int(device_id), "limit": 200})
+            interfaces = await client.list_all("/api/dcim/interfaces/", params={"device_id": int(device_id), "limit": 200})
         except Exception:
             interfaces = []
         interfaces_by_device[device_id] = [interface for interface in interfaces if isinstance(interface, dict)]
@@ -7104,8 +7104,8 @@ async def topology_page(request: Request):
     probe_state = load_last_probe()
     try:
         if client is not None:
-            prefixes = await client.list_prefixes(params={"limit": 100})
-            devices = await client.list_devices(params={"limit": 100})
+            prefixes = await client.list_all("/api/ipam/prefixes/", params={"limit": 200})
+            devices = await client.list_all("/api/dcim/devices/", params={"limit": 200})
     except Exception as exc:
         page_error = str(exc)
     netbox_by_mac = await _build_topology_netbox_mac_index(client, devices)

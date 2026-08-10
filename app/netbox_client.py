@@ -60,6 +60,33 @@ class NetBoxClient:
             return payload
         return []
 
+    async def list_all(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        query = dict(params or {})
+        query.setdefault("limit", 100)
+        results: list[dict[str, Any]] = []
+        next_path: str | None = path
+        next_params: dict[str, Any] | None = query
+        visited: set[str] = set()
+        while next_path:
+            response = await self._client.get(next_path, params=next_params)
+            self._raise_for_response(response)
+            payload = response.json()
+            if isinstance(payload, dict):
+                page_results = payload.get("results")
+                if isinstance(page_results, list):
+                    results.extend(item for item in page_results if isinstance(item, dict))
+                next_url = payload.get("next")
+                if not isinstance(next_url, str) or not next_url or next_url in visited:
+                    break
+                visited.add(next_url)
+                next_path = next_url
+                next_params = None
+                continue
+            if isinstance(payload, list):
+                results.extend(item for item in payload if isinstance(item, dict))
+            break
+        return results
+
     async def count(self, path: str, params: dict[str, Any] | None = None) -> int:
         query = dict(params or {})
         query["limit"] = 1
