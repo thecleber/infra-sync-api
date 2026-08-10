@@ -3961,6 +3961,16 @@ def _inventory_kind_for_device(device: dict[str, Any]) -> str:
         manufacturer = _relation_label(device.get("device_type", {}).get("manufacturer")).lower()
         model = _normalize_text(device.get("device_type", {}).get("model")).lower()
     text = " ".join(part for part in (name, comments, role, device_type, manufacturer, model) if part)
+    if any(token in role for token in ("switch", "router", "gateway", "firewall", "bridge", "uplink", "network")):
+        return "network"
+    if any(token in role for token in ("server", "hypervisor", "esxi", "proxmox")):
+        return "servers"
+    if any(token in role for token in ("access point", "wireless", "wifi", "ap")):
+        return "wireless"
+    if any(token in role for token in ("printer", "mfp")):
+        return "printers"
+    if any(token in role for token in ("phone", "voip", "sip")):
+        return "phones"
     if any(token in text for token in ("notebook", "laptop", "desktop", "workstation", "pc", "computer", "computador", "windows", "macbook", "chromebook")):
         return "computers"
     if any(token in text for token in ("server", "hypervisor", "proxmox", "esxi", "idrac", "ilo", "qemu", "rack server", "blade", "virtual")):
