@@ -5496,8 +5496,11 @@ async def _collect_topology_connection_edges(
         return None
 
     def _resolve_source_probe(node: dict[str, Any]) -> dict[str, Any] | None:
+        primary_ip = _normalize_text(node.get("primary_ip")).split("/", 1)[0].lower()
+        if not primary_ip and isinstance(node.get("primary_ip4"), dict):
+            primary_ip = _normalize_text(node.get("primary_ip4", {}).get("address")).split("/", 1)[0].lower()
         for candidate in (
-            _normalize_text(node.get("primary_ip")).split("/", 1)[0].lower(),
+            primary_ip,
             _normalize_text(node.get("netbox_device_name")).lower(),
             _normalize_text(node.get("label")).lower(),
             _normalize_mac_text(node.get("snmp_mac_address")),
@@ -5512,6 +5515,17 @@ async def _collect_topology_connection_edges(
             if candidate in probe_by_mac:
                 return probe_by_mac[candidate]
         return None
+
+    def _probe_bridge_fdb_macs(probe_device: dict[str, Any]) -> set[str]:
+        macs: set[str] = set()
+        bridge_fdb = probe_device.get("bridge_fdb") if isinstance(probe_device.get("bridge_fdb"), list) else []
+        for entry in bridge_fdb:
+            if not isinstance(entry, dict):
+                continue
+            mac_value = _normalize_mac_text(entry.get("mac_address"))
+            if mac_value:
+                macs.add(mac_value)
+        return macs
 
     def _probe_port_name_by_bridge_port(probe_device: dict[str, Any], bridge_port: str) -> str:
         bridge_port = _normalize_text(bridge_port)
@@ -5644,8 +5658,19 @@ async def _collect_topology_connection_edges(
                     continue
                 source_key = str(node["id"])
                 source_port_name = _probe_port_name_by_bridge_port(probe_device, _normalize_text(fdb_entry.get("bridge_port")))
+                source_candidate_macs = {
+                    mac
+                    for mac, _source_port in _topology_node_mac_candidates(node, probe_device.get("ports") if isinstance(probe_device.get("ports"), list) else [])
+                    if mac
+                }
                 target_node = _resolve_inventory_target_by_mac(learned_mac)
                 if isinstance(target_node, dict):
+                    target_probe = _resolve_source_probe(target_node)
+                    if not isinstance(target_probe, dict):
+                        continue
+                    reciprocal_macs = _probe_bridge_fdb_macs(target_probe)
+                    if not source_candidate_macs or not reciprocal_macs or source_candidate_macs.isdisjoint(reciprocal_macs):
+                        continue
                     target_key = str(target_node["id"])
                     if source_key and target_key and source_key != target_key:
                         target_port_name = ""
@@ -5688,6 +5713,12 @@ async def _collect_topology_connection_edges(
                     inferred_target = _resolve_peer_netbox_device(peer_device_id, peer_device_name, learned_mac)
                     if not isinstance(inferred_target, dict):
                         continue
+                    target_probe = _resolve_source_probe(inferred_target)
+                    if not isinstance(target_probe, dict):
+                        continue
+                    reciprocal_macs = _probe_bridge_fdb_macs(target_probe)
+                    if source_candidate_macs.isdisjoint(reciprocal_macs):
+                        continue
                     target_node = _resolve_inventory_target_by_mac(learned_mac) or _topology_build_node({}, fallback_device=inferred_target)
                     target_key = str(_related_id(inferred_target.get("id")) or peer_device_id or target_node.get("id"))
                     if not target_key or source_key == target_key:
@@ -5724,6 +5755,12 @@ async def _collect_topology_connection_edges(
                     if not target_key or source_key == target_key:
                         continue
                     target_device = netbox_by_id.get(target_key) or netbox_by_name.get(_normalize_text(peer_device_name).lower())
+                    target_probe = _resolve_source_probe(target_device) if isinstance(target_device, dict) else None
+                    if not isinstance(target_probe, dict):
+                        continue
+                    reciprocal_macs = _probe_bridge_fdb_macs(target_probe)
+                    if mac_address not in reciprocal_macs:
+                        continue
                     target_label = _topology_device_name(target_device) or _normalize_text(peer_device_name) or f"Device {target_key}"
                     target_interface_name = peer_interface_name or _normalize_text(record.get("interface_name")) or _normalize_text(record.get("name"))
                     seen_key = _edge_seen_key(source_key, target_key, "mac-link", source_port, target_interface_name, mac_address)
