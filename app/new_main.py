@@ -5113,16 +5113,80 @@ def _topology_inventory_devices(
     if isinstance(discovery_state, dict) and isinstance(discovery_state.get("devices"), list):
         discovered_devices = [device for device in discovery_state["devices"] if isinstance(device, dict)]
 
-    source_devices = discovered_devices or netbox_devices
     inventory: dict[str, dict[str, Any]] = {}
+    key_index: dict[str, str] = {}
 
-    for device in source_devices:
+    def _device_keys(device: dict[str, Any], node: dict[str, Any] | None = None) -> set[str]:
+        keys = {
+            _normalize_text(_topology_device_key(device)).lower(),
+            _related_id(device.get("netbox_device_id")).lower(),
+            _related_id(device.get("id")).lower(),
+            _normalize_text(device.get("label")).lower(),
+            _normalize_text(device.get("name")).lower(),
+            _normalize_text(device.get("netbox_device_name")).lower(),
+            _normalize_text(device.get("sys_name")).lower(),
+            _normalize_mac_text(device.get("snmp_mac_address")),
+            _normalize_mac_text(device.get("mac_address")),
+            _normalize_text(device.get("ip")).split("/", 1)[0].lower(),
+            _normalize_text(device.get("primary_ip")).split("/", 1)[0].lower(),
+        }
+        if isinstance(node, dict):
+            keys.update(
+                {
+                    _normalize_text(_topology_device_key(node)).lower(),
+                    _related_id(node.get("netbox_device_id")).lower(),
+                    _related_id(node.get("id")).lower(),
+                    _normalize_text(node.get("label")).lower(),
+                    _normalize_text(node.get("netbox_device_name")).lower(),
+                    _normalize_text(node.get("sys_name")).lower(),
+                    _normalize_mac_text(node.get("snmp_mac_address")),
+                    _normalize_mac_text(node.get("mac_address")),
+                    _normalize_text(node.get("primary_ip")).split("/", 1)[0].lower(),
+                }
+            )
+        return {key for key in keys if key}
+
+    def _register_keys(node_id: str, device: dict[str, Any], node: dict[str, Any]) -> None:
+        for key in _device_keys(device, node):
+            key_index[key] = node_id
+
+    def _merge_node(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+        if _topology_is_generic_label(existing.get("label")) and not _topology_is_generic_label(incoming.get("label")):
+            existing["label"] = incoming["label"]
+        for field in ("netbox_device_name", "primary_ip", "snmp_mac_address", "mac_address", "device_link"):
+            if not _normalize_text(existing.get(field)) and _normalize_text(incoming.get(field)):
+                existing[field] = incoming[field]
+        if not _related_id(existing.get("netbox_device_id")) and _related_id(incoming.get("netbox_device_id")):
+            existing["netbox_device_id"] = incoming["netbox_device_id"]
+        if _normalize_text(incoming.get("site")) and _normalize_text(existing.get("site")) in {"", "—"}:
+            existing["site"] = incoming["site"]
+        if _normalize_text(incoming.get("role")) and _normalize_text(existing.get("role")) in {"", "—"}:
+            existing["role"] = incoming["role"]
+        if _normalize_text(incoming.get("status")) and _normalize_text(existing.get("status")) in {"", "—"}:
+            existing["status"] = incoming["status"]
+        if _normalize_text(incoming.get("manufacturer")) and _normalize_text(existing.get("manufacturer")) in {"", "—"}:
+            existing["manufacturer"] = incoming["manufacturer"]
+        if _normalize_text(incoming.get("model")) and _normalize_text(existing.get("model")) in {"", "—"}:
+            existing["model"] = incoming["model"]
+        return existing
+
+    for device in [*discovered_devices, *netbox_devices]:
         fallback = _topology_resolve_netbox_device(device, netbox_by_id, netbox_by_name, netbox_by_ip, netbox_by_mac)
         node = _topology_build_node(device, fallback_device=fallback)
-        inventory[node["id"]] = node
-
-    if not discovered_devices:
-        return list(inventory.values())
+        node_id = _normalize_text(node.get("id"))
+        if not node_id:
+            continue
+        match_id = None
+        for key in _device_keys(device, node):
+            match_id = key_index.get(key)
+            if match_id:
+                break
+        if match_id and match_id in inventory:
+            inventory[match_id] = _merge_node(inventory[match_id], node)
+            _register_keys(match_id, device, inventory[match_id])
+            continue
+        inventory[node_id] = node
+        _register_keys(node_id, device, node)
 
     return list(inventory.values())
 

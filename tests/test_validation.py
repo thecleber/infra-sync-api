@@ -1839,6 +1839,45 @@ def test_topology_inventory_devices_resolves_netbox_name_by_mac():
     assert inventory[0]["netbox_device_name"] == "SW-21-BASE ADM 01-DADOS"
 
 
+def test_topology_inventory_devices_keeps_netbox_only_devices_when_discovery_exists():
+    discovery_state = {
+        "devices": [
+            {
+                "id": "200",
+                "label": "Device 00:11:22:33:44:55",
+                "group": "switches",
+                "subgroup": "access",
+                "snmp_mac_address": "00:11:22:33:44:55",
+                "primary_ip": "10.0.0.41/32",
+            }
+        ]
+    }
+    netbox_devices = [
+        {
+            "id": 102,
+            "name": "SW-21-BASE ADM 01-DADOS",
+            "status": {"value": "active"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "primary_ip4": {"id": 2, "address": "10.0.0.41/32"},
+        },
+        {
+            "id": 103,
+            "name": "SW-EDGE-02",
+            "status": {"value": "active"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "primary_ip4": {"id": 3, "address": "10.0.0.99/32"},
+        },
+    ]
+    netbox_by_mac = {"00:11:22:33:44:55": netbox_devices[0]}
+
+    inventory = new_main._topology_inventory_devices(discovery_state, netbox_devices, netbox_by_mac)
+
+    assert {node["netbox_device_name"] for node in inventory} >= {"SW-21-BASE ADM 01-DADOS", "SW-EDGE-02"}
+    assert any(node["netbox_device_id"] == "103" for node in inventory)
+
+
 def test_topology_graph_payload_merges_generic_label_with_better_device():
     prefixes = []
     topology_state = None
