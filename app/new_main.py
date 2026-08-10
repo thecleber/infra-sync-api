@@ -3852,6 +3852,26 @@ def _render_device_choice_options(devices: list[dict[str, Any]], selected: Any =
     return "".join(options)
 
 
+def _build_topology_interface_options(interfaces: list[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for interface in interfaces:
+        if not isinstance(interface, dict):
+            continue
+        device = interface.get("device") if isinstance(interface.get("device"), dict) else {}
+        device_id = _related_id(interface.get("device_id")) or _related_id(device.get("id"))
+        if not device_id:
+            continue
+        interface_name = _normalize_text(interface.get("name")) or _normalize_text(interface.get("display_name")) or _normalize_text(interface.get("label"))
+        if not interface_name:
+            continue
+        description = _normalize_text(interface.get("description"))
+        label = interface_name if not description or description == interface_name else f"{interface_name} — {description}"
+        grouped.setdefault(device_id, []).append({"value": interface_name, "label": label})
+    for items in grouped.values():
+        items.sort(key=lambda item: item["label"].lower())
+    return grouped
+
+
 def _load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
         return default
@@ -5832,6 +5852,7 @@ def _topology_graph_payload(
     netbox_devices: list[dict[str, Any]],
     connection_edges: list[dict[str, Any]],
     netbox_by_mac: dict[str, dict[str, Any]] | None = None,
+    netbox_interfaces: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     nodes: dict[str, dict[str, Any]] = {}
     edges: list[dict[str, Any]] = []
@@ -6122,6 +6143,7 @@ def _topology_graph_payload(
         "discovered_count": len([device for device in inventory_devices if isinstance(device, dict)]),
         "network_count": len([node for node in ordered_nodes if _normalize_text(node.get("group")).lower() in {"switches", "routers", "network"}]),
         "netbox_devices": netbox_devices,
+        "interface_options_by_device": _build_topology_interface_options(netbox_interfaces or []),
     }
 
 
@@ -6137,6 +6159,7 @@ def _render_topology_graph_page(
     graph_json = json.dumps(graph, ensure_ascii=False).replace("</", "<\\/")
     device_lookup = {str(device.get("id")): _normalize_text(device.get("name")) for device in graph.get("netbox_devices", []) if isinstance(device, dict)}
     device_options = _render_device_choice_options(graph.get("netbox_devices", []))
+    interface_options_json = json.dumps(graph.get("interface_options_by_device", {}), ensure_ascii=False).replace("</", "<\\/")
     route_rows = _render_topology_rows(
         prefixes,
         topology_state,
@@ -6444,23 +6467,27 @@ def _render_topology_graph_page(
         <form method="post" action="/topology/save" class="form-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
           <div class="field">
             <label>Device origem</label>
-            <select name="source_device_id">
+            <select id="source_device_id" name="source_device_id">
               {device_options}
             </select>
           </div>
           <div class="field">
             <label>Porta origem</label>
-            <input name="source_interface" type="text" placeholder="Ethernet1/0/1" />
+            <select id="source_interface" name="source_interface">
+              <option value="">Selecione o device primeiro</option>
+            </select>
           </div>
           <div class="field">
             <label>Device destino</label>
-            <select name="target_device_id">
+            <select id="target_device_id" name="target_device_id">
               {device_options}
             </select>
           </div>
           <div class="field">
             <label>Porta destino</label>
-            <input name="target_interface" type="text" placeholder="ge-0/0/24" />
+            <select id="target_interface" name="target_interface">
+              <option value="">Selecione o device primeiro</option>
+            </select>
           </div>
           <div class="field" style="grid-column: 1 / -1;">
             <label>Observações</label>
@@ -6566,8 +6593,10 @@ def _render_topology_graph_page(
       </div>
     </div>
     <script id="topology-data" type="application/json">{graph_json}</script>
+    <script id="topology-interface-data" type="application/json">{interface_options_json}</script>
     <script>
       const topologyData = JSON.parse(document.getElementById('topology-data').textContent);
+      const topologyInterfaceData = JSON.parse(document.getElementById('topology-interface-data').textContent);
       const svg = document.getElementById('topology-svg');
       const linksLayer = document.getElementById('topology-links');
       const nodesLayer = document.getElementById('topology-nodes');
@@ -6583,6 +6612,10 @@ def _render_topology_graph_page(
       const searchInput = document.getElementById('topology-search');
       const relayoutButton = document.getElementById('topology-relayout');
       const resetButton = document.getElementById('topology-reset');
+      const sourceDeviceSelect = document.getElementById('source_device_id');
+      const targetDeviceSelect = document.getElementById('target_device_id');
+      const sourceInterfaceSelect = document.getElementById('source_interface');
+      const targetInterfaceSelect = document.getElementById('target_interface');
       const nodeMap = new Map();
       const edgeElements = new Map();
       const edgeItems = [];
@@ -6611,6 +6644,29 @@ def _render_topology_graph_page(
 
       function toTitle(value) {{
         return String(value || '').trim() || '—';
+      }}
+
+      function renderInterfaceOptions(deviceId, currentValue) {{
+        const options = Array.isArray(topologyInterfaceData[String(deviceId || '')]) ? topologyInterfaceData[String(deviceId || '')] : [];
+        const selectedValue = String(currentValue || '');
+        let html = deviceId ? '<option value="">Selecione a porta</option>' : '<option value="">Selecione o device primeiro</option>';
+        for (const option of options) {{
+          const optionValue = String(option.value || '');
+          const selected = selectedValue && optionValue === selectedValue ? ' selected' : '';
+          html += '<option value="' + escapeHtml(optionValue) + '"' + selected + '>' + escapeHtml(option.label || optionValue || '') + '</option>';
+        }}
+        return html;
+      }}
+
+      function syncInterfaceSelect(selectElement, deviceId) {{
+        if (!selectElement) {{
+          return;
+        }}
+        const previousValue = selectElement.value;
+        selectElement.innerHTML = renderInterfaceOptions(deviceId, previousValue);
+        if (previousValue) {{
+          selectElement.value = previousValue;
+        }}
       }}
 
       function kindColor(kind) {{
@@ -7119,6 +7175,15 @@ def _render_topology_graph_page(
         updateGraph();
       }});
 
+      if (sourceDeviceSelect && sourceInterfaceSelect) {{
+        sourceDeviceSelect.addEventListener('change', () => syncInterfaceSelect(sourceInterfaceSelect, sourceDeviceSelect.value));
+        syncInterfaceSelect(sourceInterfaceSelect, sourceDeviceSelect.value);
+      }}
+      if (targetDeviceSelect && targetInterfaceSelect) {{
+        targetDeviceSelect.addEventListener('change', () => syncInterfaceSelect(targetInterfaceSelect, targetDeviceSelect.value));
+        syncInterfaceSelect(targetInterfaceSelect, targetDeviceSelect.value);
+      }}
+
       relayoutButton.addEventListener('click', () => {{
         fitToScreen();
       }});
@@ -7444,6 +7509,7 @@ async def topology_page(request: Request, saved: int = 0, error: str | None = No
     client = request.app.state.netbox_client
     prefixes: list[dict[str, Any]] = []
     devices: list[dict[str, Any]] = []
+    interfaces: list[dict[str, Any]] = []
     topology_state = load_network_topology()
     page_error: str | None = error
     discovery_state = load_last_scan()
@@ -7452,6 +7518,7 @@ async def topology_page(request: Request, saved: int = 0, error: str | None = No
         if client is not None:
             prefixes = await client.list_all("/api/ipam/prefixes/", params={"limit": 200})
             devices = await client.list_all("/api/dcim/devices/", params={"limit": 200})
+            interfaces = await client.list_all("/api/dcim/interfaces/", params={"limit": 500})
     except Exception as exc:
         page_error = str(exc)
     netbox_by_mac = await _build_topology_netbox_mac_index(client, devices)
@@ -7460,7 +7527,7 @@ async def topology_page(request: Request, saved: int = 0, error: str | None = No
         connection_edges = await _collect_topology_connection_edges(client, inventory_devices, devices, probe_state, netbox_by_mac)
     except Exception:
         connection_edges = []
-    graph = _topology_graph_payload(prefixes, topology_state, inventory_devices, devices, connection_edges, netbox_by_mac)
+    graph = _topology_graph_payload(prefixes, topology_state, inventory_devices, devices, connection_edges, netbox_by_mac, interfaces)
     return HTMLResponse(_render_topology_graph_page(graph, prefixes, topology_state, page_error=page_error, saved=bool(saved)))
 
 

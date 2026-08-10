@@ -2091,6 +2091,53 @@ def test_topology_graph_payload_includes_manual_links():
     assert any(node["id"] == "101" and node["degree"] == 1 for node in graph["nodes"])
 
 
+def test_topology_graph_payload_includes_interface_options():
+    prefixes = []
+    topology_state = None
+    inventory_devices = [
+        {
+            "id": "101",
+            "label": "SWC-01-CPD",
+            "group": "switches",
+            "subgroup": "core",
+            "netbox_device_id": "101",
+            "netbox_device_name": "SWC-01-CPD",
+            "primary_ip": "10.0.0.40/32",
+        }
+    ]
+    netbox_devices = [
+        {"id": 101, "name": "SWC-01-CPD", "status": {"value": "active"}, "site": {"id": 1, "name": "ECVITORIA"}, "role": {"id": 2, "name": "Switch"}, "primary_ip4": {"id": 1, "address": "10.0.0.40/32"}},
+    ]
+    interfaces = [
+        {"id": 501, "name": "Ethernet1/0/1", "description": "uplink core", "device": {"id": 101, "name": "SWC-01-CPD"}},
+        {"id": 502, "name": "Ethernet1/0/2", "device": {"id": 101, "name": "SWC-01-CPD"}},
+    ]
+
+    graph = new_main._topology_graph_payload(prefixes, topology_state, inventory_devices, netbox_devices, [], {}, interfaces)
+
+    assert graph["interface_options_by_device"]["101"][0]["value"] == "Ethernet1/0/1"
+    assert any(option["label"].startswith("Ethernet1/0/1") for option in graph["interface_options_by_device"]["101"])
+
+
+def test_topology_page_form_uses_interface_selects():
+    graph = {
+        "nodes": [{"id": "101", "label": "SWC-01-CPD", "group": "Rede", "topology_tier": "core"}],
+        "edges": [],
+        "core_nodes": ["101"],
+        "node_count": 1,
+        "edge_count": 0,
+        "discovered_count": 1,
+        "network_count": 1,
+        "netbox_devices": [{"id": 101, "name": "SWC-01-CPD", "site": {"id": 1, "name": "ECVITORIA"}}],
+        "interface_options_by_device": {"101": [{"value": "Ethernet1/0/1", "label": "Ethernet1/0/1"}]},
+    }
+    html = new_main._render_topology_graph_page(graph, [], None)
+
+    assert 'id="source_interface"' in html
+    assert 'id="target_interface"' in html
+    assert "topology-interface-data" in html
+
+
 def test_topology_graph_payload_keeps_parallel_links_between_same_devices():
     prefixes = []
     topology_state = None
