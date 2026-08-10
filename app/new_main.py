@@ -4774,6 +4774,7 @@ def _topology_resolve_netbox_device(
     netbox_by_id: dict[str, dict[str, Any]],
     netbox_by_name: dict[str, dict[str, Any]],
     netbox_by_ip: dict[str, dict[str, Any]],
+    netbox_by_mac: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(device, dict):
         return None
@@ -4787,6 +4788,17 @@ def _topology_resolve_netbox_device(
     ]
     if isinstance(device.get("primary_ip4"), dict):
         candidates.append(_normalize_text(device.get("primary_ip4", {}).get("address")).split("/", 1)[0].lower())
+    for key in ("snmp_mac_address", "mac_address"):
+        mac_value = _normalize_mac_text(device.get(key))
+        if mac_value:
+            candidates.append(mac_value)
+    if isinstance(device.get("ports"), list):
+        for port in device.get("ports", []):
+            if not isinstance(port, dict):
+                continue
+            mac_value = _normalize_mac_text(port.get("mac_address"))
+            if mac_value:
+                candidates.append(mac_value)
     for candidate in candidates:
         if not candidate:
             continue
@@ -4796,6 +4808,8 @@ def _topology_resolve_netbox_device(
             return netbox_by_name[candidate]
         if candidate in netbox_by_ip:
             return netbox_by_ip[candidate]
+        if netbox_by_mac is not None and candidate in netbox_by_mac:
+            return netbox_by_mac[candidate]
     return None
 
 
@@ -4907,6 +4921,32 @@ def _topology_build_node(
         "y": 0,
     }
     return node
+
+
+async def _build_topology_netbox_mac_index(
+    client: NetBoxClient | None,
+    netbox_devices: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    if client is None:
+        return {}
+    mac_index: dict[str, dict[str, Any]] = {}
+    for device in netbox_devices:
+        if not isinstance(device, dict):
+            continue
+        device_id = _related_id(device.get("id"))
+        if not device_id or device_id in mac_index:
+            continue
+        try:
+            interfaces = await client.list_interfaces(params={"device_id": int(device_id), "limit": 200})
+        except Exception:
+            continue
+        for interface in interfaces:
+            if not isinstance(interface, dict):
+                continue
+            mac_address = _topology_extract_interface_mac(interface)
+            if mac_address and mac_address not in mac_index:
+                mac_index[mac_address] = device
+    return mac_index
 
 
 def _topology_extract_interface_peer(interface: dict[str, Any]) -> tuple[str, str, str] | None:
@@ -5043,6 +5083,7 @@ def _topology_should_probe_interfaces(device: dict[str, Any]) -> bool:
 def _topology_inventory_devices(
     discovery_state: dict[str, Any] | None,
     netbox_devices: list[dict[str, Any]],
+    netbox_by_mac: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     netbox_by_id = {str(device.get("id")): device for device in netbox_devices if isinstance(device, dict) and _related_id(device.get("id"))}
     netbox_by_name = {_normalize_text(device.get("name")).lower(): device for device in netbox_devices if isinstance(device, dict) and _normalize_text(device.get("name"))}
@@ -5067,7 +5108,7 @@ def _topology_inventory_devices(
     inventory: dict[str, dict[str, Any]] = {}
 
     for device in source_devices:
-        fallback = _topology_resolve_netbox_device(device, netbox_by_id, netbox_by_name, netbox_by_ip)
+        fallback = _topology_resolve_netbox_device(device, netbox_by_id, netbox_by_name, netbox_by_ip, netbox_by_mac)
         node = _topology_build_node(device, fallback_device=fallback)
         inventory[node["id"]] = node
 
@@ -5082,6 +5123,7 @@ async def _collect_topology_connection_edges(
     inventory_devices: list[dict[str, Any]],
     netbox_devices: list[dict[str, Any]],
     probe_state: dict[str, Any] | None = None,
+    netbox_by_mac: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if client is None and not isinstance(probe_state, dict):
         return []
@@ -5250,6 +5292,12 @@ async def _collect_topology_connection_edges(
         )
         if not target_device_id and target_device_name:
             target_device_id = _normalize_text(target_device_name).lower()
+        if (not target_device_id or not target_device_name) and netbox_by_mac:
+            record_mac = _normalize_mac_text(record.get("mac_address")) or _normalize_mac_text(record.get("address")) or _normalize_mac_text(record.get("value"))
+            if record_mac and record_mac in netbox_by_mac:
+                resolved_device = netbox_by_mac[record_mac]
+                target_device_id = target_device_id or _related_id(resolved_device.get("id"))
+                target_device_name = target_device_name or _topology_device_name(resolved_device)
         if not target_device_id:
             return None
         return target_device_id, target_device_name, target_interface_name
@@ -5353,7 +5401,7 @@ async def _collect_topology_connection_edges(
         port_a, port_b = sorted([_normalize_text(source_port), _normalize_text(target_port)])
         return "::".join([left, right, _normalize_text(edge_type), port_a, port_b, _normalize_text(edge_token)])
 
-    def _resolve_peer_netbox_device(peer_device_id: str, peer_device_name: str) -> dict[str, Any] | None:
+    def _resolve_peer_netbox_device(peer_device_id: str, peer_device_name: str, peer_mac_address: str = "") -> dict[str, Any] | None:
         candidate = netbox_by_id.get(_related_id(peer_device_id))
         if isinstance(candidate, dict):
             return candidate
@@ -5363,6 +5411,9 @@ async def _collect_topology_connection_edges(
         normalized_id_text = _normalize_text(peer_device_id).lower()
         if normalized_id_text and normalized_id_text in netbox_by_name:
             return netbox_by_name[normalized_id_text]
+        normalized_mac = _normalize_mac_text(peer_mac_address)
+        if normalized_mac and netbox_by_mac and normalized_mac in netbox_by_mac:
+            return netbox_by_mac[normalized_mac]
         synthetic = {
             "id": peer_device_id,
             "device_id": peer_device_id,
@@ -5370,7 +5421,7 @@ async def _collect_topology_connection_edges(
             "name": peer_device_name,
             "netbox_device_name": peer_device_name,
         }
-        candidate = _topology_resolve_netbox_device(synthetic, netbox_by_id, netbox_by_name, {})
+        candidate = _topology_resolve_netbox_device(synthetic, netbox_by_id, netbox_by_name, {}, netbox_by_mac)
         return candidate if isinstance(candidate, dict) else None
 
     for node in inventory_devices:
@@ -5503,7 +5554,7 @@ async def _collect_topology_connection_edges(
                     if peer is None:
                         continue
                     peer_device_id, peer_device_name, peer_interface_name = peer
-                    inferred_target = _resolve_peer_netbox_device(peer_device_id, peer_device_name)
+                    inferred_target = _resolve_peer_netbox_device(peer_device_id, peer_device_name, learned_mac)
                     if not isinstance(inferred_target, dict):
                         continue
                     target_node = _resolve_inventory_target_by_mac(learned_mac) or _topology_build_node({}, fallback_device=inferred_target)
@@ -5612,6 +5663,7 @@ def _topology_graph_payload(
     inventory_devices: list[dict[str, Any]],
     netbox_devices: list[dict[str, Any]],
     connection_edges: list[dict[str, Any]],
+    netbox_by_mac: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     nodes: dict[str, dict[str, Any]] = {}
     edges: list[dict[str, Any]] = []
@@ -5660,7 +5712,7 @@ def _topology_graph_payload(
     for device in inventory_devices:
         if not isinstance(device, dict):
             continue
-        fallback = _topology_resolve_netbox_device(device, netbox_by_id, netbox_by_name, netbox_by_ip)
+        fallback = _topology_resolve_netbox_device(device, netbox_by_id, netbox_by_name, netbox_by_ip, netbox_by_mac)
         ensure_node(_topology_device_key(device) or _related_id(device.get("netbox_device_id")) or _normalize_text(device.get("label")), source_device=device, fallback_device=fallback)
 
     for edge in connection_edges:
@@ -7016,12 +7068,13 @@ async def topology_page(request: Request):
             devices = await client.list_devices(params={"limit": 100})
     except Exception as exc:
         page_error = str(exc)
-    inventory_devices = _topology_inventory_devices(discovery_state, devices)
+    netbox_by_mac = await _build_topology_netbox_mac_index(client, devices)
+    inventory_devices = _topology_inventory_devices(discovery_state, devices, netbox_by_mac)
     try:
-        connection_edges = await _collect_topology_connection_edges(client, inventory_devices, devices, probe_state)
+        connection_edges = await _collect_topology_connection_edges(client, inventory_devices, devices, probe_state, netbox_by_mac)
     except Exception:
         connection_edges = []
-    graph = _topology_graph_payload(prefixes, topology_state, inventory_devices, devices, connection_edges)
+    graph = _topology_graph_payload(prefixes, topology_state, inventory_devices, devices, connection_edges, netbox_by_mac)
     return HTMLResponse(_render_topology_graph_page(graph, prefixes, topology_state, page_error=page_error))
 
 

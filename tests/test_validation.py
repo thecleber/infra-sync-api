@@ -1759,6 +1759,38 @@ def test_topology_graph_payload_marks_core_switches():
     assert swc["prefix_count"] == 8
 
 
+def test_topology_inventory_devices_resolves_netbox_name_by_mac():
+    discovery_state = {
+        "devices": [
+            {
+                "id": "200",
+                "label": "Device 00:11:22:33:44:55",
+                "group": "switches",
+                "subgroup": "access",
+                "snmp_mac_address": "00:11:22:33:44:55",
+                "primary_ip": "10.0.0.41/32",
+            }
+        ]
+    }
+    netbox_devices = [
+        {
+            "id": 102,
+            "name": "SW-21-BASE ADM 01-DADOS",
+            "status": {"value": "active"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "primary_ip4": {"id": 2, "address": "10.0.0.41/32"},
+        }
+    ]
+    netbox_by_mac = {"00:11:22:33:44:55": netbox_devices[0]}
+
+    inventory = new_main._topology_inventory_devices(discovery_state, netbox_devices, netbox_by_mac)
+
+    assert inventory[0]["label"] == "SW-21-BASE ADM 01-DADOS"
+    assert inventory[0]["netbox_device_id"] == "102"
+    assert inventory[0]["netbox_device_name"] == "SW-21-BASE ADM 01-DADOS"
+
+
 def test_api_alerts_returns_json(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
