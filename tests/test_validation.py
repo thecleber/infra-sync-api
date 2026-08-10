@@ -1631,8 +1631,10 @@ def test_bridge_fdb_mac_records_create_edge(monkeypatch):
         {
             "assigned_object_type": "dcim.interface",
             "assigned_object": {
-                "name": "ge-0/0/24",
-                "device": {"id": 102, "name": "SW-EDGE-01"},
+                "id": 188,
+                "display_name": "ge-0/0/24",
+                "device_id": 102,
+                "device_name": "SW-EDGE-01",
             },
         }
     ])
@@ -1684,6 +1686,13 @@ def test_bridge_fdb_mac_records_create_edge(monkeypatch):
             }
         ]
     }
+    client.get_device = AsyncMock(return_value=netbox_devices[1])
+    client.get_interface = AsyncMock(return_value={
+        "id": 188,
+        "name": "ge-0/0/24",
+        "display_name": "ge-0/0/24",
+        "device": {"id": 102, "display_name": "SW-EDGE-01"},
+    })
 
     import asyncio
 
