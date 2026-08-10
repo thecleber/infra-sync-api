@@ -5709,17 +5709,32 @@ def _topology_graph_payload(
         node["degree"] = degree_map.get(node_id, 0)
         node["neighbors"] = sorted(adjacency.get(node_id, set()))
         node["prefix_count"] = len([edge for edge in edges if edge["source"] == node_id or edge["target"] == node_id])
+        group = _normalize_text(node.get("group")).lower()
+        if group in {"switches", "routers", "network"}:
+            if node["degree"] >= 8:
+                tier = "core"
+            elif node["degree"] >= 3:
+                tier = "distribution"
+            else:
+                tier = "leaf"
+        elif node["degree"] >= 6:
+            tier = "distribution"
+        else:
+            tier = "leaf"
+        node["topology_tier"] = tier
+        node["topology_score"] = int(node["degree"] or 0) + (20 if tier == "core" else 10 if tier == "distribution" else 0) + min(int(node["prefix_count"] or 0), 6)
 
     ordered_nodes = sorted(
         nodes.values(),
         key=lambda item: (
-            -int(item.get("degree") or 0),
+            0 if _normalize_text(item.get("topology_tier")).lower() == "core" else 1 if _normalize_text(item.get("topology_tier")).lower() == "distribution" else 2,
+            -int(item.get("topology_score") or item.get("degree") or 0),
             0 if _normalize_text(item.get("group")).lower() in {"switches", "routers", "network"} else 1,
             item.get("label", ""),
         ),
     )
     ordered_edges = sorted(edges, key=lambda item: (item["source"], item["target"], item.get("edge_type", ""), item.get("label", "")))
-    core_nodes = [node["id"] for node in ordered_nodes if _normalize_text(node.get("group")).lower() in {"switches", "routers", "network"}][:5]
+    core_nodes = [node["id"] for node in ordered_nodes if _normalize_text(node.get("group")).lower() in {"switches", "routers", "network"} and _normalize_text(node.get("topology_tier")).lower() in {"core", "distribution"}][:8]
     if not core_nodes:
         core_nodes = [node["id"] for node in ordered_nodes[:5]]
 
@@ -5939,6 +5954,14 @@ def _render_topology_graph_page(
         font-weight: 700;
         text-anchor: middle;
       }}
+      .node[data-tier="core"] .node-label {{
+        font-size: 13px;
+        font-weight: 900;
+      }}
+      .node[data-tier="distribution"] .node-label {{
+        font-size: 12px;
+        font-weight: 800;
+      }}
       .node-mini {{
         fill: #94a3b8;
         font-size: 10px;
@@ -5956,6 +5979,12 @@ def _render_topology_graph_page(
       .node.selected circle {{
         stroke-width: 4;
         filter: drop-shadow(0 0 12px rgba(134, 239, 172, .35));
+      }}
+      .node[data-tier="core"] circle {{
+        filter: drop-shadow(0 0 10px rgba(52, 211, 153, .28));
+      }}
+      .node[data-tier="distribution"] circle {{
+        filter: drop-shadow(0 0 8px rgba(96, 165, 250, .18));
       }}
       .node.dimmed {{
         opacity: .18;
@@ -6153,6 +6182,17 @@ def _render_topology_graph_page(
         return colors[kind] || colors.Outro;
       }}
 
+      function tierLabel(node) {{
+        const tier = String(node.topology_tier || 'leaf').toLowerCase();
+        if (tier === 'core') {{
+          return 'Core';
+        }}
+        if (tier === 'distribution') {{
+          return 'Distribuição';
+        }}
+        return 'Borda';
+      }}
+
       function createSvgElement(tag, attrs = {{}}) {{
         const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
         for (const [key, value] of Object.entries(attrs)) {{
@@ -6329,8 +6369,39 @@ def _render_topology_graph_page(
 
       function nodeRadius(node) {{
         const degree = Number(node.degree || 0);
-        const base = node.group === 'switches' || node.group === 'network' ? 30 : 24;
-        return Math.max(24, Math.min(52, base + degree * 2.2));
+        const tier = String(node.topology_tier || 'leaf').toLowerCase();
+        const base = tier === 'core' ? 40 : tier === 'distribution' ? 34 : node.group === 'switches' || node.group === 'network' ? 30 : 24;
+        const scale = tier === 'core' ? 2.6 : tier === 'distribution' ? 2.4 : 2.1;
+        return Math.max(24, Math.min(68, base + degree * scale));
+      }}
+
+      function nodeLabelLines(node) {{
+        const raw = String(node.label || node.id || '').trim();
+        if (!raw) {{
+          return ['Device'];
+        }}
+        const tier = String(node.topology_tier || 'leaf').toLowerCase();
+        const maxChars = tier === 'core' ? 20 : tier === 'distribution' ? 16 : 14;
+        if (raw.length <= maxChars) {{
+          return [raw];
+        }}
+        const words = raw.split(/\s+/).filter(Boolean);
+        if (words.length <= 1) {{
+          return [raw.slice(0, maxChars), raw.slice(maxChars, maxChars * 2)].filter(Boolean);
+        }}
+        const firstLine = [];
+        let firstLength = 0;
+        while (words.length) {{
+          const nextWord = words[0];
+          const proposed = firstLine.length ? firstLength + 1 + nextWord.length : nextWord.length;
+          if (proposed > maxChars) {{
+            break;
+          }}
+          firstLine.push(words.shift());
+          firstLength = proposed;
+        }}
+        const secondLine = words.join(' ');
+        return [firstLine.join(' '), secondLine].filter(Boolean).slice(0, 2);
       }}
 
       function edgePath(source, target, offset = 0) {{
@@ -6418,6 +6489,7 @@ def _render_topology_graph_page(
             class: 'node',
             'data-id': node.id,
             'data-kind': node.kind || 'Outro',
+            'data-tier': node.topology_tier || 'leaf',
             transform: `translate(${{node.x}}, ${{node.y}})`,
           }});
 
@@ -6436,15 +6508,21 @@ def _render_topology_graph_page(
             fill: '#0f172a',
           }}));
 
-          const labelParts = String(node.label || node.id).split(' ');
-          const topLabel = labelParts.slice(0, 2).join(' ').slice(0, 18);
-          const mini = String(node.kind || 'Outro').slice(0, 10);
+          const labelLines = nodeLabelLines(node);
+          const mini = `${{tierLabel(node)}} • ${{Number(node.degree || 0)}}`;
 
           const text = createSvgElement('text', {{
             class: 'node-label',
             y: radius + 18,
           }});
-          text.textContent = topLabel;
+          labelLines.forEach((line, lineIndex) => {{
+            const tspan = createSvgElement('tspan', {{
+              x: '0',
+              dy: lineIndex === 0 ? '0' : '1.15em',
+            }});
+            tspan.textContent = line;
+            text.appendChild(tspan);
+          }});
           group.appendChild(text);
 
           const miniText = createSvgElement('text', {{
@@ -6513,7 +6591,10 @@ def _render_topology_graph_page(
         detailSite.textContent = toTitle(node.site);
         detailRole.textContent = toTitle(node.role);
         detailIp.textContent = toTitle(node.primary_ip);
-        detailDegree.textContent = String(node.degree || 0);
+        detailDegree.textContent = `${{Number(node.degree || 0)}} (${{
+          String(node.topology_tier || 'leaf').toLowerCase() === 'core' ? 'núcleo' :
+          String(node.topology_tier || 'leaf').toLowerCase() === 'distribution' ? 'distribuição' : 'borda'
+        }})`;
         detailPrefixes.textContent = String(node.prefix_count || 0);
 
         const connections = connectionsFor(node.id);

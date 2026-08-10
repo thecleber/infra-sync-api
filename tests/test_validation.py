@@ -1702,6 +1702,63 @@ def test_bridge_fdb_mac_records_create_edge(monkeypatch):
     assert any(edge["target"] == "102" for edge in edges)
 
 
+def test_topology_graph_payload_marks_core_switches():
+    prefixes = []
+    topology_state = None
+    inventory_devices = [
+        {
+            "id": "101",
+            "label": "SWC-01-CPD",
+            "group": "switches",
+            "subgroup": "core",
+            "netbox_device_id": "101",
+            "netbox_device_name": "SWC-01-CPD",
+            "primary_ip": "10.0.0.40/32",
+        },
+        {
+            "id": "102",
+            "label": "SW-EDGE-01",
+            "group": "switches",
+            "subgroup": "access",
+            "netbox_device_id": "102",
+            "netbox_device_name": "SW-EDGE-01",
+            "primary_ip": "10.0.0.41/32",
+        },
+        {
+            "id": "200",
+            "label": "NB-13-01",
+            "group": "hosts",
+            "subgroup": "fixed",
+            "netbox_device_id": "200",
+            "netbox_device_name": "NB-13-01",
+            "primary_ip": "10.0.0.143/32",
+        },
+    ]
+    netbox_devices = [
+        {"id": 101, "name": "SWC-01-CPD", "status": {"value": "active"}, "site": {"id": 1, "name": "ECVITORIA"}, "role": {"id": 2, "name": "Switch"}, "primary_ip4": {"id": 1, "address": "10.0.0.40/32"}},
+        {"id": 102, "name": "SW-EDGE-01", "status": {"value": "active"}, "site": {"id": 1, "name": "ECVITORIA"}, "role": {"id": 2, "name": "Switch"}, "primary_ip4": {"id": 2, "address": "10.0.0.41/32"}},
+        {"id": 200, "name": "NB-13-01", "status": {"value": "active"}, "site": {"id": 1, "name": "ECVITORIA"}, "role": {"id": 3, "name": "Workstation"}, "primary_ip4": {"id": 3, "address": "10.0.0.143/32"}},
+    ]
+    connection_edges = [
+        {"source": "101", "target": "102", "edge_type": "bridge-link", "label": "FDB aa:bb:cc:dd:ee:01", "source_port": "Gi1/0/1", "target_port": "Gi1/0/24", "peer_name": "SW-EDGE-01"},
+        {"source": "101", "target": "200", "edge_type": "bridge-link", "label": "FDB aa:bb:cc:dd:ee:02", "source_port": "Gi1/0/2", "target_port": "eth0", "peer_name": "NB-13-01"},
+        {"source": "101", "target": "103", "edge_type": "bridge-link", "label": "FDB aa:bb:cc:dd:ee:03", "source_port": "Gi1/0/3", "target_port": "Gi1/0/12", "peer_name": "SW-CORE-02"},
+        {"source": "101", "target": "104", "edge_type": "bridge-link", "label": "FDB aa:bb:cc:dd:ee:04", "source_port": "Gi1/0/4", "target_port": "Gi1/0/12", "peer_name": "SW-CORE-03"},
+        {"source": "101", "target": "105", "edge_type": "bridge-link", "label": "FDB aa:bb:cc:dd:ee:05", "source_port": "Gi1/0/5", "target_port": "Gi1/0/12", "peer_name": "SW-CORE-04"},
+        {"source": "101", "target": "106", "edge_type": "bridge-link", "label": "FDB aa:bb:cc:dd:ee:06", "source_port": "Gi1/0/6", "target_port": "Gi1/0/12", "peer_name": "SW-CORE-05"},
+        {"source": "101", "target": "107", "edge_type": "bridge-link", "label": "FDB aa:bb:cc:dd:ee:07", "source_port": "Gi1/0/7", "target_port": "Gi1/0/12", "peer_name": "SW-CORE-06"},
+        {"source": "101", "target": "108", "edge_type": "bridge-link", "label": "FDB aa:bb:cc:dd:ee:08", "source_port": "Gi1/0/8", "target_port": "Gi1/0/12", "peer_name": "SW-CORE-07"},
+    ]
+
+    graph = new_main._topology_graph_payload(prefixes, topology_state, inventory_devices, netbox_devices, connection_edges)
+
+    swc = next(node for node in graph["nodes"] if node["id"] == "101")
+    assert swc["topology_tier"] == "core"
+    assert "101" in graph["core_nodes"]
+    assert swc["degree"] == 8
+    assert swc["prefix_count"] == 8
+
+
 def test_api_alerts_returns_json(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
