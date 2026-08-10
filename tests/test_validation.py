@@ -1791,6 +1791,51 @@ def test_topology_inventory_devices_resolves_netbox_name_by_mac():
     assert inventory[0]["netbox_device_name"] == "SW-21-BASE ADM 01-DADOS"
 
 
+def test_topology_graph_payload_merges_generic_label_with_better_device():
+    prefixes = []
+    topology_state = None
+    inventory_devices = [
+        {
+            "id": "200",
+            "label": "Device 00:11:22:33:44:55",
+            "group": "switches",
+            "subgroup": "access",
+            "netbox_device_id": "200",
+            "netbox_device_name": "",
+            "snmp_mac_address": "00:11:22:33:44:55",
+            "primary_ip": "10.0.0.41/32",
+        }
+    ]
+    netbox_devices = [
+        {
+            "id": 200,
+            "name": "SW-21-BASE ADM 01-DADOS",
+            "status": {"value": "active"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "primary_ip4": {"id": 2, "address": "10.0.0.41/32"},
+        }
+    ]
+    connection_edges = [
+        {
+            "source": "200",
+            "target": "300",
+            "edge_type": "bridge-link",
+            "label": "FDB 00:11:22:33:44:55",
+            "source_port": "Gi1/0/1",
+            "target_port": "Gi1/0/24",
+            "peer_name": "SW-21-BASE ADM 01-DADOS",
+        }
+    ]
+
+    graph = new_main._topology_graph_payload(prefixes, topology_state, inventory_devices, netbox_devices, connection_edges, {"00:11:22:33:44:55": netbox_devices[0]})
+
+    node = next(item for item in graph["nodes"] if item["id"] == "200")
+    assert node["label"] == "SW-21-BASE ADM 01-DADOS"
+    assert node["netbox_device_name"] == "SW-21-BASE ADM 01-DADOS"
+    assert node["snmp_mac_address"] == "00:11:22:33:44:55"
+
+
 def test_api_alerts_returns_json(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")

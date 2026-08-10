@@ -4823,6 +4823,14 @@ def _topology_device_name(device: dict[str, Any] | None) -> str:
     return ""
 
 
+def _topology_is_generic_label(label: str) -> bool:
+    text = _normalize_text(label)
+    if not text:
+        return True
+    normalized = text.lower()
+    return normalized.startswith("device ") or normalized.startswith("mac ") or normalized.startswith("unknown")
+
+
 def _topology_build_node(
     device: dict[str, Any],
     *,
@@ -5693,6 +5701,28 @@ def _topology_graph_payload(
             node_id = f"node-{len(nodes) + 1}"
         node = nodes.get(node_id)
         if node is not None:
+            source = source_device or fallback_device or {}
+            if source:
+                preferred_label = _topology_build_node(source, fallback_device=fallback_device or source).get("label", "")
+                if _topology_is_generic_label(node.get("label")) and not _topology_is_generic_label(preferred_label):
+                    node["label"] = preferred_label
+                if not _normalize_text(node.get("netbox_device_name")):
+                    node["netbox_device_name"] = _topology_device_name(fallback_device or source) or _normalize_text(source.get("netbox_device_name"))
+                if not _normalize_text(node.get("primary_ip")):
+                    candidate_ip = _normalize_text(source.get("primary_ip")) or _normalize_text(source.get("ip"))
+                    if not candidate_ip and isinstance((fallback_device or source).get("primary_ip4"), dict):
+                        candidate_ip = _normalize_text((fallback_device or source).get("primary_ip4", {}).get("address"))
+                    if candidate_ip:
+                        node["primary_ip"] = candidate_ip.split("/", 1)[0]
+                if not _related_id(node.get("netbox_device_id")):
+                    node["netbox_device_id"] = _related_id((fallback_device or source).get("id")) or _related_id(source.get("netbox_device_id"))
+                if not _normalize_text(node.get("snmp_mac_address")):
+                    mac_value = _normalize_mac_text(source.get("snmp_mac_address")) or _normalize_mac_text(source.get("mac_address"))
+                    if not mac_value and isinstance(source.get("ports"), list):
+                        mac_value = next((_normalize_mac_text(port.get("mac_address")) for port in source.get("ports", []) if isinstance(port, dict) and _normalize_mac_text(port.get("mac_address"))), "")
+                    if mac_value:
+                        node["snmp_mac_address"] = mac_value
+                        node["mac_address"] = mac_value
             if source_device is not None:
                 node_sources[node_id] = source_device
             return node
