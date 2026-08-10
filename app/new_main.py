@@ -5793,6 +5793,9 @@ def _render_topology_graph_page(
         stroke-linecap: round;
         transition: opacity .2s ease, stroke .2s ease, stroke-width .2s ease;
       }}
+      .edge.selected {{
+        filter: drop-shadow(0 0 8px rgba(134, 239, 172, .25));
+      }}
       .node circle {{
         transition: transform .15s ease, stroke .15s ease, fill .15s ease, opacity .15s ease;
       }}
@@ -5836,6 +5839,13 @@ def _render_topology_graph_page(
         text-anchor: middle;
         opacity: .75;
         pointer-events: none;
+        paint-order: stroke;
+        stroke: rgba(2, 6, 23, .82);
+        stroke-width: 3;
+        stroke-linejoin: round;
+      }}
+      .edge-label.dimmed {{
+        opacity: .18;
       }}
       @media (max-width: 1180px) {{
         .topology-workspace {{
@@ -5980,6 +5990,7 @@ def _render_topology_graph_page(
       const resetButton = document.getElementById('topology-reset');
       const nodeMap = new Map();
       const edgeElements = new Map();
+      const edgeItems = [];
       const colors = {{
         'Rede': '#14b8a6',
         'Servidor': '#2563eb',
@@ -6023,24 +6034,112 @@ def _render_topology_graph_page(
         return String(node.search_text || '').toLowerCase();
       }}
 
+      function edgeStyle(edge) {{
+        if (edge.edge_type === 'lldp-link') {{
+          return {{ stroke: '#60a5fa', width: 3.6, dash: '9 4' }};
+        }}
+        if (edge.edge_type === 'cdp-link') {{
+          return {{ stroke: '#f59e0b', width: 3.4, dash: '7 4' }};
+        }}
+        if (edge.edge_type === 'bridge-link') {{
+          return {{ stroke: '#a78bfa', width: 3.2, dash: '4 4' }};
+        }}
+        if (edge.edge_type === 'mac-link') {{
+          return {{ stroke: '#22c55e', width: 3.2, dash: '' }};
+        }}
+        if (edge.edge_type === 'device-link') {{
+          return {{ stroke: '#34d399', width: 2.8, dash: '6 4' }};
+        }}
+        return {{ stroke: 'url(#topology-edge-prefix)', width: 2.2, dash: '10 7' }};
+      }}
+
+      function edgeKey(edge) {{
+        const left = String(edge.source || '');
+        const right = String(edge.target || '');
+        return [left, right].sort().join('::');
+      }}
+
+      function hashValue(value) {{
+        let hash = 0;
+        const text = String(value || '');
+        for (let index = 0; index < text.length; index += 1) {{
+          hash = ((hash << 5) - hash) + text.charCodeAt(index);
+          hash |= 0;
+        }}
+        return Math.abs(hash);
+      }}
+
+      function connectionsFor(nodeId) {{
+        return (topologyData.edges || [])
+          .filter((edge) => edge.source === nodeId || edge.target === nodeId)
+          .map((edge) => {{
+            const linkedId = edge.source === nodeId ? edge.target : edge.source;
+            const linked = topologyData.nodes.find((item) => item.id === linkedId);
+            return {{
+              edge,
+              id: linkedId,
+              label: linked ? linked.label : linkedId,
+              href: linked && linked.device_link ? linked.device_link : '',
+              direction: edge.source === nodeId ? 'saída' : 'entrada',
+            }};
+          }});
+      }}
+
       function initializePositions() {{
         const nodes = topologyData.nodes || [];
+        const adjacency = new Map();
+        for (const edge of topologyData.edges || []) {{
+          if (!adjacency.has(edge.source)) {{
+            adjacency.set(edge.source, []);
+          }}
+          if (!adjacency.has(edge.target)) {{
+            adjacency.set(edge.target, []);
+          }}
+          adjacency.get(edge.source).push(edge);
+          adjacency.get(edge.target).push(edge);
+        }}
         const centerX = 800;
         const centerY = 380;
-        const root = nodes[0];
-        const baseRadius = 220;
+        const hubIds = new Set((topologyData.core_nodes && topologyData.core_nodes.length ? topologyData.core_nodes : nodes
+          .slice()
+          .sort((left, right) => Number(right.degree || 0) - Number(left.degree || 0))
+          .slice(0, 5)
+          .map((node) => node.id)));
+        const hubs = nodes.filter((node) => hubIds.has(node.id));
+        const baseHubRadius = 190;
+        hubs.forEach((node, index) => {{
+          const angle = (index / Math.max(1, hubs.length)) * Math.PI * 2 - Math.PI / 2;
+          node.x = centerX + Math.cos(angle) * baseHubRadius;
+          node.y = centerY + Math.sin(angle) * baseHubRadius;
+          node.fx = node.x;
+          node.fy = node.y;
+        }});
+        const hubLookup = new Map(hubs.map((node) => [node.id, node]));
         nodes.forEach((node, index) => {{
-          if (root && node.id === root.id) {{
-            node.x = centerX;
-            node.y = centerY;
-            node.fx = centerX;
-            node.fy = centerY;
+          if (hubLookup.has(node.id)) {{
             return;
           }}
-          const ring = baseRadius + Math.min(260, (node.degree || 0) * 34);
-          const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2;
-          node.x = centerX + Math.cos(angle) * ring;
-          node.y = centerY + Math.sin(angle) * ring;
+          const linkedEdges = adjacency.get(node.id) || [];
+          let anchor = hubs[0] || nodes[0] || null;
+          if (linkedEdges.length) {{
+            const sortedEdges = linkedEdges.slice().sort((left, right) => {{
+              const leftOtherId = left.source === node.id ? left.target : left.source;
+              const rightOtherId = right.source === node.id ? right.target : right.source;
+              const leftOther = nodes.find((item) => item.id === leftOtherId);
+              const rightOther = nodes.find((item) => item.id === rightOtherId);
+              return Number(rightOther?.degree || 0) - Number(leftOther?.degree || 0);
+            }});
+            const bestEdge = sortedEdges[0];
+            const bestOtherId = bestEdge ? (bestEdge.source === node.id ? bestEdge.target : bestEdge.source) : '';
+            anchor = nodes.find((item) => item.id === bestOtherId) || anchor;
+          }}
+          const anchorX = anchor ? anchor.x : centerX;
+          const anchorY = anchor ? anchor.y : centerY;
+          const angle = ((hashValue(node.id) + index * 37) % 360) * (Math.PI / 180);
+          const radius = 120 + Math.min(240, (node.degree || 0) * 28);
+          const anchorRadius = hubLookup.has(anchor && anchor.id ? anchor.id : '') ? 108 : 88;
+          node.x = anchorX + Math.cos(angle) * (anchorRadius + radius * 0.16);
+          node.y = anchorY + Math.sin(angle) * (anchorRadius + radius * 0.16);
         }});
 
         for (let iteration = 0; iteration < 150; iteration += 1) {{
@@ -6099,19 +6198,35 @@ def _render_topology_graph_page(
 
       function nodeRadius(node) {{
         const degree = Number(node.degree || 0);
-        return Math.max(26, Math.min(46, 24 + degree * 2));
+        const base = node.group === 'switches' || node.group === 'network' ? 30 : 24;
+        return Math.max(24, Math.min(52, base + degree * 2.2));
       }}
 
-      function edgePath(source, target) {{
+      function edgePath(source, target, offset = 0) {{
         const dx = target.x - source.x;
         const dy = target.y - source.y;
         const distance = Math.max(1, Math.hypot(dx, dy));
         const nx = -dy / distance;
         const ny = dx / distance;
-        const bend = Math.min(120, distance * 0.22);
-        const mx = (source.x + target.x) / 2 + nx * bend;
-        const my = (source.y + target.y) / 2 + ny * bend;
+        const bend = Math.min(150, Math.max(52, distance * 0.24)) + Math.abs(offset) * 28;
+        const signedBend = bend * (offset === 0 ? 1 : Math.sign(offset));
+        const mx = (source.x + target.x) / 2 + nx * signedBend;
+        const my = (source.y + target.y) / 2 + ny * signedBend;
         return 'M ' + source.x + ' ' + source.y + ' Q ' + mx + ' ' + my + ' ' + target.x + ' ' + target.y;
+      }}
+
+      function edgeLabelPosition(source, target, offset = 0) {{
+        const dx = target.x - source.x;
+        const dy = target.y - source.y;
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const nx = -dy / distance;
+        const ny = dx / distance;
+        const bend = Math.min(150, Math.max(52, distance * 0.24)) + Math.abs(offset) * 28;
+        const signedBend = bend * (offset === 0 ? 1 : Math.sign(offset));
+        return {{
+          x: (source.x + target.x) / 2 + nx * (signedBend * .56),
+          y: (source.y + target.y) / 2 + ny * (signedBend * .56),
+        }};
       }}
 
       function renderGraph() {{
@@ -6119,23 +6234,52 @@ def _render_topology_graph_page(
         linksLayer.innerHTML = '';
         nodeMap.clear();
         edgeElements.clear();
+        edgeItems.length = 0;
 
+        const groupedEdges = new Map();
         for (const edge of topologyData.edges || []) {{
-          const path = createSvgElement('path', {{
-            d: '',
-            class: 'edge',
-            fill: 'none',
-            stroke: edge.edge_type === 'lldp-link' ? '#60a5fa' : edge.edge_type === 'cdp-link' ? '#f59e0b' : edge.edge_type === 'bridge-link' ? '#a78bfa' : edge.edge_type === 'mac-link' ? '#22c55e' : edge.edge_type === 'device-link' ? '#34d399' : 'url(#topology-edge-prefix)',
-            'stroke-width': edge.edge_type === 'lldp-link' ? '3.1' : edge.edge_type === 'cdp-link' ? '3.1' : edge.edge_type === 'bridge-link' ? '2.9' : edge.edge_type === 'mac-link' ? '3.2' : edge.edge_type === 'device-link' ? '2.8' : '2.2',
-            'stroke-dasharray': edge.edge_type === 'lldp-link' ? '9 4' : edge.edge_type === 'cdp-link' ? '7 4' : edge.edge_type === 'bridge-link' ? '4 4' : edge.edge_type === 'mac-link' ? '' : edge.edge_type === 'device-link' ? '6 4' : '10 7',
-            'marker-end': 'url(#topology-arrow)',
-            'data-source': edge.source,
-            'data-target': edge.target,
+          const key = edgeKey(edge);
+          if (!groupedEdges.has(key)) {{
+            groupedEdges.set(key, []);
+          }}
+          groupedEdges.get(key).push(edge);
+        }}
+
+        for (const [pairKey, edges] of groupedEdges.entries()) {{
+          const ordered = edges.slice().sort((left, right) => {{
+            const priority = (value) => value === 'lldp-link' ? 0 : value === 'cdp-link' ? 1 : value === 'bridge-link' ? 2 : value === 'mac-link' ? 3 : value === 'device-link' ? 4 : 9;
+            return priority(left.edge_type) - priority(right.edge_type) || String(left.label || left.prefix || '').localeCompare(String(right.label || right.prefix || ''));
           }});
-          path.appendChild(createSvgElement('title'));
-          path.querySelector('title').textContent = `${{edge.label || edge.prefix || 'Ligação'}}`;
-          linksLayer.appendChild(path);
-          edgeElements.set(`${{edge.source}}::${{edge.target}}`, path);
+          for (const [index, edge] of ordered.entries()) {{
+            const style = edgeStyle(edge);
+            const path = createSvgElement('path', {{
+              d: '',
+              class: 'edge',
+              fill: 'none',
+              stroke: style.stroke,
+              'stroke-width': String(style.width),
+              'stroke-dasharray': style.dash,
+              'marker-end': 'url(#topology-arrow)',
+              'data-source': edge.source,
+              'data-target': edge.target,
+              'data-pair': pairKey,
+              'data-index': String(index),
+            }});
+            path.appendChild(createSvgElement('title'));
+            path.querySelector('title').textContent = `${{edge.label || edge.prefix || 'Ligação'}}`;
+            const label = createSvgElement('text', {{
+              class: 'edge-label',
+              'data-source': edge.source,
+              'data-target': edge.target,
+              'data-pair': pairKey,
+              'data-index': String(index),
+            }});
+            label.textContent = edge.label || edge.prefix || edge.edge_type || 'Ligação';
+            linksLayer.appendChild(path);
+            linksLayer.appendChild(label);
+            edgeItems.push({{ edge, path, label, index, count: ordered.length }});
+            edgeElements.set(`${{edge.source}}::${{edge.target}}::${{index}}`, path);
+          }}
         }}
 
         for (const node of topologyData.nodes || []) {{
@@ -6218,18 +6362,6 @@ def _render_topology_graph_page(
         }}
       }}
 
-      function neighborsFor(nodeId) {{
-        const neighbors = [];
-        for (const edge of topologyData.edges || []) {{
-          if (edge.source === nodeId) {{
-            neighbors.push({{ id: edge.target, prefix: edge.prefix, direction: 'saida' }});
-          }} else if (edge.target === nodeId) {{
-            neighbors.push({{ id: edge.source, prefix: edge.prefix, direction: 'entrada' }});
-          }}
-        }}
-        return neighbors;
-      }}
-
       function updateDetails(node) {{
         if (!node) {{
           detailTitle.textContent = 'Selecione um device';
@@ -6253,12 +6385,15 @@ def _render_topology_graph_page(
         detailDegree.textContent = String(node.degree || 0);
         detailPrefixes.textContent = String(node.prefix_count || 0);
 
-        const neighbors = neighborsFor(node.id);
-        neighborsList.innerHTML = neighbors.length ? neighbors.map((neighbor) => {{
-          const linked = topologyData.nodes.find((item) => item.id === neighbor.id);
-          const label = linked ? linked.label : neighbor.id;
-          const href = linked && linked.device_link ? linked.device_link : '';
-          return `<div class="topology-node-item"><div><strong>${{escapeHtml(label)}}</strong><small>${{escapeHtml(neighbor.prefix)}} • ${{escapeHtml(neighbor.direction)}}</small></div>${{href ? `<a href="${{escapeHtml(href)}}">Abrir</a>` : ''}}</div>`;
+        const connections = connectionsFor(node.id);
+        neighborsList.innerHTML = connections.length ? connections.map((connection) => {{
+          const linked = topologyData.nodes.find((item) => item.id === connection.id);
+          const label = linked ? linked.label : connection.id;
+          const href = connection.href || (linked && linked.device_link ? linked.device_link : '');
+          const edge = connection.edge || {{}};
+          const ports = [edge.source_port, edge.target_port].filter(Boolean).join(' ↔ ');
+          const detail = [edge.edge_type ? edge.edge_type.replace('-link', '').toUpperCase() : '', ports, edge.remote_sys_name || ''].filter(Boolean).join(' • ');
+          return `<div class="topology-node-item${{edge.edge_type === 'lldp-link' ? ' active' : ''}}"><div><strong>${{escapeHtml(label)}}</strong><small>${{escapeHtml(detail || connection.direction)}}${{edge.label ? ` • ${{escapeHtml(edge.label)}}` : ''}}</small></div>${{href ? `<a href="${{escapeHtml(href)}}">Abrir</a>` : ''}}</div>`;
         }}).join('') : '<div class="topology-node-item"><div><strong>Sem vizinhos</strong><small>Este device nao possui ligacoes registradas.</small></div></div>';
       }}
 
@@ -6280,8 +6415,8 @@ def _render_topology_graph_page(
         const activeNeighborIds = new Set();
         if (state.selectedId) {{
           activeNeighborIds.add(state.selectedId);
-          for (const neighbor of neighborsFor(state.selectedId)) {{
-            activeNeighborIds.add(neighbor.id);
+          for (const connection of connectionsFor(state.selectedId)) {{
+            activeNeighborIds.add(connection.id);
           }}
         }}
 
@@ -6302,17 +6437,25 @@ def _render_topology_graph_page(
           }});
         }}
 
-        for (const edge of topologyData.edges || []) {{
-          const element = linksLayer.querySelector(`[data-source="${{edge.source}}"][data-target="${{edge.target}}"]`);
-          if (!element) continue;
+        for (const item of edgeItems) {{
+          const {{ edge, path, label, index, count }} = item;
           const source = topologyData.nodes.find((node) => node.id === edge.source);
           const target = topologyData.nodes.find((node) => node.id === edge.target);
           if (!source || !target) continue;
-          element.setAttribute('d', edgePath(source, target));
+          const offset = index - ((count - 1) / 2);
+          path.setAttribute('d', edgePath(source, target, offset));
+          const position = edgeLabelPosition(source, target, offset);
+          label.setAttribute('x', String(position.x));
+          label.setAttribute('y', String(position.y - 8));
+          label.classList.toggle('dimmed', false);
+          const isSelectedEdge = state.selectedId && (edge.source === state.selectedId || edge.target === state.selectedId);
+          path.classList.toggle('selected', isSelectedEdge);
           const edgeText = String(edge.label || edge.prefix || edge.mac_address || edge.remote_sys_name || edge.source_port || edge.target_port || edge.peer_name || '').toLowerCase();
           const activeByQuery = !query || matchedIds.has(edge.source) || matchedIds.has(edge.target) || edgeText.includes(query);
           const activeBySelection = !state.selectedId || activeNeighborIds.has(edge.source) || activeNeighborIds.has(edge.target);
-          element.classList.toggle('dimmed', !(activeByQuery && activeBySelection));
+          const active = activeByQuery && activeBySelection;
+          path.classList.toggle('dimmed', !active);
+          label.classList.toggle('dimmed', !active);
         }}
       }}
 
