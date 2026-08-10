@@ -1616,6 +1616,83 @@ def test_topology_page_renders(monkeypatch):
     assert "ge-0/0/24" in response.text
 
 
+def test_bridge_fdb_mac_records_create_edge(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    client = type("DummyClient", (), {})()
+    client.list_interfaces = AsyncMock(return_value=[])
+    client.find_mac_addresses = AsyncMock(return_value=[
+        {
+            "assigned_object_type": "dcim.interface",
+            "assigned_object": {
+                "name": "ge-0/0/24",
+                "device": {"id": 102, "name": "SW-EDGE-01"},
+            },
+        }
+    ])
+
+    inventory_devices = [
+        {
+            "id": "101",
+            "label": "SWC-01-CPD",
+            "group": "switches",
+            "subgroup": "access",
+            "netbox_device_id": "101",
+            "primary_ip": "10.0.0.40/32",
+            "snmp_mac_address": "D8:44:89:52:A6:B1",
+        }
+    ]
+    netbox_devices = [
+        {
+            "id": 101,
+            "name": "SWC-01-CPD",
+            "status": {"value": "active"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "primary_ip4": {"id": 1, "address": "10.0.0.40/32"},
+        },
+        {
+            "id": 102,
+            "name": "SW-EDGE-01",
+            "status": {"value": "active"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "primary_ip4": {"id": 2, "address": "10.0.0.41/32"},
+        },
+    ]
+    probe_state = {
+        "devices": [
+            {
+                "ip": "10.0.0.40",
+                "sys_name": "SWC-01-CPD",
+                "snmp_mac_address": "D8:44:89:52:A6:B1",
+                "ports": [
+                    {"index": "12", "name": "GigabitEthernet1/0/12", "mac_address": "D8:44:89:52:A6:B1"},
+                ],
+                "bridge_port_map": [
+                    {"bridge_port": "12", "if_index": "12"},
+                ],
+                "bridge_fdb": [
+                    {"mac_address": "00:11:22:33:44:55", "bridge_port": "12"},
+                ],
+            }
+        ]
+    }
+
+    import asyncio
+
+    edges = asyncio.run(new_main._collect_topology_connection_edges(client, inventory_devices, netbox_devices, probe_state))
+
+    assert any(edge["edge_type"] == "bridge-link" and edge["peer_name"] == "SW-EDGE-01" for edge in edges)
+    assert any(edge["target"] == "102" for edge in edges)
+
+
 def test_api_alerts_returns_json(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
