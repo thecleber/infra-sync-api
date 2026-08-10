@@ -3801,7 +3801,7 @@ def _parse_custom_fields_form(form: dict[str, str], *, limit: int = 6) -> dict[s
 
 
 def _default_topology_state() -> dict[str, Any]:
-    return {"entries": []}
+    return {"entries": [], "manual_links": []}
 
 
 def load_network_topology() -> dict[str, Any]:
@@ -3817,6 +3817,13 @@ def _network_topology_entries(state: dict[str, Any] | None) -> list[dict[str, An
         return []
     entries = state.get("entries")
     return [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+
+def _network_topology_manual_links(state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(state, dict):
+        return []
+    links = state.get("manual_links")
+    return [link for link in links if isinstance(link, dict)] if isinstance(links, list) else []
 
 
 def _topology_entry_for_prefix(topology_state: dict[str, Any] | None, prefix_id: Any) -> dict[str, Any] | None:
@@ -4727,6 +4734,29 @@ def _render_topology_rows(
             """
         )
     return "".join(rows) if rows else _render_table_empty("Nenhuma rota cadastrada ainda.", 10)
+
+
+def _render_topology_manual_link_rows(
+    topology_state: dict[str, Any] | None,
+    device_lookup: dict[str, str],
+) -> str:
+    rows = []
+    for link in _network_topology_manual_links(topology_state):
+        source_device = device_lookup.get(_normalize_text(link.get("source_device_id"))) or _normalize_text(link.get("source_device_name")) or "—"
+        target_device = device_lookup.get(_normalize_text(link.get("target_device_id"))) or _normalize_text(link.get("target_device_name")) or "—"
+        rows.append(
+            f"""
+            <tr>
+              <td><strong>{escape(source_device)}</strong></td>
+              <td>{escape(_normalize_text(link.get('source_interface')) or '—')}</td>
+              <td><strong>{escape(target_device)}</strong></td>
+              <td>{escape(_normalize_text(link.get('target_interface')) or '—')}</td>
+              <td>{escape(_normalize_text(link.get('link_notes')) or '—')}</td>
+              <td>{escape(_normalize_text(link.get('updated_at')) or '—')}</td>
+            </tr>
+            """
+        )
+    return "".join(rows) if rows else _render_table_empty("Nenhuma ligação manual cadastrada ainda.", 6)
 
 
 def _topology_device_kind_label(device: dict[str, Any] | None, label: str = "") -> str:
@@ -5890,6 +5920,56 @@ def _topology_graph_payload(
         adjacency[source_id].add(target_id)
         adjacency[target_id].add(source_id)
 
+    for manual_link in _network_topology_manual_links(topology_state):
+        source_id = _related_id(manual_link.get("source_device_id"))
+        target_id = _related_id(manual_link.get("target_device_id"))
+        if not source_id or not target_id:
+            continue
+        source_node = nodes.get(source_id)
+        target_node = nodes.get(target_id)
+        if source_node is None and source_id in netbox_by_id:
+            source_node = ensure_node(source_id, fallback_device=netbox_by_id.get(source_id))
+        if target_node is None and target_id in netbox_by_id:
+            target_node = ensure_node(target_id, fallback_device=netbox_by_id.get(target_id))
+        if source_node is None or target_node is None:
+            continue
+        edge_key = "::".join(
+            sorted((source_id, target_id))
+            + [
+                _normalize_text(manual_link.get("source_interface")),
+                _normalize_text(manual_link.get("target_interface")),
+                "manual-link",
+                _normalize_text(manual_link.get("link_notes")),
+            ]
+        )
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        label_bits = ["Manual"]
+        source_port = _normalize_text(manual_link.get("source_interface"))
+        target_port = _normalize_text(manual_link.get("target_interface"))
+        if source_port or target_port:
+            label_bits.append(f"{source_port or 'porta'} ↔ {target_port or 'porta remota'}")
+        if _normalize_text(manual_link.get("link_notes")):
+            label_bits.append(_normalize_text(manual_link.get("link_notes")))
+        edges.append(
+            {
+                "source": source_id,
+                "target": target_id,
+                "edge_type": "manual-link",
+                "label": " • ".join(label_bits),
+                "prefix": " • ".join(label_bits),
+                "source_port": source_port,
+                "target_port": target_port,
+                "peer_name": _normalize_text(target_node.get("label")) or _normalize_text(target_node.get("netbox_device_name")) or target_id,
+                "mac_address": "",
+            }
+        )
+        degree_map[source_id] = degree_map.get(source_id, 0) + 1
+        degree_map[target_id] = degree_map.get(target_id, 0) + 1
+        adjacency[source_id].add(target_id)
+        adjacency[target_id].add(source_id)
+
     for node_id, node in nodes.items():
         node["degree"] = degree_map.get(node_id, 0)
         node["neighbors"] = sorted(adjacency.get(node_id, set()))
@@ -6013,15 +6093,24 @@ def _render_topology_graph_page(
     prefixes: list[dict[str, Any]],
     topology_state: dict[str, Any] | None,
     page_error: str | None = None,
+    saved: bool = False,
 ) -> str:
     # The interactive canvas is the primary view, while the table below remains as a safe
     # textual fallback for operations and troubleshooting.
     graph_json = json.dumps(graph, ensure_ascii=False).replace("</", "<\\/")
+    device_lookup = {str(device.get("id")): _normalize_text(device.get("name")) for device in graph.get("netbox_devices", []) if isinstance(device, dict)}
+    device_options = _render_device_choice_options(graph.get("netbox_devices", []))
     route_rows = _render_topology_rows(
         prefixes,
         topology_state,
-        {str(device.get("id")): _normalize_text(device.get("name")) for device in graph.get("netbox_devices", []) if isinstance(device, dict)},
+        device_lookup,
     )
+    manual_link_rows = _render_topology_manual_link_rows(topology_state, device_lookup)
+    banner = ""
+    if saved:
+        banner = "<div class='hero'><small>Salvo</small><strong>Ligação manual cadastrada com sucesso.</strong></div>"
+    elif page_error:
+        banner = f"<div class='hero'><small>Erro</small><strong>{escape(page_error)}</strong></div>"
 
     body = f"""
     <style>
@@ -6299,13 +6388,52 @@ def _render_topology_graph_page(
           <a class="btn primary" href="/networks#results">Abrir roteamento</a>
         </div>
       </section>
-      {f'<div class="hero"><small>Erro</small><strong>{escape(page_error)}</strong></div>' if page_error else ''}
+      {banner}
       <section class="topology-stats">
         <div class="topology-stat"><span class="label">Dispositivos localizados</span><strong>{graph.get("discovered_count", len(graph["nodes"]))}</strong></div>
         <div class="topology-stat"><span class="label">Switches / rede</span><strong>{graph.get("network_count", 0)}</strong></div>
         <div class="topology-stat"><span class="label">Ligações físicas</span><strong>{len(graph["edges"])}</strong></div>
         <div class="topology-stat"><span class="label">Nó central</span><strong>{escape(_normalize_text(graph["nodes"][0]["label"]) if graph["nodes"] else "—")}</strong></div>
         <div class="topology-stat"><span class="label">Prefixos IPAM</span><strong>{len(prefixes)}</strong></div>
+      </section>
+      <section class="topology-panel" style="padding:18px;">
+        <div class="topology-hero" style="margin-bottom:14px;">
+          <div>
+            <div class="topology-kicker">Ligação manual</div>
+            <h3 style="margin:6px 0 0;">Cadastrar conexão entre devices</h3>
+            <p class="topology-sub" style="margin:8px 0 0; max-width:100%;">Quando a descoberta automática não encontrar todos os vizinhos, use este formulário para ligar source e target por device e porta. A ligação entra imediatamente no mapa.</p>
+          </div>
+        </div>
+        <form method="post" action="/topology/save" class="form-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+          <div class="field">
+            <label>Device origem</label>
+            <select name="source_device_id">
+              {device_options}
+            </select>
+          </div>
+          <div class="field">
+            <label>Porta origem</label>
+            <input name="source_interface" type="text" placeholder="Ethernet1/0/1" />
+          </div>
+          <div class="field">
+            <label>Device destino</label>
+            <select name="target_device_id">
+              {device_options}
+            </select>
+          </div>
+          <div class="field">
+            <label>Porta destino</label>
+            <input name="target_interface" type="text" placeholder="ge-0/0/24" />
+          </div>
+          <div class="field" style="grid-column: 1 / -1;">
+            <label>Observações</label>
+            <input name="link_notes" type="text" placeholder="Ex.: uplink manual confirmado no CPD" />
+          </div>
+          <div style="grid-column: 1 / -1; display:flex; gap:10px; flex-wrap:wrap;">
+            <button class="btn primary" type="submit">Salvar conexão</button>
+            <a class="btn" href="/topology">Recarregar mapa</a>
+          </div>
+        </form>
       </section>
       <section class="topology-workspace">
         <div class="topology-panel">
@@ -6345,6 +6473,7 @@ def _render_topology_graph_page(
             <span><i style="background:#7c3aed"></i>Wireless</span>
             <span><i style="background:#f97316"></i>Usuário</span>
             <span><i style="background:#34d399"></i>Ligação ativa</span>
+            <span><i style="background:#f472b6"></i>Ligação manual</span>
           </div>
         </div>
         <aside class="topology-panel topology-detail">
@@ -6366,6 +6495,17 @@ def _render_topology_graph_page(
               <div class="glpi-info-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
                 <div class="glpi-info-item"><span class="label">Grau</span><strong id="topology-detail-degree">0</strong></div>
                 <div class="glpi-info-item"><span class="label">Prefixos</span><strong id="topology-detail-prefixes">0</strong></div>
+              </div>
+            </div>
+            <div class="panel" style="margin:0; background:rgba(15,23,42,.65);">
+              <h4 style="margin:0 0 10px;">Conexões manuais</h4>
+              <div style="overflow:auto; max-height:220px;">
+                <table style="min-width:100%;">
+                  <thead>
+                    <tr><th>Origem</th><th>Porta</th><th>Destino</th><th>Porta</th><th>Obs</th><th>Atualizado</th></tr>
+                  </thead>
+                  <tbody>{manual_link_rows}</tbody>
+                </table>
               </div>
             </div>
             <div class="panel" style="margin:0; background:rgba(15,23,42,.65);">
@@ -6475,6 +6615,9 @@ def _render_topology_graph_page(
         }}
         if (edge.edge_type === 'mac-link') {{
           return {{ stroke: '#22c55e', width: 3.2, dash: '' }};
+        }}
+        if (edge.edge_type === 'manual-link') {{
+          return {{ stroke: '#f472b6', width: 3.6, dash: '12 4' }};
         }}
         if (edge.edge_type === 'device-link') {{
           return {{ stroke: '#34d399', width: 2.8, dash: '6 4' }};
@@ -6707,7 +6850,7 @@ def _render_topology_graph_page(
 
         for (const [pairKey, edges] of groupedEdges.entries()) {{
           const ordered = edges.slice().sort((left, right) => {{
-            const priority = (value) => value === 'lldp-link' ? 0 : value === 'cdp-link' ? 1 : value === 'bridge-link' ? 2 : value === 'mac-link' ? 3 : value === 'device-link' ? 4 : 9;
+            const priority = (value) => value === 'lldp-link' ? 0 : value === 'cdp-link' ? 1 : value === 'bridge-link' ? 2 : value === 'mac-link' ? 3 : value === 'manual-link' ? 4 : value === 'device-link' ? 5 : 9;
             return priority(left.edge_type) - priority(right.edge_type) || String(left.label || left.prefix || '').localeCompare(String(right.label || right.prefix || ''));
           }});
           for (const [index, edge] of ordered.entries()) {{
@@ -7260,12 +7403,12 @@ async def save_network_page(request: Request):
 
 
 @app.get("/topology", include_in_schema=False)
-async def topology_page(request: Request):
+async def topology_page(request: Request, saved: int = 0, error: str | None = None):
     client = request.app.state.netbox_client
     prefixes: list[dict[str, Any]] = []
     devices: list[dict[str, Any]] = []
     topology_state = load_network_topology()
-    page_error: str | None = None
+    page_error: str | None = error
     discovery_state = load_last_scan()
     probe_state = load_last_probe()
     try:
@@ -7281,7 +7424,54 @@ async def topology_page(request: Request):
     except Exception:
         connection_edges = []
     graph = _topology_graph_payload(prefixes, topology_state, inventory_devices, devices, connection_edges, netbox_by_mac)
-    return HTMLResponse(_render_topology_graph_page(graph, prefixes, topology_state, page_error=page_error))
+    return HTMLResponse(_render_topology_graph_page(graph, prefixes, topology_state, page_error=page_error, saved=bool(saved)))
+
+
+@app.post("/topology/save", include_in_schema=False)
+async def save_topology_link_page(request: Request):
+    form = await _read_urlencoded_form(request)
+    source_device_id = _form_value(form, "source_device_id")
+    target_device_id = _form_value(form, "target_device_id")
+    source_interface = _form_value(form, "source_interface")
+    target_interface = _form_value(form, "target_interface")
+    link_notes = _form_value(form, "link_notes")
+    if not source_device_id or not target_device_id:
+        return RedirectResponse(url="/topology?error=Selecione%20os%20devices%20de%20origem%20e%20destino.", status_code=status.HTTP_303_SEE_OTHER)
+    client = await _get_netbox_client_or_error(request)
+    try:
+        devices = await client.list_all("/api/dcim/devices/", params={"limit": 200})
+    except Exception as exc:
+        return RedirectResponse(url=f"/topology?error={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
+    device_lookup = {str(device.get("id")): device for device in devices if isinstance(device, dict)}
+    source_device = device_lookup.get(source_device_id)
+    target_device = device_lookup.get(target_device_id)
+    if not source_device or not target_device:
+        return RedirectResponse(url="/topology?error=Device%20de%20origem%20ou%20destino%20nao%20encontrado.", status_code=status.HTTP_303_SEE_OTHER)
+    topology_state = load_network_topology()
+    manual_links = _network_topology_manual_links(topology_state)
+    entry = {
+        "source_device_id": source_device_id,
+        "source_device_name": _normalize_text(source_device.get("name")),
+        "source_interface": source_interface,
+        "target_device_id": target_device_id,
+        "target_device_name": _normalize_text(target_device.get("name")),
+        "target_interface": target_interface,
+        "link_notes": link_notes,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    updated = False
+    entry_key = "::".join(sorted([source_device_id, target_device_id]) + [source_interface.lower(), target_interface.lower()])
+    for existing in manual_links:
+        existing_key = "::".join(sorted([_normalize_text(existing.get("source_device_id")), _normalize_text(existing.get("target_device_id"))]) + [_normalize_text(existing.get("source_interface")).lower(), _normalize_text(existing.get("target_interface")).lower()])
+        if existing_key == entry_key:
+            existing.update({key: value for key, value in entry.items() if value != ""})
+            updated = True
+            break
+    if not updated:
+        manual_links.append({key: value for key, value in entry.items() if value != ""})
+    topology_state["manual_links"] = manual_links
+    save_network_topology(topology_state)
+    return RedirectResponse(url="/topology?saved=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/api/alerts")

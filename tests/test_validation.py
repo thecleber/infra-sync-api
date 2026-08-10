@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pydantic import ValidationError
 from fastapi.testclient import TestClient
@@ -1926,6 +1928,55 @@ def test_topology_graph_payload_merges_generic_label_with_better_device():
     assert node["group"] == "switches"
 
 
+def test_topology_graph_payload_includes_manual_links():
+    prefixes = []
+    topology_state = {
+        "entries": [],
+        "manual_links": [
+            {
+                "source_device_id": "101",
+                "source_device_name": "SWC-01-CPD",
+                "source_interface": "Ethernet1/0/8",
+                "target_device_id": "102",
+                "target_device_name": "SW-EDGE-01",
+                "target_interface": "ge-0/0/24",
+                "link_notes": "uplink manual",
+            }
+        ],
+    }
+    inventory_devices = [
+        {
+            "id": "101",
+            "label": "SWC-01-CPD",
+            "group": "switches",
+            "subgroup": "core",
+            "netbox_device_id": "101",
+            "netbox_device_name": "SWC-01-CPD",
+            "primary_ip": "10.0.0.40/32",
+        },
+        {
+            "id": "102",
+            "label": "SW-EDGE-01",
+            "group": "switches",
+            "subgroup": "access",
+            "netbox_device_id": "102",
+            "netbox_device_name": "SW-EDGE-01",
+            "primary_ip": "10.0.0.41/32",
+        },
+    ]
+    netbox_devices = [
+        {"id": 101, "name": "SWC-01-CPD", "status": {"value": "active"}, "site": {"id": 1, "name": "ECVITORIA"}, "role": {"id": 2, "name": "Switch"}, "primary_ip4": {"id": 1, "address": "10.0.0.40/32"}},
+        {"id": 102, "name": "SW-EDGE-01", "status": {"value": "active"}, "site": {"id": 1, "name": "ECVITORIA"}, "role": {"id": 2, "name": "Switch"}, "primary_ip4": {"id": 2, "address": "10.0.0.41/32"}},
+    ]
+    graph = new_main._topology_graph_payload(prefixes, topology_state, inventory_devices, netbox_devices, [], {})
+
+    manual_edge = next(edge for edge in graph["edges"] if edge["edge_type"] == "manual-link")
+    assert manual_edge["source"] == "101"
+    assert manual_edge["target"] == "102"
+    assert "uplink manual" in manual_edge["label"]
+    assert any(node["id"] == "101" and node["degree"] == 1 for node in graph["nodes"])
+
+
 def test_topology_graph_payload_keeps_parallel_links_between_same_devices():
     prefixes = []
     topology_state = None
@@ -1964,6 +2015,39 @@ def test_topology_graph_payload_keeps_parallel_links_between_same_devices():
     assert len(bridge_edges) == 1
     assert "00:11:22:33:44:55" in bridge_edges[0]["mac_address"]
     assert "00:11:22:33:44:66" in bridge_edges[0]["mac_address"]
+
+
+def test_topology_save_manual_link_persists(tmp_path, monkeypatch):
+    monkeypatch.setattr(new_main, "TOPOLOGY_CONFIG_PATH", tmp_path / "network_topology.json")
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/topology/save",
+            data={
+                "source_device_id": "101",
+                "source_interface": "Ethernet1/0/8",
+                "target_device_id": "102",
+                "target_interface": "ge-0/0/24",
+                "link_notes": "uplink manual",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    saved_state = json.loads((tmp_path / "network_topology.json").read_text(encoding="utf-8"))
+    links = saved_state.get("manual_links", [])
+    assert len(links) == 1
+    assert links[0]["source_device_id"] == "101"
+    assert links[0]["target_device_id"] == "102"
+    assert links[0]["source_interface"] == "Ethernet1/0/8"
+    assert links[0]["target_interface"] == "ge-0/0/24"
 
 
 def test_topology_graph_payload_hides_unresolved_mac_leaf_nodes():
