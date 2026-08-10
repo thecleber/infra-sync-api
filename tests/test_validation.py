@@ -1645,6 +1645,37 @@ def test_allowed_client_cidrs_normalize():
     assert len(settings.allowed_client_networks()) == 4
 
 
+def test_private_client_ip_is_allowed(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/topology", headers={"X-Forwarded-For": "192.168.10.25"}, follow_redirects=False)
+
+    assert response.status_code == 200
+
+
+def test_public_client_ip_is_blocked(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/topology", headers={"X-Forwarded-For": "8.8.8.8"}, follow_redirects=False)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Client IP not allowed"
+
+
 def test_alerts_email_send_redirects_with_info(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")

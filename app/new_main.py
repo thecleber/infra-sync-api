@@ -526,8 +526,8 @@ def get_client(request: Request) -> NetBoxClient:
 @app.middleware("http")
 async def restrict_client_networks(request: Request, call_next):
     settings: Settings | None = getattr(request.app.state, "settings", None)
-    client = request.client
-    client_host = getattr(client, "host", None)
+    forwarded_for = _normalize_text(request.headers.get("x-forwarded-for"))
+    client_host = forwarded_for.split(",", 1)[0].strip() if forwarded_for else getattr(request.client, "host", None)
 
     if settings is not None and client_host:
         try:
@@ -535,7 +535,7 @@ async def restrict_client_networks(request: Request, call_next):
         except ValueError:
             client_ip = None
         if client_ip is not None:
-            allowed = any(client_ip in network for network in settings.allowed_client_networks())
+            allowed = client_ip.is_private or client_ip.is_loopback or any(client_ip in network for network in settings.allowed_client_networks())
             if not allowed:
                 return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Client IP not allowed"})
 
