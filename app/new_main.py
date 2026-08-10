@@ -4868,23 +4868,24 @@ def _topology_build_node(
     subgroup = _normalize_text(discovered.get("subgroup")).lower()
     system_status = _normalize_text(discovered.get("system_status"))
     inventory_kind = _inventory_kind_for_device(netbox_device) if isinstance(netbox_device, dict) else "other"
-    if group in {"switches", "routers", "network"}:
-        inventory_kind = "network"
-    elif group in {"servers"}:
-        inventory_kind = "servers"
-    elif group in {"aps", "wireless"}:
-        inventory_kind = "wireless"
-    elif group in {"printers"}:
-        inventory_kind = "printers"
-    elif group in {"phones"}:
-        inventory_kind = "phones"
-    elif group in {"hosts", "computers"}:
-        inventory_kind = "computers"
+    if inventory_kind == "other":
+        if group in {"switches", "routers", "network"}:
+            inventory_kind = "network"
+        elif group in {"servers"}:
+            inventory_kind = "servers"
+        elif group in {"aps", "wireless"}:
+            inventory_kind = "wireless"
+        elif group in {"printers"}:
+            inventory_kind = "printers"
+        elif group in {"phones"}:
+            inventory_kind = "phones"
+        elif group in {"hosts", "computers"}:
+            inventory_kind = "computers"
 
     node = {
         "id": node_id or label,
         "label": label,
-        "kind": _topology_device_kind_label(discovered if discovered else netbox_device, label),
+        "kind": _topology_device_kind_label(netbox_device if source_device else discovered, label),
         "inventory_kind": inventory_kind,
         "group": group,
         "subgroup": subgroup,

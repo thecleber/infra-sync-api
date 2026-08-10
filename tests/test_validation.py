@@ -1921,6 +1921,8 @@ def test_topology_graph_payload_merges_generic_label_with_better_device():
     assert node["label"] == "SW-21-BASE ADM 01-DADOS"
     assert node["netbox_device_name"] == "SW-21-BASE ADM 01-DADOS"
     assert node["snmp_mac_address"] == "00:11:22:33:44:55"
+    assert node["kind"] == "Rede"
+    assert node["inventory_kind"] == "network"
 
 
 def test_topology_graph_payload_keeps_parallel_links_between_same_devices():
