@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 from app.config import Settings, get_settings
 from app import new_main
+from app import snmp_probe
 from app.main import app
 from app import discovery as discovery_module
 from app.discovery import DiscoveredDevice, classify_discovered_device, scan_network
@@ -1360,6 +1361,17 @@ def test_snmp_probe_post_renders_success(monkeypatch):
 
     assert response.status_code == 200
     assert "Leitura SNMP atualizada com sucesso" in response.text
+
+
+def test_clean_value_prefers_pretty_print_for_asn1_like_values():
+    class FakeOctetString:
+        def prettyPrint(self):
+            return "SWC-03-CPD"
+
+        def __getitem__(self, index):
+            raise AssertionError("ASN.1 values must not be indexed as sequences")
+
+    assert snmp_probe._clean_value(FakeOctetString()) == "SWC-03-CPD"
 
 
 def test_snmp_sync_post_sends_ports_to_netbox(monkeypatch):

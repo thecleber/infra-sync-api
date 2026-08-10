@@ -655,15 +655,8 @@ def _clean_text(value: Any) -> str:
 
 
 def _clean_value(var_bind: Any) -> str:
-    value: Any | None = None
     if isinstance(var_bind, (tuple, list)) and len(var_bind) >= 2:
         value = var_bind[1]
-    else:
-        try:
-            value = var_bind[1]
-        except Exception:
-            value = None
-    if value is not None:
         if hasattr(value, "prettyPrint"):
             return _clean_text(value.prettyPrint())
         return _clean_text(value)
