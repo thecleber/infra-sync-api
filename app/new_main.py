@@ -4839,6 +4839,7 @@ def _topology_build_node(
     source_device = fallback_device if isinstance(fallback_device, dict) else None
     discovered = device if isinstance(device, dict) else {}
     netbox_device = source_device or discovered
+    is_placeholder_source = bool(_normalize_text(discovered.get("topology_placeholder")))
     node_id = (
         _related_id(discovered.get("netbox_device_id"))
         or _related_id(netbox_device.get("id"))
@@ -4847,7 +4848,7 @@ def _topology_build_node(
     )
     label = (
         _normalize_text(discovered.get("netbox_device_name"))
-        or _topology_device_name(netbox_device)
+        or ("" if is_placeholder_source else _topology_device_name(netbox_device))
         or _normalize_text(discovered.get("sys_name"))
         or _normalize_text(discovered.get("ip"))
         or f"Device {node_id}"
@@ -4899,7 +4900,7 @@ def _topology_build_node(
         "ports_count": len(discovered.get("ports")) if isinstance(discovered.get("ports"), list) else 0,
         "ports": [port for port in discovered.get("ports", []) if isinstance(port, dict)] if isinstance(discovered.get("ports"), list) else [],
         "netbox_device_id": _related_id(discovered.get("netbox_device_id")) or _related_id(netbox_device.get("id")),
-        "netbox_device_name": _normalize_text(netbox_device.get("name")) or _normalize_text(discovered.get("netbox_device_name")),
+        "netbox_device_name": "" if is_placeholder_source else (_normalize_text(netbox_device.get("name")) or _normalize_text(discovered.get("netbox_device_name"))),
         "snmp_mac_address": snmp_mac_address,
         "mac_address": snmp_mac_address,
         "device_link": f"/devices/view/{_related_id(discovered.get('netbox_device_id')) or _related_id(netbox_device.get('id'))}" if (_related_id(discovered.get("netbox_device_id")) or _related_id(netbox_device.get("id"))) else "",
@@ -5765,7 +5766,7 @@ def _topology_graph_payload(
         if target_device is not None:
             ensure_node(target_id, source_device=target_device, fallback_device=target_device)
         else:
-            placeholder = {"id": target_id, "name": _normalize_text(edge.get("peer_name")) or f"Device {target_id}"}
+            placeholder = {"id": target_id, "name": _normalize_text(edge.get("peer_name")) or f"Device {target_id}", "topology_placeholder": True}
             ensure_node(target_id, source_device=placeholder, fallback_device=placeholder)
         edge_key = "::".join(
             sorted((source_id, target_id))
@@ -5816,8 +5817,81 @@ def _topology_graph_payload(
         node["topology_tier"] = tier
         node["topology_score"] = int(node["degree"] or 0) + (20 if tier == "core" else 10 if tier == "distribution" else 0) + min(int(node["prefix_count"] or 0), 6)
 
+    def _is_placeholder_node(node: dict[str, Any]) -> bool:
+        if not isinstance(node, dict):
+            return False
+        if _normalize_text(node.get("topology_tier")).lower() in {"core", "distribution"}:
+            return False
+        if int(node.get("degree") or 0) > 1:
+            return False
+        if _normalize_text(node.get("netbox_device_name")):
+            return False
+        if _normalize_text(node.get("primary_ip")) not in {"", "—"}:
+            return False
+        label = _normalize_text(node.get("label"))
+        if not label:
+            return False
+        if not label.lower().startswith("device "):
+            return False
+        return True
+
+    visible_nodes = {node_id: node for node_id, node in nodes.items() if not _is_placeholder_node(node)}
+    grouped_edges: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for edge in edges:
+        source_id = _normalize_text(edge.get("source"))
+        target_id = _normalize_text(edge.get("target"))
+        if source_id not in visible_nodes or target_id not in visible_nodes:
+            continue
+        edge_type = _normalize_text(edge.get("edge_type")) or "device-link"
+        group_key = tuple(sorted((source_id, target_id)) + [edge_type])
+        grouped_edges.setdefault(group_key, []).append(edge)
+
+    aggregated_edges: list[dict[str, Any]] = []
+    for (left_id, right_id, edge_type), group_edges in grouped_edges.items():
+        first = group_edges[0]
+        source_port_values = [value for value in (_normalize_text(edge.get("source_port")) for edge in group_edges) if value]
+        target_port_values = [value for value in (_normalize_text(edge.get("target_port")) for edge in group_edges) if value]
+        label_values = [value for value in (_normalize_text(edge.get("label")) for edge in group_edges) if value]
+        mac_values = [value for value in (_normalize_text(edge.get("mac_address")) for edge in group_edges) if value]
+        peer_values = [value for value in (_normalize_text(edge.get("peer_name")) for edge in group_edges) if value]
+        unique_source_ports = list(dict.fromkeys(source_port_values))
+        unique_target_ports = list(dict.fromkeys(target_port_values))
+        unique_macs = list(dict.fromkeys(mac_values))
+        unique_labels = list(dict.fromkeys(label_values))
+        label = unique_labels[0] if unique_labels else edge_type.upper()
+        if len(group_edges) > 1:
+            label = f"{label} • +{len(group_edges) - 1} vínculos"
+        aggregated_edges.append({
+            "source": left_id,
+            "target": right_id,
+            "edge_type": edge_type,
+            "prefix": label,
+            "label": label,
+            "source_port": ", ".join(unique_source_ports[:3]),
+            "target_port": ", ".join(unique_target_ports[:3]),
+            "peer_name": peer_values[0] if peer_values else _normalize_text(visible_nodes.get(right_id, {}).get("label")) or right_id,
+            "mac_address": ", ".join(unique_macs[:3]),
+        })
+
+    degree_map = {node_id: 0 for node_id in visible_nodes}
+    adjacency = {node_id: set() for node_id in visible_nodes}
+    for edge in aggregated_edges:
+        source_id = _normalize_text(edge.get("source"))
+        target_id = _normalize_text(edge.get("target"))
+        if source_id not in visible_nodes or target_id not in visible_nodes:
+            continue
+        degree_map[source_id] = degree_map.get(source_id, 0) + 1
+        degree_map[target_id] = degree_map.get(target_id, 0) + 1
+        adjacency[source_id].add(target_id)
+        adjacency[target_id].add(source_id)
+
+    for node_id, node in visible_nodes.items():
+        node["degree"] = degree_map.get(node_id, 0)
+        node["neighbors"] = sorted(adjacency.get(node_id, set()))
+        node["prefix_count"] = len([edge for edge in aggregated_edges if edge["source"] == node_id or edge["target"] == node_id])
+
     ordered_nodes = sorted(
-        nodes.values(),
+        visible_nodes.values(),
         key=lambda item: (
             0 if _normalize_text(item.get("topology_tier")).lower() == "core" else 1 if _normalize_text(item.get("topology_tier")).lower() == "distribution" else 2,
             -int(item.get("topology_score") or item.get("degree") or 0),
@@ -5825,7 +5899,7 @@ def _topology_graph_payload(
             item.get("label", ""),
         ),
     )
-    ordered_edges = sorted(edges, key=lambda item: (item["source"], item["target"], item.get("edge_type", ""), item.get("label", "")))
+    ordered_edges = sorted(aggregated_edges, key=lambda item: (item["source"], item["target"], item.get("edge_type", ""), item.get("label", "")))
     core_nodes = [node["id"] for node in ordered_nodes if _normalize_text(node.get("group")).lower() in {"switches", "routers", "network"} and _normalize_text(node.get("topology_tier")).lower() in {"core", "distribution"}][:8]
     if not core_nodes:
         core_nodes = [node["id"] for node in ordered_nodes[:5]]

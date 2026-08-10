@@ -1919,8 +1919,36 @@ def test_topology_graph_payload_keeps_parallel_links_between_same_devices():
     graph = new_main._topology_graph_payload(prefixes, topology_state, inventory_devices, netbox_devices, connection_edges, {"00:11:22:33:44:55": netbox_devices[1], "00:11:22:33:44:66": netbox_devices[1]})
 
     bridge_edges = [edge for edge in graph["edges"] if edge["source"] == "101" and edge["target"] == "102" and edge["edge_type"] == "bridge-link"]
-    assert len(bridge_edges) == 2
-    assert {edge["mac_address"] for edge in bridge_edges} == {"00:11:22:33:44:55", "00:11:22:33:44:66"}
+    assert len(bridge_edges) == 1
+    assert "00:11:22:33:44:55" in bridge_edges[0]["mac_address"]
+    assert "00:11:22:33:44:66" in bridge_edges[0]["mac_address"]
+
+
+def test_topology_graph_payload_hides_unresolved_mac_leaf_nodes():
+    prefixes = []
+    topology_state = None
+    inventory_devices = [
+        {
+            "id": "101",
+            "label": "SWC-01-CPD",
+            "group": "switches",
+            "subgroup": "core",
+            "netbox_device_id": "101",
+            "netbox_device_name": "SWC-01-CPD",
+            "primary_ip": "10.0.0.40/32",
+        }
+    ]
+    netbox_devices = [
+        {"id": 101, "name": "SWC-01-CPD", "status": {"value": "active"}, "site": {"id": 1, "name": "ECVITORIA"}, "role": {"id": 2, "name": "Switch"}, "primary_ip4": {"id": 1, "address": "10.0.0.40/32"}},
+    ]
+    connection_edges = [
+        {"source": "101", "target": "00:0e:1e:9a:73:d0", "edge_type": "bridge-link", "label": "FDB 00:0e:1e:9a:73:d0", "source_port": "Gi1/0/6", "target_port": "Eth0", "peer_name": "Device 00:0e:1e:9a:73:d0", "mac_address": "00:0e:1e:9a:73:d0"},
+    ]
+
+    graph = new_main._topology_graph_payload(prefixes, topology_state, inventory_devices, netbox_devices, connection_edges, {})
+
+    assert all(not str(node.get("label", "")).startswith("Device ") for node in graph["nodes"])
+    assert graph["edge_count"] == 0
 
 
 def test_api_alerts_returns_json(monkeypatch):
