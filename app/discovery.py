@@ -591,7 +591,7 @@ def _guess_manufacturer(text: str) -> str:
         return "Hikvision"
     if "dahua" in text:
         return "Dahua"
-    if "tp-link" in text or "tplink" in text or "sg" in text:
+    if "tp-link" in text or "tplink" in text or "tl-sg" in text or "jetstream" in text:
         return "TP-Link"
     if "dell" in text or "idrac" in text:
         return "Dell"
@@ -627,10 +627,30 @@ def _looks_like_hikvision_switch(text: str, manufacturer: str, model: str = "") 
     return bool(re.search(r"\bds-3[et][a-z0-9][a-z0-9\-/()]*\b", normalized, re.IGNORECASE))
 
 
+def _looks_like_tplink_switch(text: str, manufacturer: str, model: str = "") -> bool:
+    normalized = " ".join(part for part in (text, manufacturer, model) if part).lower()
+    if "tp-link" not in normalized and "tplink" not in normalized and "tl-sg" not in normalized and "jetstream" not in normalized:
+        return False
+    if any(
+        token in normalized
+        for token in (
+            "switch",
+            "managed switch",
+            "smart switch",
+            "poe switch",
+            "jetstream",
+        )
+    ):
+        return True
+    return bool(re.search(r"\btl-?sg\d+[a-z0-9\-/()]*\b", normalized, re.IGNORECASE))
+
+
 def _guess_model(sys_descr: str, sys_name: str, manufacturer: str) -> str:
     combined = " ".join(part for part in (sys_descr, sys_name) if part).strip()
     patterns = [
         r"\b(DS-3[ET][A-Z0-9][A-Z0-9\-/()]*?)\b",
+        r"\b(TL-?SG\d+[A-Z0-9\-/()]*)\b",
+        r"\b(TL-[A-Z0-9]+\d+[A-Z0-9\-/()]*)\b",
         r"(CCR\d+[A-Z0-9+\-]*)",
         r"(SG\d+[A-Z0-9+\-]*)",
         r"(S\d{4}[A-Z0-9+\-]*)",
@@ -654,6 +674,8 @@ def _guess_device_type(text: str, manufacturer: str, model: str) -> str:
     if any(token in text for token in ("nvr", "network video recorder", "dvr", "digital video recorder", "xvr")):
         return "recorder"
     if _looks_like_hikvision_switch(text, manufacturer, model):
+        return "switch"
+    if _looks_like_tplink_switch(text, manufacturer, model):
         return "switch"
     if any(token in text for token in ("switch", "sg", "s2", "omada", "cisco catalyst", "intelbras@switch")):
         return "switch"

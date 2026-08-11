@@ -472,6 +472,18 @@ def test_discovery_classifier_hikvision_switch_prefers_switch():
     assert "Hikvision" in notes
 
 
+def test_discovery_classifier_tplink_switch_prefers_switch():
+    group, subgroup, notes = classify_discovered_device(
+        sys_descr="TP-Link TL-SG2210P JetStream 10-Port Gigabit Smart Switch",
+        sys_name="SW-TP-01",
+        sys_object_id="1.3.6.1.4.1.11863.1.1",
+    )
+
+    assert group == "switches"
+    assert subgroup == "access"
+    assert "TP-Link" in notes
+
+
 @pytest.mark.anyio
 async def test_discovery_scan_handles_partial_snmp_failure(monkeypatch):
     async def fake_scan_single_ip(ip: str, community: str, **kwargs):
