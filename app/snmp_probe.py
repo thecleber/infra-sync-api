@@ -21,6 +21,7 @@ from pysnmp.hlapi.v3arch.asyncio import (
 
 
 SNMP_PROBE_STATE_PATH = Path("data") / "snmp_last_probe.json"
+_DEFAULT_SNMP_COMMUNITIES = ("public", "private")
 
 
 SCALAR_VARIABLES = (
@@ -146,6 +147,33 @@ async def probe_device(
     max_ports: int = 48,
 ) -> dict[str, Any]:
     address = _normalize_private_ipv4(ip)
+    last_error = ""
+    for candidate_community in _community_candidates(community):
+        try:
+            payload = await _probe_device_once(
+                address,
+                candidate_community,
+                timeout=timeout,
+                retries=retries,
+                max_ports=max_ports,
+            )
+            payload["snmp_community"] = candidate_community
+            _persist_probe_snapshot(payload)
+            return payload
+        except SnmpProbeError as exc:
+            last_error = str(exc)
+            continue
+    raise SnmpProbeError(last_error or "SNMP probe failed for all configured communities")
+
+
+async def _probe_device_once(
+    address: str,
+    community: str,
+    *,
+    timeout: float,
+    retries: int,
+    max_ports: int,
+) -> dict[str, Any]:
     scalar_values = await _fetch_scalar_values(address, community, timeout=timeout, retries=retries)
     ports = await _fetch_ports(address, community, timeout=timeout, retries=retries, max_ports=max_ports)
     lldp_neighbors = await _fetch_lldp_neighbors(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
@@ -189,9 +217,7 @@ async def probe_device(
         collected_at=datetime.now(timezone.utc).isoformat(),
         notes=_build_notes(scalar_values, ports, processor_values, lldp_neighbors, cdp_neighbors, bridge_fdb),
     )
-    payload = snapshot.as_dict()
-    _persist_probe_snapshot(payload)
-    return payload
+    return snapshot.as_dict()
 
 
 async def _fetch_scalar_values(ip: str, community: str, *, timeout: float, retries: int) -> dict[str, str]:
@@ -682,6 +708,18 @@ def _normalize_mac(value: str) -> str:
     if len(hex_only) == 12:
         return ":".join(hex_only[i:i + 2] for i in range(0, 12, 2)).upper()
     return cleaned
+
+
+def _community_candidates(raw_community: str) -> list[str]:
+    candidates: list[str] = []
+    for part in re.split(r"[,\n;|]+", _clean_text(raw_community)):
+        candidate = part.strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    for fallback in _DEFAULT_SNMP_COMMUNITIES:
+        if fallback not in candidates:
+            candidates.append(fallback)
+    return candidates
 
 
 def _human_status(value: str) -> str:

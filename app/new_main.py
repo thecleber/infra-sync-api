@@ -2570,7 +2570,7 @@ async def discovery_save(request: Request):
         if operation == "update" and include and is_registered and ip:
             refresh_candidate = await _refresh_discovered_device_from_snmp(
                 refresh_candidate,
-                community=scan_community,
+                community=_normalize_text(refresh_candidate.get("snmp_community") or scan_community) or "public",
                 timeout=scan_timeout,
                 retries=scan_retries,
                 max_ports=scan_max_ports,

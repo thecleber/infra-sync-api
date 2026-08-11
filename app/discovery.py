@@ -29,6 +29,7 @@ DISCOVERY_GROUPS_PATH = Path("data") / "discovery_groups.json"
 DISCOVERY_PROGRESS_PATH = Path("data") / "discovery_scan_progress.json"
 LOGGER = logging.getLogger(__name__)
 _SCAN_PROGRESS_LOCK = asyncio.Lock()
+_DEFAULT_SNMP_COMMUNITIES = ("public", "private")
 
 
 SNMP_VARIABLES = (
@@ -95,6 +96,7 @@ class DiscoveredDevice:
     if_number: str = ""
     hr_memory_size: str = ""
     ucd_load_1: str = ""
+    snmp_community: str = ""
     group: str = "hosts"
     subgroup: str = "fixed"
     include: bool = True
@@ -260,60 +262,66 @@ async def _scan_single_ip(
     async with semaphore:
         engine: SnmpEngine | None = None
         try:
-            engine = SnmpEngine()
-            transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
-            var_binds = [
-                ObjectType(ObjectIdentity(*oid_parts))
-                for _, oid_parts in SNMP_VARIABLES
-            ]
-            error_indication, error_status, error_index, result = await get_cmd(
-                engine,
-                CommunityData(community, mpModel=1),
-                transport,
-                ContextData(),
-                *var_binds,
-            )
-            if error_indication or error_status:
-                return None
+            for candidate_community in _community_candidates(community):
+                engine = SnmpEngine()
+                transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
+                var_binds = [
+                    ObjectType(ObjectIdentity(*oid_parts))
+                    for _, oid_parts in SNMP_VARIABLES
+                ]
+                error_indication, error_status, error_index, result = await get_cmd(
+                    engine,
+                    CommunityData(candidate_community, mpModel=1),
+                    transport,
+                    ContextData(),
+                    *var_binds,
+                )
+                if error_indication or error_status:
+                    engine.close_dispatcher()
+                    engine = None
+                    continue
 
-            values = _extract_values(result)
-            sys_descr = values.get("sys_descr", "")
-            sys_name = values.get("sys_name", "")
-            sys_object_id = values.get("sys_object_id", "")
-            if_number = values.get("if_number", "")
-            hr_memory_size = values.get("hr_memory_size", "")
-            ucd_load_1 = values.get("ucd_load_1", "")
-            mac_address = await _fetch_mac_address(ip, community, timeout=timeout, retries=retries)
+                values = _extract_values(result)
+                sys_descr = values.get("sys_descr", "")
+                sys_name = values.get("sys_name", "")
+                sys_object_id = values.get("sys_object_id", "")
+                if_number = values.get("if_number", "")
+                hr_memory_size = values.get("hr_memory_size", "")
+                ucd_load_1 = values.get("ucd_load_1", "")
+                mac_address = await _fetch_mac_address(ip, candidate_community, timeout=timeout, retries=retries)
 
-            if not any((sys_descr, sys_name, sys_object_id, if_number, hr_memory_size, ucd_load_1)):
-                return None
+                if not any((sys_descr, sys_name, sys_object_id, if_number, hr_memory_size, ucd_load_1)):
+                    engine.close_dispatcher()
+                    engine = None
+                    continue
 
-            profile = infer_device_profile(sys_descr=sys_descr, sys_name=sys_name, sys_object_id=sys_object_id)
-            group, subgroup, notes = classify_discovered_device(
-                sys_descr=sys_descr,
-                sys_name=sys_name,
-                sys_object_id=sys_object_id,
-                manufacturer=profile["manufacturer"],
-                model=profile["model"],
-                device_type=profile["device_type"],
-            )
-            return DiscoveredDevice(
-                ip=ip,
-                reachable=True,
-                manufacturer=profile["manufacturer"],
-                model=profile["model"],
-                device_type=profile["device_type"],
-                mac_address=mac_address,
-                sys_descr=sys_descr,
-                sys_name=sys_name,
-                sys_object_id=sys_object_id,
-                if_number=if_number,
-                hr_memory_size=hr_memory_size,
-                ucd_load_1=ucd_load_1,
-                group=group,
-                subgroup=subgroup,
-                notes=notes,
-        )
+                profile = infer_device_profile(sys_descr=sys_descr, sys_name=sys_name, sys_object_id=sys_object_id)
+                group, subgroup, notes = classify_discovered_device(
+                    sys_descr=sys_descr,
+                    sys_name=sys_name,
+                    sys_object_id=sys_object_id,
+                    manufacturer=profile["manufacturer"],
+                    model=profile["model"],
+                    device_type=profile["device_type"],
+                )
+                return DiscoveredDevice(
+                    ip=ip,
+                    reachable=True,
+                    manufacturer=profile["manufacturer"],
+                    model=profile["model"],
+                    device_type=profile["device_type"],
+                    mac_address=mac_address,
+                    sys_descr=sys_descr,
+                    sys_name=sys_name,
+                    sys_object_id=sys_object_id,
+                    if_number=if_number,
+                    hr_memory_size=hr_memory_size,
+                    ucd_load_1=ucd_load_1,
+                    snmp_community=candidate_community,
+                    group=group,
+                    subgroup=subgroup,
+                    notes=notes,
+                )
         except Exception as exc:
             LOGGER.debug("SNMP discovery failed for %s: %s", ip, exc)
             return None
@@ -444,6 +452,7 @@ def _merge_inventory(live_hosts: list[dict[str, str]], snmp_devices: list[Discov
             if_number=device.if_number or existing.if_number,
             hr_memory_size=device.hr_memory_size or existing.hr_memory_size,
             ucd_load_1=device.ucd_load_1 or existing.ucd_load_1,
+            snmp_community=device.snmp_community or existing.snmp_community,
             group=device.group or existing.group,
             subgroup=device.subgroup or existing.subgroup,
             include=device.include,
@@ -710,6 +719,18 @@ def _normalize_mac(value: Any) -> str:
     if len(hex_only) == 12:
         return ":".join(hex_only[i:i + 2] for i in range(0, 12, 2)).upper()
     return cleaned.upper()
+
+
+def _community_candidates(raw_community: str) -> list[str]:
+    candidates: list[str] = []
+    for part in re.split(r"[,\n;|]+", _normalize(raw_community)):
+        candidate = part.strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    for fallback in _DEFAULT_SNMP_COMMUNITIES:
+        if fallback not in candidates:
+            candidates.append(fallback)
+    return candidates
 
 
 def _extract_values(result: tuple[Any, ...]) -> dict[str, str]:

@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -482,6 +483,71 @@ def test_discovery_classifier_tplink_switch_prefers_switch():
     assert group == "switches"
     assert subgroup == "access"
     assert "TP-Link" in notes
+
+
+def test_discovery_community_candidates_include_fallbacks():
+    assert discovery_module._community_candidates("public") == ["public", "private"]
+    assert discovery_module._community_candidates("private,corp") == ["private", "corp", "public"]
+
+
+@pytest.mark.anyio
+async def test_discovery_scan_tries_secondary_community(monkeypatch):
+    class DummyEngine:
+        def close_dispatcher(self):
+            pass
+
+    class DummyCommunityData:
+        def __init__(self, community, mpModel=1):
+            self.community = community
+
+    class DummyTarget:
+        @staticmethod
+        async def create(*args, **kwargs):
+            return object()
+
+    calls = []
+
+    async def fake_get_cmd(engine, community_data, transport, context, *var_binds):
+        calls.append(community_data.community)
+        return None, None, None, community_data.community
+
+    def fake_extract_values(result):
+        if result == "private":
+            return {
+                "sys_descr": "HIKVISION DS-3E1526P-SI 24 Port Gigabit Smart POE Switch",
+                "sys_name": "SW-HIK-01",
+                "sys_object_id": "1.3.6.1.4.1.39136.1.1",
+                "if_number": "24",
+                "hr_memory_size": "1024",
+                "ucd_load_1": "2.5",
+            }
+        return {
+            "sys_descr": "",
+            "sys_name": "",
+            "sys_object_id": "",
+            "if_number": "",
+            "hr_memory_size": "",
+            "ucd_load_1": "",
+        }
+
+    async def fake_fetch_mac_address(ip, community, **kwargs):
+        return "AA:BB:CC:DD:EE:FF" if community == "private" else ""
+
+    monkeypatch.setattr(discovery_module, "SnmpEngine", DummyEngine, raising=True)
+    monkeypatch.setattr(discovery_module, "CommunityData", DummyCommunityData, raising=True)
+    monkeypatch.setattr(discovery_module, "UdpTransportTarget", DummyTarget, raising=True)
+    monkeypatch.setattr(discovery_module, "get_cmd", fake_get_cmd, raising=True)
+    monkeypatch.setattr(discovery_module, "_extract_values", fake_extract_values, raising=True)
+    monkeypatch.setattr(discovery_module, "_fetch_mac_address", fake_fetch_mac_address, raising=True)
+
+    device = await discovery_module._scan_single_ip("10.0.0.52", "public", timeout=0.1, retries=0, semaphore=asyncio.Semaphore(1))
+
+    assert calls == ["public", "private"]
+    assert device is not None
+    assert device.snmp_community == "private"
+    assert device.manufacturer == "Hikvision"
+    assert device.device_type == "switch"
+    assert device.group == "switches"
 
 
 @pytest.mark.anyio
@@ -1516,6 +1582,42 @@ def test_snmp_sync_post_sends_ports_to_netbox(monkeypatch):
     assert "Leitura SNMP atualizada com sucesso" in response.text
     assert synced_payloads[0].ports and synced_payloads[0].ports[0]["name"] == "ge-0/0/1"
     assert synced_payloads[0].mac_address == "AA:BB:CC:DD:EE:FF"
+
+
+@pytest.mark.anyio
+async def test_snmp_probe_falls_back_to_secondary_community(monkeypatch):
+    calls = []
+
+    async def fake_probe_once(address, community, **kwargs):
+        calls.append(community)
+        if community == "public":
+            raise snmp_probe.SnmpProbeError("timeout")
+        return {
+            "ip": address,
+            "reachable": True,
+            "sys_descr": "TP-Link TL-SG2210P JetStream 10-Port Gigabit Smart Switch",
+            "sys_name": "SW-TP-01",
+            "sys_object_id": "1.3.6.1.4.1.11863.1.1",
+            "if_number": "10",
+            "hr_memory_size": "1024",
+            "processor_load_average": "12.5",
+            "processor_loads": [],
+            "ports": [],
+            "lldp_neighbors": [],
+            "cdp_neighbors": [],
+            "bridge_port_map": [],
+            "bridge_fdb": [],
+            "collected_at": "2026-08-11T15:00:00Z",
+            "notes": "ok",
+        }
+
+    monkeypatch.setattr(snmp_probe, "_probe_device_once", fake_probe_once, raising=True)
+
+    payload = await snmp_probe.probe_device("10.0.0.24", "public", timeout=0.1, retries=0, max_ports=24)
+
+    assert calls == ["public", "private"]
+    assert payload["snmp_community"] == "private"
+    assert payload["sys_name"] == "SW-TP-01"
 
 
 def test_cpd_dashboard_config_normalization():
