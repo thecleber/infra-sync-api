@@ -30,6 +30,7 @@ DISCOVERY_PROGRESS_PATH = Path("data") / "discovery_scan_progress.json"
 LOGGER = logging.getLogger(__name__)
 _SCAN_PROGRESS_LOCK = asyncio.Lock()
 _DEFAULT_SNMP_COMMUNITIES = ("public", "private")
+_DEFAULT_SNMP_MP_MODELS = (1, 0)
 
 
 SNMP_VARIABLES = (
@@ -263,65 +264,71 @@ async def _scan_single_ip(
         engine: SnmpEngine | None = None
         try:
             for candidate_community in _community_candidates(community):
-                engine = SnmpEngine()
-                transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
-                var_binds = [
-                    ObjectType(ObjectIdentity(*oid_parts))
-                    for _, oid_parts in SNMP_VARIABLES
-                ]
-                error_indication, error_status, error_index, result = await get_cmd(
-                    engine,
-                    CommunityData(candidate_community, mpModel=1),
-                    transport,
-                    ContextData(),
-                    *var_binds,
-                )
-                if error_indication or error_status:
-                    engine.close_dispatcher()
-                    engine = None
-                    continue
+                for mp_model in _DEFAULT_SNMP_MP_MODELS:
+                    engine = SnmpEngine()
+                    transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
+                    var_binds = [
+                        ObjectType(ObjectIdentity(*oid_parts))
+                        for _, oid_parts in SNMP_VARIABLES
+                    ]
+                    error_indication, error_status, error_index, result = await get_cmd(
+                        engine,
+                        CommunityData(candidate_community, mpModel=mp_model),
+                        transport,
+                        ContextData(),
+                        *var_binds,
+                    )
+                    if error_indication or error_status:
+                        engine.close_dispatcher()
+                        engine = None
+                        continue
 
-                values = _extract_values(result)
-                sys_descr = values.get("sys_descr", "")
-                sys_name = values.get("sys_name", "")
-                sys_object_id = values.get("sys_object_id", "")
-                if_number = values.get("if_number", "")
-                hr_memory_size = values.get("hr_memory_size", "")
-                ucd_load_1 = values.get("ucd_load_1", "")
-                mac_address = await _fetch_mac_address(ip, candidate_community, timeout=timeout, retries=retries)
+                    values = _extract_values(result)
+                    sys_descr = values.get("sys_descr", "")
+                    sys_name = values.get("sys_name", "")
+                    sys_object_id = values.get("sys_object_id", "")
+                    if_number = values.get("if_number", "")
+                    hr_memory_size = values.get("hr_memory_size", "")
+                    ucd_load_1 = values.get("ucd_load_1", "")
+                    mac_address = await _fetch_mac_address(ip, candidate_community, timeout=timeout, retries=retries, mp_model=mp_model)
 
-                if not any((sys_descr, sys_name, sys_object_id, if_number, hr_memory_size, ucd_load_1)):
-                    engine.close_dispatcher()
-                    engine = None
-                    continue
+                    if not any((sys_descr, sys_name, sys_object_id, if_number, hr_memory_size, ucd_load_1)):
+                        engine.close_dispatcher()
+                        engine = None
+                        continue
 
-                profile = infer_device_profile(sys_descr=sys_descr, sys_name=sys_name, sys_object_id=sys_object_id)
-                group, subgroup, notes = classify_discovered_device(
-                    sys_descr=sys_descr,
-                    sys_name=sys_name,
-                    sys_object_id=sys_object_id,
-                    manufacturer=profile["manufacturer"],
-                    model=profile["model"],
-                    device_type=profile["device_type"],
-                )
-                return DiscoveredDevice(
-                    ip=ip,
-                    reachable=True,
-                    manufacturer=profile["manufacturer"],
-                    model=profile["model"],
-                    device_type=profile["device_type"],
-                    mac_address=mac_address,
-                    sys_descr=sys_descr,
-                    sys_name=sys_name,
-                    sys_object_id=sys_object_id,
-                    if_number=if_number,
-                    hr_memory_size=hr_memory_size,
-                    ucd_load_1=ucd_load_1,
-                    snmp_community=candidate_community,
-                    group=group,
-                    subgroup=subgroup,
-                    notes=notes,
-                )
+                    profile = infer_device_profile(
+                        sys_descr=sys_descr,
+                        sys_name=sys_name,
+                        sys_object_id=sys_object_id,
+                        mac_address=mac_address,
+                    )
+                    group, subgroup, notes = classify_discovered_device(
+                        sys_descr=sys_descr,
+                        sys_name=sys_name,
+                        sys_object_id=sys_object_id,
+                        manufacturer=profile["manufacturer"],
+                        model=profile["model"],
+                        device_type=profile["device_type"],
+                    )
+                    return DiscoveredDevice(
+                        ip=ip,
+                        reachable=True,
+                        manufacturer=profile["manufacturer"],
+                        model=profile["model"],
+                        device_type=profile["device_type"],
+                        mac_address=mac_address,
+                        sys_descr=sys_descr,
+                        sys_name=sys_name,
+                        sys_object_id=sys_object_id,
+                        if_number=if_number,
+                        hr_memory_size=hr_memory_size,
+                        ucd_load_1=ucd_load_1,
+                        snmp_community=candidate_community,
+                        group=group,
+                        subgroup=subgroup,
+                        notes=notes,
+                    )
         except Exception as exc:
             LOGGER.debug("SNMP discovery failed for %s: %s", ip, exc)
             return None
@@ -462,14 +469,14 @@ def _merge_inventory(live_hosts: list[dict[str, str]], snmp_devices: list[Discov
     return sorted(inventory.values(), key=lambda item: ipaddress.ip_address(item.ip))
 
 
-async def _fetch_mac_address(ip: str, community: str, *, timeout: float, retries: int) -> str:
+async def _fetch_mac_address(ip: str, community: str, *, timeout: float, retries: int, mp_model: int = 1) -> str:
     engine: SnmpEngine | None = None
     try:
         engine = SnmpEngine()
         transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
         async for error_indication, error_status, error_index, var_binds in walk_cmd(
             engine,
-            CommunityData(community, mpModel=1),
+            CommunityData(community, mpModel=mp_model),
             transport,
             ContextData(),
             ObjectType(ObjectIdentity("1.3.6.1.2.1.2.2.1.6")),
@@ -493,11 +500,13 @@ async def _fetch_mac_address(ip: str, community: str, *, timeout: float, retries
             engine.close_dispatcher()
 
 
-def infer_device_profile(*, sys_descr: str, sys_name: str, sys_object_id: str) -> dict[str, str]:
+def infer_device_profile(*, sys_descr: str, sys_name: str, sys_object_id: str, mac_address: str = "") -> dict[str, str]:
     text = " ".join(part for part in (sys_descr, sys_name, sys_object_id) if part).lower()
     enterprise = _enterprise_hint(sys_object_id)
 
     manufacturer = enterprise.get("manufacturer") or _guess_manufacturer(text)
+    if manufacturer == "Generico":
+        manufacturer = _guess_manufacturer_from_mac(mac_address) or manufacturer
     model = enterprise.get("model") or _guess_model(sys_descr, sys_name, manufacturer)
     device_type = enterprise.get("device_type") or _guess_device_type(text, manufacturer, model)
 
@@ -533,6 +542,54 @@ def infer_device_profile(*, sys_descr: str, sys_name: str, sys_object_id: str) -
         "subgroup": subgroup,
         "notes": notes,
     }
+
+
+def _guess_manufacturer_from_mac(mac_address: str) -> str:
+    normalized = _normalize_mac(mac_address)
+    if not normalized:
+        return ""
+    prefixes = {
+        "A4:D5:C2": "Hikvision",
+        "AC:CB:51": "Hikvision",
+        "B4:A3:82": "Hikvision",
+        "BC:5E:33": "Hikvision",
+        "BC:AD:28": "Hikvision",
+        "C0:51:7E": "Hikvision",
+        "C0:56:E3": "Hikvision",
+        "C0:6D:ED": "Hikvision",
+        "DC:07:F8": "Hikvision",
+        "10:12:FB": "Hikvision",
+        "E0:BA:AD": "Hikvision",
+        "E0:CA:3C": "Hikvision",
+        "E0:DF:13": "Hikvision",
+        "EC:A9:71": "Hikvision",
+        "A4:29:02": "Hikvision",
+        "A4:A4:59": "Hikvision",
+        "80:48:9F": "Hikvision",
+        "E8:A0:ED": "Hikvision",
+        "FC:9F:FD": "Hikvision",
+        "04:03:12": "Hikvision",
+        "0C:75:D2": "Hikvision",
+        "18:68:CB": "Hikvision",
+        "18:80:25": "Hikvision",
+        "24:28:FD": "Hikvision",
+        "28:57:BE": "Hikvision",
+        "34:09:62": "Hikvision",
+        "3C:1B:F8": "Hikvision",
+        "44:47:CC": "Hikvision",
+        "54:8C:81": "Hikvision",
+        "54:C4:15": "Hikvision",
+        "74:3F:C2": "Hikvision",
+        "80:7C:62": "Hikvision",
+        "80:BE:AF": "Hikvision",
+        "84:9A:40": "Hikvision",
+        "98:8B:0A": "Hikvision",
+        "AC:B9:2F": "Hikvision",
+        "BC:9B:5E": "Hikvision",
+        "C4:2F:90": "Hikvision",
+        "D4:E8:53": "Hikvision",
+    }
+    return prefixes.get(normalized[:8], "")
 
 
 def classify_discovered_device(
@@ -600,7 +657,7 @@ def _guess_manufacturer(text: str) -> str:
         return "Hikvision"
     if "dahua" in text:
         return "Dahua"
-    if "tp-link" in text or "tplink" in text or "tl-sg" in text or "jetstream" in text:
+    if "tp-link" in text or "tplink" in text or "tl-sg" in text or "jetstream" in text or "omada" in text:
         return "TP-Link"
     if "dell" in text or "idrac" in text:
         return "Dell"
@@ -638,7 +695,7 @@ def _looks_like_hikvision_switch(text: str, manufacturer: str, model: str = "") 
 
 def _looks_like_tplink_switch(text: str, manufacturer: str, model: str = "") -> bool:
     normalized = " ".join(part for part in (text, manufacturer, model) if part).lower()
-    if "tp-link" not in normalized and "tplink" not in normalized and "tl-sg" not in normalized and "jetstream" not in normalized:
+    if "tp-link" not in normalized and "tplink" not in normalized and "tl-sg" not in normalized and "jetstream" not in normalized and "omada" not in normalized:
         return False
     if any(
         token in normalized
@@ -648,6 +705,7 @@ def _looks_like_tplink_switch(text: str, manufacturer: str, model: str = "") -> 
             "smart switch",
             "poe switch",
             "jetstream",
+            "omada",
         )
     ):
         return True

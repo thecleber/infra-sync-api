@@ -22,6 +22,7 @@ from pysnmp.hlapi.v3arch.asyncio import (
 
 SNMP_PROBE_STATE_PATH = Path("data") / "snmp_last_probe.json"
 _DEFAULT_SNMP_COMMUNITIES = ("public", "private")
+_DEFAULT_SNMP_MP_MODELS = (1, 0)
 
 
 SCALAR_VARIABLES = (
@@ -149,20 +150,23 @@ async def probe_device(
     address = _normalize_private_ipv4(ip)
     last_error = ""
     for candidate_community in _community_candidates(community):
-        try:
-            payload = await _probe_device_once(
-                address,
-                candidate_community,
-                timeout=timeout,
-                retries=retries,
-                max_ports=max_ports,
-            )
-            payload["snmp_community"] = candidate_community
-            _persist_probe_snapshot(payload)
-            return payload
-        except SnmpProbeError as exc:
-            last_error = str(exc)
-            continue
+        for mp_model in _DEFAULT_SNMP_MP_MODELS:
+            try:
+                payload = await _probe_device_once(
+                    address,
+                    candidate_community,
+                    mp_model=mp_model,
+                    timeout=timeout,
+                    retries=retries,
+                    max_ports=max_ports,
+                )
+                payload["snmp_community"] = candidate_community
+                payload["snmp_mp_model"] = mp_model
+                _persist_probe_snapshot(payload)
+                return payload
+            except SnmpProbeError as exc:
+                last_error = str(exc)
+                continue
     raise SnmpProbeError(last_error or "SNMP probe failed for all configured communities")
 
 
@@ -170,17 +174,18 @@ async def _probe_device_once(
     address: str,
     community: str,
     *,
+    mp_model: int = 1,
     timeout: float,
     retries: int,
     max_ports: int,
 ) -> dict[str, Any]:
-    scalar_values = await _fetch_scalar_values(address, community, timeout=timeout, retries=retries)
-    ports = await _fetch_ports(address, community, timeout=timeout, retries=retries, max_ports=max_ports)
-    lldp_neighbors = await _fetch_lldp_neighbors(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
-    cdp_neighbors = await _fetch_cdp_neighbors(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
-    bridge_port_map = await _fetch_bridge_port_map(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
-    bridge_fdb = await _fetch_bridge_fdb(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
-    qbridge_fdb = await _fetch_qbridge_fdb(address, community, timeout=timeout, retries=retries, max_rows=max_ports)
+    scalar_values = await _fetch_scalar_values(address, community, timeout=timeout, retries=retries, mp_model=mp_model)
+    ports = await _fetch_ports(address, community, timeout=timeout, retries=retries, max_ports=max_ports, mp_model=mp_model)
+    lldp_neighbors = await _fetch_lldp_neighbors(address, community, timeout=timeout, retries=retries, max_rows=max_ports, mp_model=mp_model)
+    cdp_neighbors = await _fetch_cdp_neighbors(address, community, timeout=timeout, retries=retries, max_rows=max_ports, mp_model=mp_model)
+    bridge_port_map = await _fetch_bridge_port_map(address, community, timeout=timeout, retries=retries, max_rows=max_ports, mp_model=mp_model)
+    bridge_fdb = await _fetch_bridge_fdb(address, community, timeout=timeout, retries=retries, max_rows=max_ports, mp_model=mp_model)
+    qbridge_fdb = await _fetch_qbridge_fdb(address, community, timeout=timeout, retries=retries, max_rows=max_ports, mp_model=mp_model)
     if not bridge_fdb and qbridge_fdb:
         bridge_fdb = qbridge_fdb
     elif qbridge_fdb:
@@ -193,7 +198,7 @@ async def _probe_device_once(
                 continue
             existing.setdefault(mac_address, entry)
         bridge_fdb = list(existing.values())
-    processor_loads = await _fetch_column(address, community, WALK_COLUMNS["hr_processor_load"], timeout=timeout, retries=retries, max_rows=max_ports)
+    processor_loads = await _fetch_column(address, community, WALK_COLUMNS["hr_processor_load"], timeout=timeout, retries=retries, max_rows=max_ports, mp_model=mp_model)
     processor_values = [value for _, value in processor_loads if value.isdigit()]
     cpu_average = ""
     if processor_values:
@@ -220,14 +225,14 @@ async def _probe_device_once(
     return snapshot.as_dict()
 
 
-async def _fetch_scalar_values(ip: str, community: str, *, timeout: float, retries: int) -> dict[str, str]:
+async def _fetch_scalar_values(ip: str, community: str, *, timeout: float, retries: int, mp_model: int = 1) -> dict[str, str]:
     engine = SnmpEngine()
     try:
         transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
         var_binds = [ObjectType(ObjectIdentity(*oid_parts)) for _, oid_parts in SCALAR_VARIABLES]
         error_indication, error_status, error_index, result = await get_cmd(
             engine,
-            CommunityData(community, mpModel=1),
+            CommunityData(community, mpModel=mp_model),
             transport,
             ContextData(),
             *var_binds,
@@ -251,11 +256,12 @@ async def _fetch_ports(
     timeout: float,
     retries: int,
     max_ports: int,
+    mp_model: int = 1,
 ) -> list[SnmpPortSnapshot]:
     columns = {}
     for key in ("if_name", "if_descr", "if_alias", "if_phys_address", "if_admin_status", "if_oper_status", "if_speed", "if_in_octets", "if_out_octets", "if_hc_in_octets", "if_hc_out_octets"):
         try:
-            columns[key] = await _fetch_column(ip, community, WALK_COLUMNS[key], timeout=timeout, retries=retries, max_rows=max_ports)
+            columns[key] = await _fetch_column(ip, community, WALK_COLUMNS[key], timeout=timeout, retries=retries, max_rows=max_ports, mp_model=mp_model)
         except Exception:
             columns[key] = []
 
@@ -321,11 +327,12 @@ async def _fetch_lldp_neighbors(
     timeout: float,
     retries: int,
     max_rows: int,
+    mp_model: int = 1,
 ) -> list[dict[str, Any]]:
     columns: dict[str, list[tuple[tuple[str, str], str]]] = {}
     for key, oid in LLDP_REMOTE_COLUMNS.items():
         try:
-            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_lldp_index_key)
+            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_lldp_index_key, mp_model=mp_model)
         except Exception:
             columns[key] = []
 
@@ -368,11 +375,12 @@ async def _fetch_cdp_neighbors(
     timeout: float,
     retries: int,
     max_rows: int,
+    mp_model: int = 1,
 ) -> list[dict[str, Any]]:
     columns: dict[str, list[tuple[tuple[str, str], str]]] = {}
     for key, oid in CDP_REMOTE_COLUMNS.items():
         try:
-            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_cdp_index_key)
+            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_cdp_index_key, mp_model=mp_model)
         except Exception:
             columns[key] = []
 
@@ -426,9 +434,10 @@ async def _fetch_bridge_port_map(
     timeout: float,
     retries: int,
     max_rows: int,
+    mp_model: int = 1,
 ) -> list[dict[str, Any]]:
     try:
-        rows = await _fetch_indexed_column(ip, community, BRIDGE_PORT_INDEX_OID, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_bridge_port_index)
+        rows = await _fetch_indexed_column(ip, community, BRIDGE_PORT_INDEX_OID, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_bridge_port_index, mp_model=mp_model)
     except Exception:
         rows = []
     payload: list[dict[str, Any]] = []
@@ -444,6 +453,7 @@ async def _fetch_bridge_fdb(
     timeout: float,
     retries: int,
     max_rows: int,
+    mp_model: int = 1,
 ) -> list[dict[str, Any]]:
     columns: dict[str, list[tuple[str, str]]] = {}
     for key, oid in {
@@ -451,7 +461,7 @@ async def _fetch_bridge_fdb(
         "status": BRIDGE_FDB_STATUS_OID,
     }.items():
         try:
-            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_bridge_fdb_mac_index)
+            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_bridge_fdb_mac_index, mp_model=mp_model)
         except Exception:
             columns[key] = []
 
@@ -484,6 +494,7 @@ async def _fetch_qbridge_fdb(
     timeout: float,
     retries: int,
     max_rows: int,
+    mp_model: int = 1,
 ) -> list[dict[str, Any]]:
     def _qbridge_index(oid: str) -> str | None:
         parts = oid.split(".")
@@ -502,7 +513,7 @@ async def _fetch_qbridge_fdb(
         "status": QBRIDGE_FDB_STATUS_OID,
     }.items():
         try:
-            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_qbridge_index)
+            columns[key] = await _fetch_indexed_column(ip, community, oid, timeout=timeout, retries=retries, max_rows=max_rows, index_parser=_qbridge_index, mp_model=mp_model)
         except Exception:
             columns[key] = []
 
@@ -539,6 +550,7 @@ async def _fetch_indexed_column(
     retries: int,
     max_rows: int,
     index_parser,
+    mp_model: int = 1,
 ) -> list[tuple[Any, str]]:
     engine = SnmpEngine()
     try:
@@ -546,7 +558,7 @@ async def _fetch_indexed_column(
         results: list[tuple[Any, str]] = []
         async for error_indication, error_status, error_index, var_binds in walk_cmd(
             engine,
-            CommunityData(community, mpModel=1),
+            CommunityData(community, mpModel=mp_model),
             transport,
             ContextData(),
             ObjectType(ObjectIdentity(oid)),
@@ -581,6 +593,7 @@ async def _fetch_column(
     timeout: float,
     retries: int,
     max_rows: int,
+    mp_model: int = 1,
 ) -> list[tuple[str, str]]:
     engine = SnmpEngine()
     try:
@@ -588,7 +601,7 @@ async def _fetch_column(
         results: list[tuple[str, str]] = []
         async for error_indication, error_status, error_index, var_binds in walk_cmd(
             engine,
-            CommunityData(community, mpModel=1),
+            CommunityData(community, mpModel=mp_model),
             transport,
             ContextData(),
             ObjectType(ObjectIdentity(*oid_parts)),

@@ -475,7 +475,7 @@ def test_discovery_classifier_hikvision_switch_prefers_switch():
 
 def test_discovery_classifier_tplink_switch_prefers_switch():
     group, subgroup, notes = classify_discovered_device(
-        sys_descr="TP-Link TL-SG2210P JetStream 10-Port Gigabit Smart Switch",
+        sys_descr="TP-Link Omada TL-SG2210P JetStream 10-Port Gigabit Smart Switch",
         sys_name="SW-TP-01",
         sys_object_id="1.3.6.1.4.1.11863.1.1",
     )
@@ -483,6 +483,63 @@ def test_discovery_classifier_tplink_switch_prefers_switch():
     assert group == "switches"
     assert subgroup == "access"
     assert "TP-Link" in notes
+
+
+@pytest.mark.anyio
+async def test_discovery_scan_tries_snmpv1_after_snmpv2(monkeypatch):
+    class DummyEngine:
+        def close_dispatcher(self):
+            pass
+
+    class DummyCommunityData:
+        def __init__(self, community, mpModel=1):
+            self.community = community
+            self.mpModel = mpModel
+
+    class DummyTarget:
+        @staticmethod
+        async def create(*args, **kwargs):
+            return object()
+
+    calls = []
+
+    async def fake_get_cmd(engine, community_data, transport, context, *var_binds):
+        calls.append(community_data.mpModel)
+        if community_data.mpModel == 1:
+            return "timeout", None, None, None
+        return None, None, None, (
+            ("sys_descr", "HIKVISION DS-3E1526P-SI 24 Port Gigabit Smart POE Switch"),
+            ("sys_name", "SW-HIK-01"),
+            ("sys_object_id", "1.3.6.1.4.1.39136.1.1"),
+            ("if_number", "24"),
+            ("hr_memory_size", "1024"),
+            ("ucd_load_1", "2.5"),
+        )
+
+    async def fake_fetch_mac_address(ip, community, **kwargs):
+        return "AA:BB:CC:DD:EE:FF"
+
+    monkeypatch.setattr(discovery_module, "SnmpEngine", DummyEngine, raising=True)
+    monkeypatch.setattr(discovery_module, "CommunityData", DummyCommunityData, raising=True)
+    monkeypatch.setattr(discovery_module, "UdpTransportTarget", DummyTarget, raising=True)
+    monkeypatch.setattr(discovery_module, "get_cmd", fake_get_cmd, raising=True)
+    monkeypatch.setattr(discovery_module, "_extract_values", lambda result: {
+        "sys_descr": "HIKVISION DS-3E1526P-SI 24 Port Gigabit Smart POE Switch",
+        "sys_name": "SW-HIK-01",
+        "sys_object_id": "1.3.6.1.4.1.39136.1.1",
+        "if_number": "24",
+        "hr_memory_size": "1024",
+        "ucd_load_1": "2.5",
+    } if result and result[0][1] == "HIKVISION DS-3E1526P-SI 24 Port Gigabit Smart POE Switch" else {}, raising=True)
+    monkeypatch.setattr(discovery_module, "_fetch_mac_address", fake_fetch_mac_address, raising=True)
+
+    device = await discovery_module._scan_single_ip("10.0.0.52", "public", timeout=0.1, retries=0, semaphore=asyncio.Semaphore(1))
+
+    assert calls == [1, 0]
+    assert device is not None
+    assert device.snmp_community == "public"
+    assert device.manufacturer == "Hikvision"
+    assert device.device_type == "switch"
 
 
 def test_discovery_community_candidates_include_fallbacks():
@@ -542,7 +599,7 @@ async def test_discovery_scan_tries_secondary_community(monkeypatch):
 
     device = await discovery_module._scan_single_ip("10.0.0.52", "public", timeout=0.1, retries=0, semaphore=asyncio.Semaphore(1))
 
-    assert calls == ["public", "private"]
+    assert calls == ["public", "public", "private"]
     assert device is not None
     assert device.snmp_community == "private"
     assert device.manufacturer == "Hikvision"
@@ -1615,8 +1672,9 @@ async def test_snmp_probe_falls_back_to_secondary_community(monkeypatch):
 
     payload = await snmp_probe.probe_device("10.0.0.24", "public", timeout=0.1, retries=0, max_ports=24)
 
-    assert calls == ["public", "private"]
+    assert calls == ["public", "public", "private"]
     assert payload["snmp_community"] == "private"
+    assert payload["snmp_mp_model"] == 1
     assert payload["sys_name"] == "SW-TP-01"
 
 
