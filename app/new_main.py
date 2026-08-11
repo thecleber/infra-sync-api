@@ -526,8 +526,9 @@ def get_client(request: Request) -> NetBoxClient:
 @app.middleware("http")
 async def restrict_client_networks(request: Request, call_next):
     settings: Settings | None = getattr(request.app.state, "settings", None)
-    forwarded_for = _normalize_text(request.headers.get("x-forwarded-for"))
-    client_host = forwarded_for.split(",", 1)[0].strip() if forwarded_for else getattr(request.client, "host", None)
+    # Use the socket peer address instead of trusting X-Forwarded-For, which can be spoofed unless the
+    # app is behind a trusted proxy chain explicitly managed by the deployment.
+    client_host = getattr(request.client, "host", None)
 
     if settings is not None and client_host:
         try:
