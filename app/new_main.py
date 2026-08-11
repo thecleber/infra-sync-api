@@ -3975,6 +3975,19 @@ DEVICE_KIND_LABELS = {
     "passive": "Dispositivos passivos",
     "other": "Outros",
 }
+DEVICE_STATUS_ORDER = ("all", "active", "planned", "offline", "staged", "reserved", "inventory", "decommissioning", "failed", "other")
+DEVICE_STATUS_LABELS = {
+    "all": "Todos",
+    "active": "Ativos",
+    "planned": "Planejados",
+    "offline": "Offline",
+    "staged": "Em homologação",
+    "reserved": "Reservados",
+    "inventory": "Inventário",
+    "decommissioning": "Descomissionando",
+    "failed": "Falha",
+    "other": "Outros",
+}
 
 
 def _inventory_kind_for_device(device: dict[str, Any]) -> str:
@@ -4038,6 +4051,54 @@ def _inventory_kind_counts(devices: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _device_status_key(device: dict[str, Any]) -> str:
+    normalized = _normalize_text(_status_value(device.get("status"), default="active")).lower()
+    if normalized in {"active", "planned", "offline", "staged", "reserved", "inventory", "decommissioning", "failed"}:
+        return normalized
+    if normalized in {"decommissioned", "retired", "disabled"}:
+        return "decommissioning"
+    return "other"
+
+
+def _device_status_counts(devices: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {kind: 0 for kind in DEVICE_STATUS_ORDER}
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        key = _device_status_key(device)
+        counts[key] = counts.get(key, 0) + 1
+        counts["all"] += 1
+    return counts
+
+
+def _device_status_label(status_key: str) -> str:
+    return DEVICE_STATUS_LABELS.get(status_key, DEVICE_STATUS_LABELS["other"])
+
+
+def _device_status_badge(status_key: str) -> str:
+    normalized = _normalize_text(status_key).lower()
+    label = _device_status_label(normalized)
+    if normalized == "active":
+        background, color = "#16a34a", "#ffffff"
+    elif normalized == "planned":
+        background, color = "#f59e0b", "#111827"
+    elif normalized == "offline":
+        background, color = "#dc2626", "#ffffff"
+    elif normalized == "staged":
+        background, color = "#7c3aed", "#ffffff"
+    elif normalized == "reserved":
+        background, color = "#0f766e", "#ffffff"
+    elif normalized == "inventory":
+        background, color = "#2563eb", "#ffffff"
+    elif normalized == "decommissioning":
+        background, color = "#ea580c", "#ffffff"
+    elif normalized == "failed":
+        background, color = "#be123c", "#ffffff"
+    else:
+        background, color = "#475569", "#ffffff"
+    return f'<span style="display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; background:{background}; color:{color}; font-size:12px; font-weight:800;">{escape(label)}</span>'
+
+
 def _inventory_kind_menu(active_kind: str, counts: dict[str, int], search: str = "") -> str:
     items = []
     for kind in DEVICE_KIND_ORDER:
@@ -4045,6 +4106,21 @@ def _inventory_kind_menu(active_kind: str, counts: dict[str, int], search: str =
         count = counts.get(kind, 0)
         active = " active" if kind == active_kind else ""
         query = f"kind={quote(kind)}"
+        if search:
+            query += f"&q={quote(search)}"
+        items.append(
+            f'<a class="inventory-kind-item{active}" href="/devices?{query}"><span>{escape(label)}</span><strong>{count}</strong></a>'
+        )
+    return "".join(items)
+
+
+def _device_status_menu(active_status: str, counts: dict[str, int], search: str = "", kind: str = "all") -> str:
+    items = []
+    for status_key in DEVICE_STATUS_ORDER:
+        label = DEVICE_STATUS_LABELS[status_key]
+        count = counts.get(status_key, 0)
+        active = " active" if status_key == active_status else ""
+        query = f"kind={quote(kind)}&status={quote(status_key)}"
         if search:
             query += f"&q={quote(search)}"
         items.append(
@@ -4419,24 +4495,29 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
     edit_device: dict[str, Any] | None = None
     page_error = error
     active_kind = _query_value(request, "kind", "all") or "all"
+    active_status = _query_value(request, "status", "all") or "all"
     search = _query_value(request, "q")
     try:
         if client is not None:
             params: dict[str, Any] = {"limit": 100}
             if search:
                 params["q"] = search
-            devices = await client.list_devices(params=params)
+            devices = await client.list_all("/api/dcim/devices/", params=params)
             if edit is not None:
                 edit_device = await client.get_device(edit)
     except Exception as exc:
         page_error = str(exc)
 
     inventory_counts = _inventory_kind_counts(devices)
+    status_counts = _device_status_counts(devices)
     if active_kind not in inventory_counts:
         active_kind = "all"
+    if active_status not in status_counts:
+        active_status = "all"
     filtered_devices = [
         device for device in devices
-        if active_kind == "all" or _inventory_kind_for_device(device) == active_kind
+        if (active_kind == "all" or _inventory_kind_for_device(device) == active_kind)
+        and (active_status == "all" or _device_status_key(device) == active_status)
     ]
     selected_device = edit_device or (filtered_devices[0] if filtered_devices else None)
 
@@ -4447,12 +4528,13 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
         model = _normalize_text(device_type.get("model")) if isinstance(device_type, dict) else _relation_label(device.get("device_type"))
         serial = _normalize_text(device.get("serial")) or "—"
         ip_address = _relation_label(device.get("primary_ip4"))
+        status_key = _device_status_key(device)
         rows.append(
             f"""
             <tr>
               <td><a href="/devices/view/{escape(_related_id(device.get('id')))}"><strong>{escape(_normalize_text(device.get('name')) or '?')}</strong></a></td>
               <td>{escape(_relation_label(device.get('site')))}</td>
-              <td>{escape(_relation_label(device.get('status')))}</td>
+              <td>{_device_status_badge(status_key)}</td>
               <td>{escape(manufacturer or '?')}</td>
               <td>{escape(serial)}</td>
               <td>{escape(_inventory_kind_label(_inventory_kind_for_device(device)))}</td>
@@ -4470,22 +4552,27 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
         banner = f"<div class='hero'><small>Erro</small><strong>{escape(page_error)}</strong></div>"
 
     selected_kind = _inventory_kind_label(active_kind)
+    selected_status = _device_status_label(active_status)
     quick_tabs_items = []
     for kind, label in (("all", "Todos"), ("computers", "Computadores"), ("servers", "Servidores"), ("network", "Rede"), ("wireless", "Wireless"), ("printers", "Impressoras")):
         href = f"/devices?kind={quote(kind)}"
+        if active_status != "all":
+            href += f"&status={quote(active_status)}"
         if search:
             href += f"&q={quote(search)}"
         active_class = " active" if kind == active_kind else ""
         quick_tabs_items.append(f'<a class="{active_class}" href="{href}">{escape(label)}</a>')
     quick_tabs = "".join(quick_tabs_items)
+    status_tabs = _device_status_menu(active_status, status_counts, search, active_kind)
     selected_summary = ""
     if isinstance(selected_device, dict):
+        selected_device_status = _device_status_label(_device_status_key(selected_device))
         selected_summary = f"""
         <div class="glpi-card">
           <h3>{escape(_normalize_text(selected_device.get('name')) or 'Device')}</h3>
           <div class="metric-label">Resumo do item</div>
           <div style="display:grid; gap:8px; margin-top:10px;">
-            <div><strong>Status:</strong> {escape(_relation_label(selected_device.get('status')))}</div>
+            <div><strong>Status:</strong> {escape(selected_device_status)}</div>
             <div><strong>Site:</strong> {escape(_relation_label(selected_device.get('site')))}</div>
             <div><strong>Rack:</strong> {escape(_relation_label(selected_device.get('rack')))}</div>
             <div><strong>Tipo:</strong> {escape(_inventory_kind_label(_inventory_kind_for_device(selected_device)))}</div>
@@ -4514,28 +4601,39 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
       <aside class="panel glpi-sidebar">
         <div class="glpi-section-title">Ativos</div>
         <div class="glpi-breadcrumbs"><span>Home</span> / <span>Ativos</span> / {escape(selected_kind)}</div>
+        <div class="glpi-card">
+          <div class="metric-label">Total de devices</div>
+          <div class="metric-value" style="font-size:32px; margin-top:10px;">{len(devices)}</div>
+          <div class="metric-note">Base completa carregada do NetBox.</div>
+        </div>
         <div class="glpi-card" style="margin-top:12px;">
+          <h3>Status</h3>
+          <div class="inventory-kind-menu">
+            {status_tabs}
+          </div>
+        </div>
+        <div class="glpi-card">
           <h3>Menu</h3>
           <div class="inventory-kind-menu">
             {_inventory_kind_menu(active_kind, inventory_counts, search)}
           </div>
         </div>
         <div class="glpi-card">
-          <div class="metric-label">Inventário carregado</div>
-          <div class="metric-value" style="font-size:28px; margin-top:10px;">{len(devices)}</div>
-          <div class="metric-note">Devices cadastrados e carregados do NetBox.</div>
-        </div>
-        <div class="glpi-card">
           <div class="metric-label">Categoria ativa</div>
           <div class="metric-value" style="font-size:24px; margin-top:10px;">{escape(selected_kind)}</div>
           <div class="metric-note">Clique em uma categoria para refinar a lista.</div>
+        </div>
+        <div class="glpi-card">
+          <div class="metric-label">Status ativo</div>
+          <div class="metric-value" style="font-size:24px; margin-top:10px;">{escape(selected_status)}</div>
+          <div class="metric-note">Combine status e categoria para enxergar o inventário por operação.</div>
         </div>
       </aside>
       <section class="panel">
         <div class="glpi-toolbar">
           <div>
-            <h2 style="margin:0 0 4px;">Devices cadastrados</h2>
-            <div class="sub" style="margin:0;">Lista central do inventário com navegação por categoria, como no GLPI.</div>
+            <h2 style="margin:0 0 4px;">Dashboard de devices</h2>
+            <div class="sub" style="margin:0;">Inventário central com navegação por categoria e status, como um painel operacional.</div>
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
             <a class="btn" href="/snmp">Varredura SNMP</a>
@@ -4545,13 +4643,21 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
           </div>
         </div>
         <div class="glpi-tabs">{quick_tabs}</div>
+        <div class="glpi-tabs" style="margin-top:10px;">{status_tabs}</div>
+        <div style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; margin:14px 0 16px;">
+          <div class="metric-card"><div class="metric-label">Total</div><div class="metric-value">{len(devices)}</div><div class="metric-note">Todos os ativos carregados.</div></div>
+          <div class="metric-card"><div class="metric-label">Ativos</div><div class="metric-value">{status_counts.get('active', 0)}</div><div class="metric-note">Prontos para operação.</div></div>
+          <div class="metric-card"><div class="metric-label">Offline</div><div class="metric-value">{status_counts.get('offline', 0)}</div><div class="metric-note">Exigem atenção.</div></div>
+          <div class="metric-card"><div class="metric-label">Planejados</div><div class="metric-value">{status_counts.get('planned', 0)}</div><div class="metric-note">Em implantação.</div></div>
+        </div>
         <div style="display:flex; gap:8px; justify-content:space-between; align-items:end; flex-wrap:wrap; margin-bottom:12px;">
           <div>
             <strong>{len(filtered_devices)} dispositivo(s)</strong>
-            <div class="sub" style="margin:4px 0 0;">Use o filtro para focar em computadores, rede, wireless, impressoras e outros grupos.</div>
+            <div class="sub" style="margin:4px 0 0;">Use o filtro para focar em computadores, rede, wireless, impressoras e também no status operacional.</div>
           </div>
           <form method="get" action="/devices" style="display:flex; gap:8px; align-items:end; flex-wrap:wrap; margin:0;">
             <input type="hidden" name="kind" value="{escape(active_kind)}" />
+            <input type="hidden" name="status" value="{escape(active_status)}" />
             <div class="field" style="margin:0; min-width:260px;"><label for="q">Pesquisar</label><input id="q" name="q" type="text" value="{escape(search)}" placeholder="Nome, IP, fabricante, modelo..." /></div>
             <button class="btn primary" type="submit">Pesquisar</button>
           </form>
@@ -4571,6 +4677,15 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
             <div><div class="metric-label">Rede</div><div class="metric-value" style="font-size:22px;">{inventory_counts.get('network', 0)}</div></div>
             <div><div class="metric-label">Wireless</div><div class="metric-value" style="font-size:22px;">{inventory_counts.get('wireless', 0)}</div></div>
             <div><div class="metric-label">Outros</div><div class="metric-value" style="font-size:22px;">{inventory_counts.get('other', 0)}</div></div>
+          </div>
+        </div>
+        <div class="glpi-card">
+          <h3>Resumo de status</h3>
+          <div style="display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:10px;">
+            <div><div class="metric-label">Ativos</div><div class="metric-value" style="font-size:22px;">{status_counts.get('active', 0)}</div></div>
+            <div><div class="metric-label">Offline</div><div class="metric-value" style="font-size:22px;">{status_counts.get('offline', 0)}</div></div>
+            <div><div class="metric-label">Planejados</div><div class="metric-value" style="font-size:22px;">{status_counts.get('planned', 0)}</div></div>
+            <div><div class="metric-label">Outros</div><div class="metric-value" style="font-size:22px;">{status_counts.get('other', 0)}</div></div>
           </div>
         </div>
       </aside>

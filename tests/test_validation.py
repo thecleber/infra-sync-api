@@ -1453,6 +1453,62 @@ def test_devices_page_filters_computers(monkeypatch):
     assert "NB-13-01" in response.text
     assert "SW-ACCESS-LAN" not in response.text
 
+
+def test_devices_page_renders_status_dashboard(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+    custom_devices = [
+        {
+            "id": 201,
+            "name": "SW-CORE-01",
+            "status": {"value": "active"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "device_type": {
+                "id": 30,
+                "model": "Switch",
+                "manufacturer": {"id": 9, "name": "TP-Link"},
+            },
+            "primary_ip4": {"id": 91, "address": "10.0.0.22/32"},
+            "serial": "TPLINK22",
+        },
+        {
+            "id": 202,
+            "name": "CAM-HALL-01",
+            "status": {"value": "offline"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 3, "name": "Camera"},
+            "device_type": {
+                "id": 31,
+                "model": "Hikvision Camera",
+                "manufacturer": {"id": 10, "name": "Hikvision"},
+            },
+            "primary_ip4": {"id": 92, "address": "10.0.0.52/32"},
+            "serial": "HIK52",
+        },
+    ]
+    monkeypatch.setattr(NetBoxClient, "list_all", AsyncMock(return_value=custom_devices))
+
+    with TestClient(app) as client:
+        response = client.get("/devices", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "Dashboard de devices" in response.text
+    assert "Ativos" in response.text
+    assert "Offline" in response.text
+    assert "TP-Link" in response.text
+    assert "Hikvision" in response.text
+    assert "SW-CORE-01" in response.text
+    assert "CAM-HALL-01" in response.text
+    NetBoxClient.list_all.assert_awaited()
+    assert NetBoxClient.list_all.await_args.args[0] == "/api/dcim/devices/"
+
+
 def test_devices_page_filters_computers(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
