@@ -460,6 +460,18 @@ def test_discovery_classifier_additional_groups(sys_descr, sys_name, expected_gr
     assert "Matched" in notes
 
 
+def test_discovery_classifier_hikvision_switch_prefers_switch():
+    group, subgroup, notes = classify_discovered_device(
+        sys_descr="HIKVISION DS-3E1526P-SI 24 Port Gigabit Smart POE Switch",
+        sys_name="SW-HIK-01",
+        sys_object_id="1.3.6.1.4.1.39136.1.1",
+    )
+
+    assert group == "switches"
+    assert subgroup == "access"
+    assert "Hikvision" in notes
+
+
 @pytest.mark.anyio
 async def test_discovery_scan_handles_partial_snmp_failure(monkeypatch):
     async def fake_scan_single_ip(ip: str, community: str, **kwargs):

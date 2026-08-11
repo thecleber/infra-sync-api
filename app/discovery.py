@@ -564,6 +564,9 @@ def _enterprise_hint(sys_object_id: str) -> dict[str, str]:
         "1.3.6.1.4.1.26138": {"manufacturer": "Intelbras", "device_type": "switch"},
         "1.3.6.1.4.1.42397": {"manufacturer": "Grandstream", "device_type": "wireless_ap"},
         "1.3.6.1.4.1.11863": {"manufacturer": "TP-Link", "device_type": "switch"},
+        "1.3.6.1.4.1.39136": {"manufacturer": "Hikvision"},
+        "1.3.6.1.4.1.39165": {"manufacturer": "Hikvision"},
+        "1.3.6.1.4.1.50001": {"manufacturer": "Hikvision"},
         "1.3.6.1.4.1.674": {"manufacturer": "Dell", "device_type": "server_management"},
         "1.3.6.1.4.1.2435": {"manufacturer": "Brother", "device_type": "printer"},
         "1.3.6.1.4.1.1248": {"manufacturer": "Epson", "device_type": "printer"},
@@ -603,9 +606,31 @@ def _guess_manufacturer(text: str) -> str:
     return "Generico"
 
 
+def _looks_like_hikvision_switch(text: str, manufacturer: str, model: str = "") -> bool:
+    normalized = " ".join(part for part in (text, manufacturer, model) if part).lower()
+    if "hikvision" not in normalized:
+        return False
+    if any(
+        token in normalized
+        for token in (
+            "switch",
+            "network switch",
+            "managed switch",
+            "unmanaged switch",
+            "poe switch",
+            "industrial switch",
+            "layer 2 switch",
+            "layer 3 switch",
+        )
+    ):
+        return True
+    return bool(re.search(r"\bds-3[et][a-z0-9][a-z0-9\-/()]*\b", normalized, re.IGNORECASE))
+
+
 def _guess_model(sys_descr: str, sys_name: str, manufacturer: str) -> str:
     combined = " ".join(part for part in (sys_descr, sys_name) if part).strip()
     patterns = [
+        r"\b(DS-3[ET][A-Z0-9][A-Z0-9\-/()]*?)\b",
         r"(CCR\d+[A-Z0-9+\-]*)",
         r"(SG\d+[A-Z0-9+\-]*)",
         r"(S\d{4}[A-Z0-9+\-]*)",
@@ -626,18 +651,20 @@ def _guess_model(sys_descr: str, sys_name: str, manufacturer: str) -> str:
 def _guess_device_type(text: str, manufacturer: str, model: str) -> str:
     if any(token in text for token in ("printer", "print server", "brother", "epson", "kyocera", "document solutions printing system", "hp ethernet multi-environment", "laserjet", "deskjet")):
         return "printer"
-    if any(token in text for token in ("camera", "cctv", "hikvision", "dahua", "intelbras vhd", "ip cam")):
-        return "camera"
     if any(token in text for token in ("nvr", "network video recorder", "dvr", "digital video recorder", "xvr")):
         return "recorder"
+    if _looks_like_hikvision_switch(text, manufacturer, model):
+        return "switch"
+    if any(token in text for token in ("switch", "sg", "s2", "omada", "cisco catalyst", "intelbras@switch")):
+        return "switch"
+    if any(token in text for token in ("camera", "cctv", "hikvision", "dahua", "intelbras vhd", "ip cam")):
+        return "camera"
     if any(token in text for token in ("routeros", "gateway", "router", "ccr")):
         return "router"
     if any(token in text for token in ("idrac", "ilo", "bmc", "management controller")):
         return "server_management"
     if any(token in text for token in ("access point", "wireless", "ap", "gwn")):
         return "wireless_ap"
-    if any(token in text for token in ("switch", "sg", "s2", "omada", "cisco catalyst", "intelbras@switch")):
-        return "switch"
     if any(token in text for token in ("server", "hypervisor", "proliant", "r720", "r730", "poweredge", "lenovo", "hpe")):
         return "server"
     return "host"
