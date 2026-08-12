@@ -8163,13 +8163,21 @@ async def save_topology_link_page(request: Request):
 @app.get("/api/alerts")
 async def api_alerts(request: Request):
     client: ZabbixClient | None = request.app.state.zabbix_client
+    payload: dict[str, Any]
     if client is None:
-        return {"alerts": [], "count": 0}
-    try:
-        alerts = await client.list_problems(limit=50)
-        return {"alerts": alerts, "count": len(alerts)}
-    except Exception as exc:
-        return {"alerts": [], "count": 0, "error": str(exc)}
+        payload = {"alerts": [], "count": 0}
+    else:
+        try:
+            alerts = await client.list_problems(limit=50)
+            payload = {"alerts": alerts, "count": len(alerts)}
+        except Exception as exc:
+            payload = {"alerts": [], "count": 0, "error": str(exc)}
+    if _request_prefers_html(request):
+        refresh_seconds = _refresh_interval_seconds(request.app.state.runtime)
+        payload = dict(payload)
+        payload["sound"] = request.app.state.runtime.get("alert_sound")
+        return HTMLResponse(_render_alerts_page(payload, refresh_seconds))
+    return payload
 
 
 @app.get("/alerts", include_in_schema=False)
@@ -8187,7 +8195,10 @@ async def alerts_page(request: Request, info: str | None = None, error: str | No
 
 @app.get("/api/cpd")
 async def api_cpd(request: Request):
-    return await _collect_cpd_snapshot(request)
+    snapshot = await _collect_cpd_snapshot(request)
+    if _request_prefers_html(request):
+        return HTMLResponse(_render_cpd_page(snapshot))
+    return snapshot
 
 
 @app.get("/cpd", include_in_schema=False)

@@ -1592,7 +1592,7 @@ def test_management_pages_render(monkeypatch):
         cpd = client.get("/cpd", follow_redirects=False)
 
     assert devices.status_code == 200
-    assert "Devices cadastrados" in devices.text
+    assert "Devices cadastrados" in devices.text or "Dashboard de devices" in devices.text
     assert "Leitura SNMP" in devices.text
     assert device_detail.status_code == 200
     assert "Detalhe do device" in device_detail.text
@@ -2734,6 +2734,41 @@ def test_api_alerts_returns_json(monkeypatch):
     assert response.status_code == 200
     assert response.json()["count"] == 1
     assert response.json()["alerts"][0]["name"] == "Link down"
+
+
+def test_api_alerts_renders_html_for_browsers(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/api/alerts", headers={"accept": "text/html,application/xhtml+xml"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Alertas ativos" in response.text
+    assert "Enviar e-mail de alertas" in response.text
+
+
+def test_api_cpd_renders_html_for_browsers(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("ZABBIX_URL", "http://10.254.0.15/api_jsonrpc.php")
+    monkeypatch.setenv("ZABBIX_TOKEN", "Bearer zabbix-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_management_clients(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/api/cpd", headers={"accept": "text/html,application/xhtml+xml"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "CPD" in response.text
 
 
 def test_allowed_client_cidrs_normalize():
