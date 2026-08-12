@@ -2504,11 +2504,19 @@ async def _read_form(request: Request) -> dict[str, str]:
 
 
 @app.get("/discovery", include_in_schema=False)
-async def discovery_page(request: Request, saved: int = 0, error: str | None = None, network: str | None = None):
+async def discovery_page(
+    request: Request,
+    saved: int = 0,
+    error: str | None = None,
+    network: str | None = None,
+    profile: str | None = None,
+):
     state = load_last_scan()
     state["progress"] = load_scan_progress()
     if network:
         state["network"] = network
+    if profile:
+        state["profile"] = profile
     return HTMLResponse(_render_discovery_page(state, error=error, saved=bool(saved)))
 
 
@@ -2522,12 +2530,16 @@ async def discovery_scan(request: Request):
     form = await _read_form(request)
     network = form.get("network", "10.0.0.0/24").strip()
     community = form.get("community", "public").strip() or "public"
+    profile = _normalize_text(form.get("profile")).lower() or "general"
+    if profile == "general" and network.startswith("192.168.70."):
+        profile = "cftv"
     timeout = float(form.get("timeout", "1.0") or "1.0")
     retries = int(form.get("retries", "0") or "0")
     max_hosts = int(form.get("max_hosts", "4096") or "4096")
     try:
-        payload = await scan_network(network, community, timeout=timeout, retries=retries, max_hosts=max_hosts)
+        payload = await scan_network(network, community, timeout=timeout, retries=retries, max_hosts=max_hosts, profile=profile)
         payload["scan_community"] = community
+        payload["scan_profile"] = profile
         payload["scan_timeout"] = timeout
         payload["scan_retries"] = retries
         payload["scan_max_ports"] = 48
@@ -2542,6 +2554,7 @@ async def discovery_scan(request: Request):
     except Exception as exc:
         state = load_last_scan()
         state["network"] = network
+        state["profile"] = profile
         return HTMLResponse(_render_discovery_page(state, error=str(exc)), status_code=status.HTTP_400_BAD_REQUEST)
 
 
@@ -3427,15 +3440,16 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
         )
 
     selected_network = _normalize_text(state.get("network")) or "10.0.0.0/24"
+    selected_profile = _normalize_text(state.get("profile") or state.get("scan_profile")).lower() or ("cftv" if selected_network.startswith("192.168.70.") else "general")
     network_presets = [
-        ("10.0.0.0/24", "10.0.0.0/24"),
-        ("192.168.70.0/24", "192.168.70.0/24"),
-        ("192.168.0.0/24", "192.168.0.0/24"),
-        ("172.16.0.0/24", "172.16.0.0/24"),
+        ("10.0.0.0/24", "10.0.0.0/24", "general"),
+        ("192.168.70.0/24", "192.168.70.0/24", "cftv"),
+        ("192.168.0.0/24", "192.168.0.0/24", "general"),
+        ("172.16.0.0/24", "172.16.0.0/24", "general"),
     ]
     preset_buttons = "".join(
-        f'<a class="btn" href="/discovery?network={quote(network)}">{escape(label)}</a>'
-        for network, label in network_presets
+        f'<a class="btn" href="/discovery?network={quote(network)}&profile={quote(profile)}">{escape(label)}</a>'
+        for network, label, profile in network_presets
     )
     body = f"""
     <aside class="sidebar">
@@ -3479,6 +3493,13 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             <div class="field">
               <label for="network">Rede</label>
               <input id="network" name="network" type="text" value="{escape(selected_network)}" placeholder="192.168.70.0/24" />
+            </div>
+            <div class="field">
+              <label for="profile">Perfil</label>
+              <select id="profile" name="profile">
+                <option value="general" {"selected" if selected_profile != "cftv" else ""}>Geral</option>
+                <option value="cftv" {"selected" if selected_profile == "cftv" else ""}>CFTV</option>
+              </select>
             </div>
             <div class="field">
               <label for="community">Community</label>

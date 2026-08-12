@@ -30,6 +30,7 @@ DISCOVERY_PROGRESS_PATH = Path("data") / "discovery_scan_progress.json"
 LOGGER = logging.getLogger(__name__)
 _SCAN_PROGRESS_LOCK = asyncio.Lock()
 _DEFAULT_SNMP_COMMUNITIES = ("public", "private")
+_CFTV_SNMP_COMMUNITIES = ("hikvision", "intelbras", "cftv", "camera", "admin", "1234", "12345")
 _DEFAULT_SNMP_MP_MODELS = (1, 0)
 
 
@@ -140,9 +141,11 @@ async def scan_network(
     retries: int = 0,
     max_hosts: int = 4096,
     concurrency: int = 32,
+    profile: str = "general",
 ) -> dict[str, Any]:
     async with _SCAN_PROGRESS_LOCK:
         net = ipaddress.ip_network(network.strip(), strict=False)
+        effective_profile = _infer_discovery_profile(str(net), profile)
         if net.version != 4:
             raise ValueError("Only IPv4 networks are supported for discovery")
         if not net.is_private:
@@ -181,7 +184,16 @@ async def scan_network(
 
         semaphore = asyncio.Semaphore(concurrency)
         tasks = [
-            asyncio.create_task(_scan_single_ip(ip, community, timeout=timeout, retries=retries, semaphore=semaphore))
+            asyncio.create_task(
+                _scan_single_ip(
+                    ip,
+                    community,
+                    timeout=timeout,
+                    retries=retries,
+                    semaphore=semaphore,
+                    profile=effective_profile,
+                )
+            )
             for ip in hosts
         ]
 
@@ -232,6 +244,7 @@ async def scan_network(
             "count": len(combined_devices),
             "alive_hosts": len(live_hosts),
             "snmp_devices": len(snmp_devices),
+            "scan_profile": effective_profile,
             "scanned_at": datetime.now(timezone.utc).isoformat(),
             "devices": [device.as_dict() for device in combined_devices],
         }
@@ -259,11 +272,12 @@ async def _scan_single_ip(
     timeout: float,
     retries: int,
     semaphore: asyncio.Semaphore,
+    profile: str = "general",
 ) -> DiscoveredDevice | None:
     async with semaphore:
         engine: SnmpEngine | None = None
         try:
-            for candidate_community in _community_candidates(community):
+            for candidate_community in _community_candidates(community, profile=profile):
                 for mp_model in _DEFAULT_SNMP_MP_MODELS:
                     engine = SnmpEngine()
                     transport = await UdpTransportTarget.create((ip, 161), timeout=timeout, retries=retries)
@@ -784,7 +798,7 @@ def _normalize_mac(value: Any) -> str:
     return cleaned.upper()
 
 
-def _community_candidates(raw_community: str) -> list[str]:
+def _community_candidates(raw_community: str, profile: str = "general") -> list[str]:
     candidates: list[str] = []
     for part in re.split(r"[,\n;|]+", _normalize(raw_community)):
         candidate = part.strip()
@@ -793,7 +807,22 @@ def _community_candidates(raw_community: str) -> list[str]:
     for fallback in _DEFAULT_SNMP_COMMUNITIES:
         if fallback not in candidates:
             candidates.append(fallback)
+    if _normalize(profile).lower() == "cftv":
+        for fallback in _CFTV_SNMP_COMMUNITIES:
+            if fallback not in candidates:
+                candidates.append(fallback)
     return candidates
+
+
+def _infer_discovery_profile(network: str, profile: str | None = None) -> str:
+    normalized_profile = _normalize(profile).lower()
+    if normalized_profile in {"general", "cftv"}:
+        if normalized_profile == "general" and _normalize(network).startswith("192.168.70."):
+            return "cftv"
+        return normalized_profile
+    if _normalize(network).startswith("192.168.70."):
+        return "cftv"
+    return "general"
 
 
 def _extract_values(result: tuple[Any, ...]) -> dict[str, str]:

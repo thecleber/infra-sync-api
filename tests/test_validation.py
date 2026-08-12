@@ -566,6 +566,9 @@ async def test_discovery_scan_tries_snmpv1_after_snmpv2(monkeypatch):
 def test_discovery_community_candidates_include_fallbacks():
     assert discovery_module._community_candidates("public") == ["public", "private"]
     assert discovery_module._community_candidates("private,corp") == ["private", "corp", "public"]
+    cftv_candidates = discovery_module._community_candidates("public", profile="cftv")
+    assert "hikvision" in cftv_candidates
+    assert "intelbras" in cftv_candidates
 
 
 @pytest.mark.anyio
@@ -680,6 +683,39 @@ async def test_discovery_scan_allows_192_168_private_subnet(monkeypatch):
 
     assert payload["network"] == "192.168.70.0/24"
     assert payload["count"] == 0
+
+
+@pytest.mark.anyio
+async def test_discovery_scan_cftv_profile_enables_extra_candidates(monkeypatch):
+    seen_profiles: list[str] = []
+
+    async def fake_scan_single_ip(ip: str, community: str, **kwargs):
+        seen_profiles.append(str(kwargs.get("profile")))
+        return None
+
+    monkeypatch.setattr(discovery_module, "_scan_single_ip", fake_scan_single_ip, raising=True)
+    monkeypatch.setattr(discovery_module, "_discover_live_hosts_with_nmap", AsyncMock(return_value=[]))
+    payload = await scan_network("192.168.70.0/30", "public", timeout=0.1, retries=0, max_hosts=4096, concurrency=2, profile="cftv")
+
+    assert payload["network"] == "192.168.70.0/30"
+    assert payload["scan_profile"] == "cftv"
+    assert seen_profiles and all(profile == "cftv" for profile in seen_profiles)
+
+
+@pytest.mark.anyio
+async def test_discovery_scan_auto_selects_cftv_profile_for_cftv_subnet(monkeypatch):
+    seen_profiles: list[str] = []
+
+    async def fake_scan_single_ip(ip: str, community: str, **kwargs):
+        seen_profiles.append(str(kwargs.get("profile")))
+        return None
+
+    monkeypatch.setattr(discovery_module, "_scan_single_ip", fake_scan_single_ip, raising=True)
+    monkeypatch.setattr(discovery_module, "_discover_live_hosts_with_nmap", AsyncMock(return_value=[]))
+    payload = await scan_network("192.168.70.0/30", "public", timeout=0.1, retries=0, max_hosts=4096, concurrency=2)
+
+    assert payload["scan_profile"] == "cftv"
+    assert seen_profiles and all(profile == "cftv" for profile in seen_profiles)
 
 
 @pytest.mark.anyio
