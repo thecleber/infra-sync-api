@@ -447,6 +447,7 @@ Host: 10.0.0.3 Status: Down
         ("Grandstream GWN access point", "AP-01", "aps", "indoor"),
         ("Hikvision IP camera", "CAM-01", "cameras", "ip"),
         ("Intelbras DVR recorder", "REC-01", "recorders", "dvr"),
+        ("Intelbras NVR network video recorder", "NVR-01", "recorders", "nvr"),
     ],
 )
 def test_discovery_classifier_additional_groups(sys_descr, sys_name, expected_group, expected_subgroup):
@@ -483,6 +484,26 @@ def test_discovery_classifier_tplink_switch_prefers_switch():
     assert group == "switches"
     assert subgroup == "access"
     assert "TP-Link" in notes
+
+
+def test_discovery_classifier_cctv_devices_stay_in_video_groups():
+    camera_group, camera_subgroup, camera_notes = classify_discovered_device(
+        sys_descr="HIKVISION DS-2CD2143G2-I IP Camera",
+        sys_name="CAM-CFTV-01",
+        sys_object_id="1.3.6.1.4.1.39136.1.1",
+    )
+    recorder_group, recorder_subgroup, recorder_notes = classify_discovered_device(
+        sys_descr="Intelbras NVR 3000",
+        sys_name="NVR-CFTV-01",
+        sys_object_id="1.3.6.1.4.1.26138.1.1",
+    )
+
+    assert camera_group == "cameras"
+    assert camera_subgroup == "ip"
+    assert "Hikvision" in camera_notes
+    assert recorder_group == "recorders"
+    assert recorder_subgroup == "nvr"
+    assert "Intelbras" in recorder_notes
 
 
 @pytest.mark.anyio

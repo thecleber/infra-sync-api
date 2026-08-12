@@ -503,12 +503,17 @@ async def _fetch_mac_address(ip: str, community: str, *, timeout: float, retries
 def infer_device_profile(*, sys_descr: str, sys_name: str, sys_object_id: str, mac_address: str = "") -> dict[str, str]:
     text = " ".join(part for part in (sys_descr, sys_name, sys_object_id) if part).lower()
     enterprise = _enterprise_hint(sys_object_id)
+    guessed_device_type = _guess_device_type(text, "", "")
 
     manufacturer = enterprise.get("manufacturer") or _guess_manufacturer(text)
     if manufacturer == "Generico":
         manufacturer = _guess_manufacturer_from_mac(mac_address) or manufacturer
     model = enterprise.get("model") or _guess_model(sys_descr, sys_name, manufacturer)
-    device_type = enterprise.get("device_type") or _guess_device_type(text, manufacturer, model)
+    enterprise_device_type = enterprise.get("device_type") or ""
+    if enterprise_device_type == "switch" and guessed_device_type in {"camera", "recorder"}:
+        device_type = guessed_device_type
+    else:
+        device_type = enterprise_device_type or _guess_device_type(text, manufacturer, model)
 
     if device_type == "printer":
         group, subgroup = "printers", "office"
@@ -736,8 +741,6 @@ def _guess_model(sys_descr: str, sys_name: str, manufacturer: str) -> str:
 
 
 def _guess_device_type(text: str, manufacturer: str, model: str) -> str:
-    if any(token in text for token in ("printer", "print server", "brother", "epson", "kyocera", "document solutions printing system", "hp ethernet multi-environment", "laserjet", "deskjet")):
-        return "printer"
     if any(token in text for token in ("nvr", "network video recorder", "dvr", "digital video recorder", "xvr")):
         return "recorder"
     if _looks_like_hikvision_switch(text, manufacturer, model):
@@ -748,6 +751,8 @@ def _guess_device_type(text: str, manufacturer: str, model: str) -> str:
         return "switch"
     if any(token in text for token in ("camera", "cctv", "hikvision", "dahua", "intelbras vhd", "ip cam")):
         return "camera"
+    if any(token in text for token in ("printer", "print server", "brother", "epson", "kyocera", "document solutions printing system", "hp ethernet multi-environment", "laserjet", "deskjet")):
+        return "printer"
     if any(token in text for token in ("routeros", "gateway", "router", "ccr")):
         return "router"
     if any(token in text for token in ("idrac", "ilo", "bmc", "management controller")):
