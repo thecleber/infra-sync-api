@@ -2735,6 +2735,10 @@ async def _refresh_discovered_device_from_snmp(
             (_normalize_mac_text(port.get("mac_address")) for port in refreshed["ports"] if _normalize_mac_text(port.get("mac_address"))),
             refreshed.get("mac_address", ""),
         )
+    for key in ("lldp_neighbors", "cdp_neighbors", "bridge_port_map", "bridge_fdb"):
+        values = snapshot.get(key)
+        if isinstance(values, list) and values:
+            refreshed[key] = [entry for entry in values if isinstance(entry, dict)]
     return refreshed
 
 
@@ -2867,6 +2871,8 @@ async def _annotate_discovered_device(
     settings = settings or request.app.state.settings
     ip = _normalize_text(annotated.get("ip"))
     name = _discovery_device_label(annotated)
+    scan_community = _normalize_text(annotated.get("scan_community")) or "public"
+    scan_profile = _normalize_text(annotated.get("scan_profile") or annotated.get("profile")).lower()
     existing = await _lookup_discovery_netbox_device(client, ip, name)
     status, message = _discovery_device_status(annotated, existing)
     annotated["system_status"] = status
@@ -2875,9 +2881,28 @@ async def _annotate_discovered_device(
         _related_id(existing.get("id")) if isinstance(existing, dict) else None
     ) or _related_id(annotated.get("netbox_device_id"))
     annotated["netbox_device_name"] = _normalize_text(existing.get("name")) if isinstance(existing, dict) else ""
+    needs_snmp_refresh = bool(ip) and (
+        scan_profile == "cftv"
+        or _normalize_text(annotated.get("device_type")).lower() in {"switch", "router", "camera", "recorder", "wireless_ap", "server"}
+        or _normalize_text(annotated.get("group")).lower() in {"switches", "routers", "cameras", "recorders", "servers", "aps"}
+        or not _normalize_mac_text(annotated.get("mac_address"))
+        or not (annotated.get("ports") if isinstance(annotated.get("ports"), list) else [])
+    )
+    if needs_snmp_refresh:
+        annotated = await _refresh_discovered_device_from_snmp(
+            annotated,
+            community=scan_community,
+            timeout=float(_normalize_text(annotated.get("scan_timeout")) or 1.0),
+            retries=int(_normalize_text(annotated.get("scan_retries")) or 0),
+            max_ports=int(_normalize_text(annotated.get("scan_max_ports")) or 48),
+        )
+        annotated["scan_community"] = scan_community
+        annotated["scan_profile"] = scan_profile or "general"
     discovered_mac = _normalize_mac_text(annotated.get("mac_address"))
     existing_mac = await _discover_device_mac(client, existing.get("id")) if isinstance(existing, dict) else ""
     discovered_ports = _discover_snmp_ports_for_ip(ip)
+    if not discovered_ports and isinstance(annotated.get("ports"), list):
+        discovered_ports = [port for port in annotated.get("ports", []) if isinstance(port, dict)]
     existing_interface_count = await _discover_device_interface_count(client, existing.get("id")) if isinstance(existing, dict) else 0
     inventory_status, inventory_message = _discovery_inventory_status(
         annotated,
@@ -2894,6 +2919,10 @@ async def _annotate_discovered_device(
     annotated["mac_address"] = discovered_mac or existing_mac
     if discovered_ports:
         annotated["ports"] = discovered_ports
+    for key in ("lldp_neighbors", "cdp_neighbors", "bridge_port_map", "bridge_fdb"):
+        values = annotated.get(key)
+        if isinstance(values, list) and values:
+            annotated[key] = [entry for entry in values if isinstance(entry, dict)]
 
     if not sync_with_netbox:
         return annotated

@@ -1767,6 +1767,55 @@ def test_snmp_sync_post_sends_ports_to_netbox(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_refresh_discovered_device_from_snmp_populates_bridge_data(monkeypatch):
+    async def fake_probe_snmp_device(ip, community, **kwargs):
+        return {
+            "ip": "192.168.70.1",
+            "sys_name": "CCR2004-BORDA",
+            "sys_descr": "RouterOS CCR2004-1G-12S+2XS 7.22 (stable)",
+            "sys_object_id": "1.3.6.1.4.1.14988.1",
+            "if_number": "40",
+            "hr_memory_size": "4194304",
+            "notes": "ok",
+            "ports": [
+                {
+                    "index": "1",
+                    "name": "ether1",
+                    "mac_address": "04:F4:1C:39:93:36",
+                }
+            ],
+            "lldp_neighbors": [
+                {
+                    "local_port_index": "1",
+                    "remote_sys_name": "SW-25-ANTIDOPPING-DADOS",
+                    "remote_port_id": "ether1",
+                }
+            ],
+            "cdp_neighbors": [],
+            "bridge_port_map": [{"bridge_port": "1", "if_index": "1"}],
+            "bridge_fdb": [{"mac_address": "00:11:22:33:44:55", "bridge_port": "1"}],
+        }
+
+    monkeypatch.setattr(new_main, "probe_snmp_device", fake_probe_snmp_device)
+
+    refreshed = await new_main._refresh_discovered_device_from_snmp(
+        {
+            "ip": "192.168.70.1",
+            "mac_address": "",
+            "ports": [],
+        },
+        community="public",
+        timeout=1.0,
+        retries=0,
+        max_ports=48,
+    )
+
+    assert refreshed["mac_address"] == "04:F4:1C:39:93:36"
+    assert refreshed["ports"] and refreshed["ports"][0]["name"] == "ether1"
+    assert refreshed["bridge_fdb"] and refreshed["bridge_fdb"][0]["mac_address"] == "00:11:22:33:44:55"
+
+
+@pytest.mark.anyio
 async def test_snmp_probe_falls_back_to_secondary_community(monkeypatch):
     calls = []
 
