@@ -1161,6 +1161,81 @@ async def api_config(request: Request):
         masked["email"]["password"] = _mask_secret(_normalize_text(masked["email"].get("password")))
     for key in ("netbox", "zabbix", "glpi", "n8n"):
         masked[key]["token"] = _mask_secret(_normalize_text(masked[key]["token"]))
+    if _request_prefers_html(request):
+        runtime_rows = []
+        for key, label in (("netbox", "NetBox"), ("zabbix", "Zabbix"), ("glpi", "GLPI"), ("n8n", "n8n")):
+            status_label, status_style = _connector_status(runtime[key])
+            connector = masked[key]
+            runtime_rows.append(
+                f"<tr><td>{escape(label)}</td><td><span class=\"pill {escape(status_style)}\">{escape(status_label)}</span></td><td>{escape(_normalize_text(connector.get('url')) or 'não informado')}</td><td>{escape(_normalize_text(connector.get('token')) or 'não informado')}</td></tr>"
+            )
+        email = masked.get("email") if isinstance(masked.get("email"), dict) else {}
+        body = f"""
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="kicker">ECV Network Control</div>
+        <h1>Configuração</h1>
+        <p>Resumo de integrações e credenciais mascaradas para revisão rápida.</p>
+      </div>
+      <nav class="menu">
+        <button class="menu-btn active" data-target="config">Configuração</button>
+        <button class="menu-btn" data-target="health">Saude</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div>Dashboard v{escape(__version__)}</div>
+        <div>{escape(datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC"))}</div>
+      </div>
+    </aside>
+    <section class="content">
+      <section class="topbar">
+        <div>
+          <h2 class="page-title">Configurações da API</h2>
+          <div class="sub">Esta visão mostra os valores já carregados pelo runtime, com segredos mascarados.</div>
+        </div>
+        <div class="actions">
+          <a class="btn primary" href="/settings">Editar configurações</a>
+          <a class="btn" href="/health">Saude</a>
+          <a class="btn" href="/">Dashboard</a>
+        </div>
+      </section>
+
+      <section class="metrics">
+        <article class="metric-card">
+          <div class="metric-label">API Key</div>
+          <div class="metric-value">{escape(_normalize_text(masked.get("sync_api_key")) or "não informado")}</div>
+          <div class="metric-note">Token de sincronização mascarado</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">E-mail</div>
+          <div class="metric-value">{'Ativo' if bool(email) else 'Não configurado'}</div>
+          <div class="metric-note">{escape(_normalize_text(email.get("host")) or "Sem servidor SMTP") if isinstance(email, dict) else "Sem servidor SMTP"}</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">NetBox</div>
+          <div class="metric-value">{'Ativo' if masked["netbox"].get("enabled") else 'Desativado'}</div>
+          <div class="metric-note">{escape(_normalize_text(masked["netbox"].get("url")) or "não informado")}</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Zabbix</div>
+          <div class="metric-value">{'Ativo' if masked["zabbix"].get("enabled") else 'Desativado'}</div>
+          <div class="metric-note">{escape(_normalize_text(masked["zabbix"].get("url")) or "não informado")}</div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h3>Conectores mascarados</h3>
+        <table>
+          <thead>
+            <tr><th>Componente</th><th>Status</th><th>URL</th><th>Token</th></tr>
+          </thead>
+          <tbody>
+            {''.join(runtime_rows)}
+          </tbody>
+        </table>
+      </section>
+    </section>
+        """
+        return HTMLResponse(_render_shell("Configuração | infra-sync-api", body))
     return masked
 
 
