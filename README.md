@@ -182,6 +182,39 @@ docker compose build
 docker compose up -d
 ```
 
+## Portainer
+
+Se o seu Portainer Server ja existe em outro servidor, voce nao precisa instalar Portainer nesta VM.
+O caminho mais simples e instalar apenas o Portainer Agent nesta VM e depois adicionar este host como um
+novo environment no Portainer existente.
+
+### Stack do app
+
+Use o arquivo [`compose.portainer.yaml`](./compose.portainer.yaml) como stack do aplicativo.
+
+### Agent na VM
+
+No servidor desta VM, suba somente o Portainer Agent com a mesma versao do seu Portainer Server:
+
+```bash
+docker run -d \
+  --name portainer_agent \
+  --restart=always \
+  -p 9001:9001 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /var/lib/docker/volumes:/var/lib/docker/volumes \
+  portainer/agent:<PORTAINER_SERVER_VERSION>
+```
+
+Depois, no Portainer existente:
+
+1. Vá em `Environments`.
+2. Clique em `Add environment`.
+3. Escolha `Docker Standalone`.
+4. Selecione `Agent`.
+5. Informe o IP desta VM e a porta `9001`.
+6. Salve e publique o stack usando o arquivo `compose.portainer.yaml`.
+
 ## Logs
 
 ```bash
