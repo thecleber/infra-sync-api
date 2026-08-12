@@ -1186,6 +1186,86 @@ async def health(request: Request):
     zabbix_connected = await zabbix_client.healthcheck() if zabbix_client is not None else False
     status_value = "ok" if connected and (zabbix_client is None or zabbix_connected) else "degraded"
     runtime = request.app.state.runtime
+    runtime_rows = []
+    for key, label in (("netbox", "NetBox"), ("zabbix", "Zabbix"), ("glpi", "GLPI"), ("n8n", "n8n")):
+        status_label, status_style = _connector_status(runtime[key])
+        runtime_rows.append(
+            f"<tr><td>{escape(label)}</td><td><span class=\"pill {escape(status_style)}\">{escape(status_label)}</span></td><td>{escape(_normalize_text(runtime[key].get('url')) or 'não informado')}</td></tr>"
+        )
+    if _request_prefers_html(request):
+        health_pill = "ok" if status_value == "ok" else "warn"
+        body = f"""
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="kicker">ECV Network Control</div>
+        <h1>Saude</h1>
+        <p>Indicador rapido de conectividade e do estado dos conectores centrais.</p>
+      </div>
+      <nav class="menu">
+        <button class="menu-btn active" data-target="health">Saude</button>
+        <button class="menu-btn" data-target="overview">Visao geral</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div>Dashboard v{escape(__version__)}</div>
+        <div>{escape(datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC"))}</div>
+      </div>
+    </aside>
+    <section class="content">
+      <section class="topbar">
+        <div>
+          <h2 class="page-title">Saude do sistema</h2>
+          <div class="sub">Use esta pagina para validar rapidamente NetBox, Zabbix e o estado dos conectores.</div>
+        </div>
+        <div class="actions">
+          <a class="btn primary" href="/">Dashboard</a>
+          <a class="btn" href="/overview">Visao geral</a>
+          <a class="btn" href="/docs">API</a>
+        </div>
+      </section>
+
+      <section class="hero">
+        <small>Status geral</small>
+        <strong>{escape(status_value.upper())}</strong>
+        <div class="sub" style="margin-top:6px;">{escape("NetBox online e Zabbix online." if status_value == "ok" else "Algum componente principal está degradado.")}</div>
+      </section>
+
+      <section class="metrics">
+        <article class="metric-card">
+          <div class="metric-label">NetBox</div>
+          <div class="metric-value">{'Online' if connected else 'Offline'}</div>
+          <div class="metric-note">API de inventário e IPAM</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Zabbix</div>
+          <div class="metric-value">{'Online' if zabbix_connected else 'Offline'}</div>
+          <div class="metric-note">Telemetria e alertas</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Estado</div>
+          <div class="metric-value"><span class="pill {health_pill}">{escape(status_value.upper())}</span></div>
+          <div class="metric-note">Saude consolidada do serviço</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Conectores</div>
+          <div class="metric-value">{len([k for k in ("netbox", "zabbix", "glpi", "n8n") if runtime[k].get("enabled")])}</div>
+          <div class="metric-note">Ativos no runtime</div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h3>Runtime</h3>
+        <table>
+          <thead>
+            <tr><th>Componente</th><th>Status</th><th>Detalhe</th></tr>
+          </thead>
+          <tbody>
+            {''.join(runtime_rows)}
+          </tbody>
+        </table>
+      </section>
+    </section>
+        """
+        return HTMLResponse(_render_shell("Saude | infra-sync-api", body))
     return {
         "service": "infra-sync-api",
         "status": status_value,

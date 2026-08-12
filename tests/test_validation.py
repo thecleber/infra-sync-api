@@ -401,6 +401,39 @@ def test_api_overview_keeps_json_for_clients(monkeypatch):
     assert "cards" in payload
 
 
+def test_health_renders_html_for_browsers(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_dashboard_clients(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"accept": "text/html,application/xhtml+xml"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Saude do sistema" in response.text
+    assert "Runtime" in response.text
+
+
+def test_health_keeps_json_for_clients(monkeypatch):
+    monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
+    monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
+    monkeypatch.setenv("SYNC_API_KEY", "test-api-key")
+    get_settings.cache_clear()
+    _mock_dashboard_clients(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"accept": "application/json"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    payload = response.json()
+    assert payload["service"] == "infra-sync-api"
+    assert payload["status"] == "ok"
+
+
 def test_root_head_returns_ok(monkeypatch):
     monkeypatch.setenv("NETBOX_URL", "http://10.254.0.15:8000")
     monkeypatch.setenv("NETBOX_TOKEN", "Bearer test-token")
