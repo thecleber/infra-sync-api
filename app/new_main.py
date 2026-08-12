@@ -728,6 +728,13 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
     }
 
 
+def _request_prefers_html(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    if not accept:
+        return False
+    return "text/html" in accept or "application/xhtml+xml" in accept
+
+
 async def _collect_cpd_snapshot(request: Request) -> dict[str, Any]:
     snapshot = await _collect_snapshot(request)
     runtime: dict[str, Any] = request.app.state.runtime
@@ -1159,7 +1166,16 @@ async def api_config(request: Request):
 
 @app.get("/api/overview")
 async def api_overview(request: Request):
-    return await _collect_snapshot(request)
+    snapshot = await _collect_snapshot(request)
+    if _request_prefers_html(request):
+        return HTMLResponse(_render_dashboard(snapshot))
+    return snapshot
+
+
+@app.get("/overview", include_in_schema=False)
+async def overview_page(request: Request):
+    snapshot = await _collect_snapshot(request)
+    return HTMLResponse(_render_dashboard(snapshot))
 
 
 @app.get("/health")
@@ -2095,7 +2111,7 @@ if (snapshot.refresh_enabled) {{
             <a class="btn" href="/devices">Dashboard de devices</a>
             <a class="btn" href="/cpd">CPD</a>
             <a class="btn" href="/discovery">Varredura SNMP</a>
-            <a class="btn" href="/api/overview">Snapshot</a>
+            <a class="btn" href="/overview">Snapshot</a>
             <a class="btn" href="/health">Saude</a>
             <a class="btn" href="/docs">API</a>
           </div>
