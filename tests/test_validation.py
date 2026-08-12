@@ -650,6 +650,18 @@ async def test_discovery_scan_allows_common_private_subnet(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_discovery_scan_allows_192_168_private_subnet(monkeypatch):
+    async def fake_scan_single_ip(ip: str, community: str, **kwargs):
+        return None
+
+    monkeypatch.setattr(discovery_module, "_scan_single_ip", fake_scan_single_ip, raising=True)
+    payload = await scan_network("192.168.70.0/24", "public", timeout=0.1, retries=0, max_hosts=4096, concurrency=4)
+
+    assert payload["network"] == "192.168.70.0/24"
+    assert payload["count"] == 0
+
+
+@pytest.mark.anyio
 async def test_discovery_scan_ignores_max_hosts_limit(monkeypatch):
     async def fake_scan_single_ip(ip: str, community: str, **kwargs):
         return None

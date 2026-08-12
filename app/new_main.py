@@ -2504,9 +2504,11 @@ async def _read_form(request: Request) -> dict[str, str]:
 
 
 @app.get("/discovery", include_in_schema=False)
-async def discovery_page(request: Request, saved: int = 0, error: str | None = None):
+async def discovery_page(request: Request, saved: int = 0, error: str | None = None, network: str | None = None):
     state = load_last_scan()
     state["progress"] = load_scan_progress()
+    if network:
+        state["network"] = network
     return HTMLResponse(_render_discovery_page(state, error=error, saved=bool(saved)))
 
 
@@ -3424,6 +3426,17 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
             """
         )
 
+    selected_network = _normalize_text(state.get("network")) or "10.0.0.0/24"
+    network_presets = [
+        ("10.0.0.0/24", "10.0.0.0/24"),
+        ("192.168.70.0/24", "192.168.70.0/24"),
+        ("192.168.0.0/24", "192.168.0.0/24"),
+        ("172.16.0.0/24", "172.16.0.0/24"),
+    ]
+    preset_buttons = "".join(
+        f'<a class="btn" href="/discovery?network={quote(network)}">{escape(label)}</a>'
+        for network, label in network_presets
+    )
     body = f"""
     <aside class="sidebar">
       <div class="brand">
@@ -3457,12 +3470,15 @@ def _render_discovery_page(state: dict[str, Any], error: str | None = None, save
       {f"<div class='hero'><small>IPAM</small><strong>{escape(ipam_prefix_status)}</strong><div class='sub' style='margin: 6px 0 0;'>O prefixo da rede descoberta foi sincronizado no NetBox.</div></div>" if ipam_prefix_status else ""}
       <div class="panel" style="margin-bottom:14px;">
         <h2>Executar varredura</h2>
-        <p>Use uma rede privada como 10.0.0.0/24. O sistema consulta SNMP e monta uma lista de dispositivos com sugestao de grupo.</p>
+        <p>Use qualquer rede privada IPv4, como 10.0.0.0/24, 192.168.70.0/24 ou 172.16.0.0/24. O sistema consulta SNMP e monta uma lista de dispositivos com sugestao de grupo.</p>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin:0 0 14px;">
+          {preset_buttons}
+        </div>
         <form id="discovery-scan-form" method="post" action="/discovery/scan">
           <div class="form-grid">
             <div class="field">
               <label for="network">Rede</label>
-              <input id="network" name="network" type="text" value="{escape(state.get("network") or "10.0.0.0/24")}" placeholder="10.0.0.0/24" />
+              <input id="network" name="network" type="text" value="{escape(selected_network)}" placeholder="192.168.70.0/24" />
             </div>
             <div class="field">
               <label for="community">Community</label>
