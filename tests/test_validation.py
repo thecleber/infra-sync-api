@@ -1590,6 +1590,7 @@ def test_devices_page_renders_status_dashboard(monkeypatch):
         response = client.get("/devices", follow_redirects=False)
 
     assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
     assert "Dashboard de devices" in response.text
     assert "Ativos" in response.text
     assert "Offline" in response.text

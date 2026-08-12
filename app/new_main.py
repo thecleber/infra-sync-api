@@ -4842,7 +4842,8 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
       </aside>
     </div>
     """
-    return _render_management_page(
+    return HTMLResponse(
+        _render_management_page(
         title="Assets | infra-sync-api",
         active="devices",
         heading="Ativos",
@@ -4850,6 +4851,7 @@ async def devices_page(request: Request, saved: int = 0, error: str | None = Non
         actions=f'<a class="btn" href="/">Dashboard</a><a class="btn" href="/snmp">Leitura SNMP</a><a class="btn" href="/reports">Imprimir relatório</a>',
         body=body,
         banner=banner,
+        )
     )
 
 
