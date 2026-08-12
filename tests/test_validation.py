@@ -33,6 +33,26 @@ def _mock_dashboard_clients(monkeypatch):
         return mapping.get(path, 0)
 
     monkeypatch.setattr(NetBoxClient, "count", AsyncMock(side_effect=_count))
+    monkeypatch.setattr(NetBoxClient, "list_devices", AsyncMock(return_value=[
+        {
+            "id": 101,
+            "name": "SW-ACCESS-LAN",
+            "status": {"value": "active"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 2, "name": "Switch"},
+            "device_type": {"id": 3, "model": "Cisco 2960"},
+            "primary_ip4": {"id": 77, "address": "10.0.0.24/32"},
+        },
+        {
+            "id": 102,
+            "name": "NB-13-01",
+            "status": {"value": "offline"},
+            "site": {"id": 1, "name": "ECVITORIA"},
+            "role": {"id": 3, "name": "Workstation"},
+            "device_type": {"id": 4, "model": "IdeaPad 1 15IAU7", "manufacturer": {"id": 9, "name": "LENOVO"}},
+            "primary_ip4": {"id": 78, "address": "10.0.0.143/32"},
+        },
+    ]))
     monkeypatch.setattr(ZabbixClient, "healthcheck", AsyncMock(return_value=True))
     monkeypatch.setattr(ZabbixClient, "count_hosts", AsyncMock(return_value=14))
     monkeypatch.setattr(ZabbixClient, "count_problems", AsyncMock(return_value=3))
@@ -326,6 +346,8 @@ def test_root_renders_dashboard(monkeypatch):
 
     assert response.status_code == 200
     assert "Rede" in response.text
+    assert "Devices cadastrados" in response.text
+    assert "Abrir dashboard de devices" in response.text
     # Configuracao de integracoes verificada por outros marcadores abaixo
     assert "Conectores centrais" in response.text
 
@@ -343,6 +365,7 @@ def test_dashboard_route_renders_dashboard(monkeypatch):
     assert response.status_code == 200
     assert "Atalhos operacionais" in response.text
     assert "Varredura SNMP" in response.text
+    assert "Dashboard de devices" in response.text
 
 
 def test_root_head_returns_ok(monkeypatch):

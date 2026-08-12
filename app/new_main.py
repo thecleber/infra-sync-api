@@ -595,6 +595,31 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
     discovery_state = load_last_scan()
     discovered_devices = discovery_state.get("devices") if isinstance(discovery_state.get("devices"), list) else []
     discovery_count = len(discovered_devices)
+    registered_devices: list[dict[str, Any]] = []
+    device_status_counts = {"active": 0, "offline": 0, "planned": 0, "staged": 0, "other": 0}
+    if netbox_connected and netbox_client is not None:
+        with suppress(Exception):
+            registered_devices = await netbox_client.list_devices(params={"limit": 12})
+    registered_devices = [device for device in registered_devices if isinstance(device, dict)]
+    for device in registered_devices:
+        status_key = _device_status_key(device)
+        if status_key in device_status_counts:
+            device_status_counts[status_key] += 1
+        else:
+            device_status_counts["other"] += 1
+    registered_device_preview = []
+    for device in registered_devices[:8]:
+        device_type = device.get("device_type") if isinstance(device.get("device_type"), dict) else {}
+        registered_device_preview.append({
+            "name": _normalize_text(device.get("name")) or "—",
+            "status": _device_status_label(_device_status_key(device)),
+            "badge": _device_status_badge(_device_status_key(device)),
+            "site": _relation_label(device.get("site")),
+            "role": _relation_label(device.get("role")),
+            "manufacturer": _relation_label(device_type.get("manufacturer")) if isinstance(device_type, dict) else "?",
+            "model": _normalize_text(device_type.get("model")) if isinstance(device_type, dict) else _relation_label(device.get("device_type")),
+            "ip": _relation_label(device.get("primary_ip4")),
+        })
 
     connectors = []
     for key, title, note in (
@@ -696,6 +721,9 @@ async def _collect_snapshot(request: Request) -> dict[str, Any]:
             "scanned_at": discovery_state.get("scanned_at", ""),
             "devices": discovered_devices,
         },
+        "registered_devices": registered_devices,
+        "registered_device_preview": registered_device_preview,
+        "registered_device_counts": device_status_counts,
         "alerts": recent_alerts,
     }
 
@@ -1823,6 +1851,38 @@ def _render_dashboard(snapshot: dict[str, Any]) -> str:
         """
         for connector in snapshot["connectors"]
     )
+    registered_devices = snapshot.get("registered_devices") if isinstance(snapshot.get("registered_devices"), list) else []
+    registered_device_preview = snapshot.get("registered_device_preview") if isinstance(snapshot.get("registered_device_preview"), list) else []
+    registered_device_counts = snapshot.get("registered_device_counts") if isinstance(snapshot.get("registered_device_counts"), dict) else {}
+    device_summary_cards = "".join(
+        f"""
+        <article class="metric-card">
+          <div class="metric-label">{escape(label)}</div>
+          <div class="metric-value">{escape(str(registered_device_counts.get(key, 0)))}</div>
+          <div class="metric-note">{escape(note)}</div>
+        </article>
+        """
+        for key, label, note in (
+            ("active", "Ativos", "Dispositivos ativos no NetBox"),
+            ("offline", "Offline", "Ativos sem resposta"),
+            ("planned", "Planejados", "Em implantação"),
+            ("other", "Outros", "Estados diversos"),
+        )
+    )
+    device_preview_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{escape(device["name"])}</strong></td>
+          <td>{device["badge"]}</td>
+          <td>{escape(device["site"])}</td>
+          <td>{escape(device["role"])}</td>
+          <td>{escape(device["manufacturer"])}</td>
+          <td>{escape(device["model"])}</td>
+          <td>{escape(device["ip"])}</td>
+        </tr>
+        """
+        for device in registered_device_preview
+    )
     summary_buttons = "".join(
         f'<button class="menu-btn {"active" if item["id"] == "overview" else ""}" data-target="{escape(item["id"])}">{escape(item["label"])}<span class="meta">{escape(item["description"])}</span></button>'
         for item in snapshot["summary"]
@@ -2032,6 +2092,7 @@ if (snapshot.refresh_enabled) {{
         </div>
           <div class="actions">
             <a class="btn primary" href="/settings">Configurar integrações</a>
+            <a class="btn" href="/devices">Dashboard de devices</a>
             <a class="btn" href="/cpd">CPD</a>
             <a class="btn" href="/discovery">Varredura SNMP</a>
             <a class="btn" href="/api/overview">Snapshot</a>
@@ -2044,6 +2105,29 @@ if (snapshot.refresh_enabled) {{
         <small>Ultima checagem</small>
         <strong>{escape(snapshot["headline"])}</strong>
         <div class="sub" style="margin: 6px 0 0;">{escape(snapshot["detail"])}</div>
+      </section>
+
+      <section class="panels" style="margin-bottom:14px;">
+        <div class="panel">
+          <h2>Devices cadastrados</h2>
+          <p>Resumo rápido do inventário NetBox com acesso direto ao dashboard completo de ativos.</p>
+          <div class="metrics" style="margin-top:14px;">{device_summary_cards}</div>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; margin:14px 0 0;">
+            <a class="btn primary" href="/devices">Abrir dashboard de devices</a>
+            <a class="btn" href="/devices?kind=network">Ver rede</a>
+            <a class="btn" href="/devices?status=active">Só ativos</a>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Prévia dos ativos</h2>
+          <p>Últimos devices carregados do inventário com status, fabricante e IP.</p>
+          <table>
+            <thead>
+              <tr><th>Device</th><th>Status</th><th>Site</th><th>Tipo</th><th>Fabricante</th><th>Modelo</th><th>IP</th></tr>
+            </thead>
+            <tbody>{device_preview_rows if device_preview_rows else _render_table_empty("Nenhum device carregado.", 7)}</tbody>
+          </table>
+        </div>
       </section>
 
       <section id="overview" class="section active" data-section="overview">
